@@ -22,8 +22,7 @@
             "max_count": 4,
             "seed_field": "seed",
             "input": {
-                "output_format": "png",
-                "enable_safety_checker": false
+                "output_format": "png"
             }
         }
     },

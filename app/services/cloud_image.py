@@ -21,6 +21,7 @@ provider endpoint, so a new hosted model needs only a JSON file:
         "guidance_field": "guidance_scale",        # optional
         "lora": {"style": "fal" | "replicate", "max": 2},  # optional
         "defaults": {"num_inference_steps": 28},   # Studio defaults
+        "ranges": {"guidance": [0, 10]},           # provider limits, by field
         "input": {"output_format": "png"}          # static extra input
     }
 
@@ -195,6 +196,15 @@ def input_images(params: Mapping[str, Any]) -> list[str]:
     return [str(path) for path in images if path]
 
 
+def clamp(spec: Mapping[str, Any], field: str, value: float) -> float:
+    """Keep a value inside the provider's documented range for ``field``."""
+    bounds = (spec.get("ranges") or {}).get(field)
+    if not bounds:
+        return value
+    low, high = bounds
+    return type(value)(min(max(value, low), high))
+
+
 def build_input(spec: Mapping[str, Any], params: Mapping[str, Any], image_urls: list[str]) -> dict:
     """Translate Maestro params into the provider endpoint's input object."""
     payload: dict[str, Any] = {"prompt": str(params.get("prompt") or "")}
@@ -217,7 +227,7 @@ def build_input(spec: Mapping[str, Any], params: Mapping[str, Any], image_urls: 
     for field, param, cast in (("steps_field", "num_inference_steps", int),
                                ("guidance_field", "guidance_scale", float)):
         if spec.get(field) and params.get(param) is not None:
-            payload[spec[field]] = cast(params[param])
+            payload[spec[field]] = clamp(spec, spec[field], cast(params[param]))
     image_field = spec.get("image_field")
     if image_urls and image_field:
         if spec.get("image_list", True):
@@ -469,7 +479,7 @@ def generate(
                     url = client.upload_lora(lora)
                     if upload_cache is not None:
                         upload_cache.put(provider, lora.path, url, wall_clock())
-                refs.append((url, lora.scale))
+                refs.append((url, clamp(spec, "lora_scale", float(lora.scale))))
             client.apply_loras(payload, refs, civitai_token)
         handle = client.submit(endpoint, payload)
         deadline = clock() + TIMEOUT_SECONDS

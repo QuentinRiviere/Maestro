@@ -38,6 +38,20 @@
                 "megapixels": "1",
                 "go_fast": false,
                 "disable_safety_checker": true
+            },
+            "ranges": {
+                "guidance": [
+                    0,
+                    10
+                ],
+                "num_inference_steps": [
+                    1,
+                    50
+                ],
+                "lora_scale": [
+                    -1,
+                    3
+                ]
             }
         }
     },

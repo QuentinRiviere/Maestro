@@ -23,6 +23,16 @@
             "input": {
                 "output_format": "png",
                 "enable_safety_checker": false
+            },
+            "ranges": {
+                "guidance_scale": [
+                    0,
+                    35
+                ],
+                "num_inference_steps": [
+                    1,
+                    50
+                ]
             }
         }
     },

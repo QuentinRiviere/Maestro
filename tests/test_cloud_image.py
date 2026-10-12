@@ -65,6 +65,15 @@ class BuildInputTests(unittest.TestCase):
         self.assertEqual(payload["input_image"], "a")
 
 
+class RangeTests(unittest.TestCase):
+    def test_values_are_clamped_to_provider_ranges(self):
+        spec = load_spec("cloud_replicate_flux_dev_lora")
+        payload = cloud_image.build_input(spec, {"prompt": "x", "guidance_scale": 12.0, "num_inference_steps": 80}, [])
+        self.assertEqual((payload["guidance"], payload["num_inference_steps"]), (10.0, 50))
+        self.assertEqual(cloud_image.clamp(spec, "lora_scale", 5.0), 3.0)
+        self.assertEqual(cloud_image.clamp(spec, "unknown", 5.0), 5.0)
+
+
 class ApiKeyTests(unittest.TestCase):
     def test_stored_key_then_environment(self):
         self.assertEqual(cloud_image.provider_api_key("fal", {"fal_api_key": "stored"}, {"FAL_KEY": "env"}), "stored")
