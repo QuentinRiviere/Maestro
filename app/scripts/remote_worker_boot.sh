@@ -53,26 +53,17 @@ else
   log "no R2 cache configured; weights come from their original sources"
 fi
 
-# Worker-local engine config: everything on the pod disk.
-"${VENV}/bin/python" - "${APP_DIR}/wgp_config.json" "${DATA}" <<'PY'
-import json, os, sys
-path, data = sys.argv[1], sys.argv[2]
-config = {}
-if os.path.exists(path):
-    with open(path, encoding="utf-8") as handle:
-        config = json.load(handle)
-config.update({
-    "checkpoints_paths": [os.path.join(data, "ckpts")],
-    "loras_root": os.path.join(data, "loras"),
-    "save_path": os.path.join(data, "outputs"),
-    "image_save_path": os.path.join(data, "outputs"),
-    "audio_save_path": os.path.join(data, "outputs"),
-})
-# A worker never routes to another worker.
-config.pop("inference", None)
-with open(path, "w", encoding="utf-8") as handle:
-    json.dump(config, handle, indent=2)
-PY
+# Worker-local paths, applied by wgp on top of its own (auto-tuned on first
+# boot) config. Writing a partial wgp_config.json instead would skip wgp's
+# defaults entirely.
+export MAESTRO_CONFIG_OVERRIDES="$(cat <<JSON
+{"checkpoints_paths": ["${DATA}/ckpts"],
+ "loras_root": "${DATA}/loras",
+ "save_path": "${DATA}/outputs",
+ "image_save_path": "${DATA}/outputs",
+ "audio_save_path": "${DATA}/outputs"}
+JSON
+)"
 
 cd "${APP_DIR}"
 log "starting Maestro API on port ${SERVER_PORT}"

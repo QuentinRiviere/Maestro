@@ -2743,6 +2743,12 @@ else:
         text = reader.read()
     server_config = json.loads(text)
 
+# Deployment overrides (e.g. the remote GPU worker's paths), applied on top of
+# the stored or freshly auto-tuned config before any path is resolved.
+_config_overrides = os.environ.get("MAESTRO_CONFIG_OVERRIDES")
+if _config_overrides:
+    server_config.update(json.loads(_config_overrides))
+
 server_config.setdefault("prompt_enhancer_quantization", "quanto_int8")
 from services.generation_preview import DEFAULT_PREVIEW_MODE
 server_config.setdefault("generation_preview", DEFAULT_PREVIEW_MODE)

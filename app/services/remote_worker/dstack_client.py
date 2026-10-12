@@ -115,7 +115,7 @@ class DstackClient:
         payload = self._post(self._project_path("logs/poll"), {
             "run_name": run_name,
             "job_submission_id": job_submission_id,
-            "start_time": start_time,
+            "start_time": start_time or None,
             "end_time": None,
             "descending": False,
             "next_token": None,
