@@ -79,6 +79,7 @@ from services.remote_worker import (
     RemoteWorkerManager,
     RemoteWorkerSettingsStore,
 )
+from services.remote_worker.job_forwarder import RemoteJobCancelled, RemoteJobForwarder
 from services.web_push import WebPushService, WebPushUnavailable
 from services.editor_projects import (
     build_editor_media_preview,
@@ -192,6 +193,7 @@ _tailscale = TailscaleManager(_maestro_settings_dir, _maestro_server_port)
 # started with --worker *is* that worker and never controls another one.
 _is_remote_worker_process = "--worker" in _launch_args
 _remote_worker = RemoteWorkerManager(RemoteWorkerSettingsStore(_maestro_settings_dir))
+_remote_job_forwarder = RemoteJobForwarder(_remote_worker)
 if not _is_remote_worker_process:
     _remote_worker.start_watchdog()
 
@@ -25573,6 +25575,193 @@ def _prepare_viggle_character_frame(job: dict) -> bool:
     return True
 
 
+def _remote_generation_enabled() -> bool:
+    if _is_remote_worker_process:
+        return False
+    settings = _remote_worker.settings
+    return bool(settings.route_generations and settings.configured)
+
+
+def _run_remote_generation(job: dict, raw_params: dict, *, finalize: bool) -> bool:
+    """Run a prepared job on the remote worker and publish its outputs here."""
+    defer_output_publication = bool(raw_params.get("_defer_output_publication"))
+    out_dir = job.get("out_dir") or wgp.save_path
+    try:
+        result = _remote_job_forwarder.run(
+            raw_params,
+            out_dir=out_dir,
+            resolve_lora=wgp.resolve_lora_path,
+            update=lambda **updates: update_job(job, **updates),
+            is_cancelled=lambda: is_cancel_requested(job),
+        )
+    except RemoteJobCancelled:
+        return False
+    except Exception as error:
+        traceback.print_exc()
+        finish_job(job, "failed", error=str(error), message=f"Error: {error}")
+        return False
+    if is_cancel_requested(job):
+        return False
+    finalizing = {"progress": 99, "step": 0, "total_steps": 0, "phase": "Finalizing", "message": "Finalizing..."}
+    if defer_output_publication and not finalize:
+        return update_job(
+            job,
+            **finalizing,
+            _internal_output_files=list(result.output_files),
+            _internal_clip_output_files=dict(result.clip_output_files),
+            _internal_join_output_file=result.join_output_file,
+        )
+    record_job_outputs(
+        job,
+        result.output_files,
+        clip_output_files=result.clip_output_files,
+        join_output_file=result.join_output_file,
+    )
+    if not finalize:
+        return update_job(job, **finalizing)
+    finish_job(job, "completed", progress=100, step=0, total_steps=0, phase="", message="Done")
+    return job.get("status") == "completed"
+
+
+# ── Worker-only routes (process started with --worker) ─────────────────────
+# Raw file transfer and verbatim job submission for a controlling Maestro.
+# The dstack service proxy authenticates every request before it gets here.
+
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _require_worker_process() -> None:
+    if not _is_remote_worker_process:
+        raise HTTPException(status_code=404, detail="Not a remote worker")
+
+
+def _worker_file_target(kind: str, name: str, sha256: str, model_type: str) -> str:
+    safe_name = os.path.basename(name or "")
+    if not safe_name or safe_name in {".", ".."}:
+        raise HTTPException(status_code=400, detail="Invalid file name")
+    if not _SHA256_RE.match(sha256 or ""):
+        raise HTTPException(status_code=400, detail="Invalid sha256")
+    if kind == "input":
+        data_root = os.environ.get("MAESTRO_DATA") or os.getcwd()
+        return os.path.join(data_root, "inputs", sha256[:16], safe_name)
+    if kind == "lora":
+        if not wgp.get_model_def(model_type):
+            raise HTTPException(status_code=400, detail=f"Unknown model: {model_type}")
+        return os.path.join(wgp.get_lora_dir(model_type), safe_name)
+    raise HTTPException(status_code=400, detail="kind must be input or lora")
+
+
+@api.get("/api/v1/worker/files")
+def worker_file_lookup(kind: str, name: str, sha256: str, model_type: str = ""):
+    _require_worker_process()
+    target = _worker_file_target(kind, name, sha256, model_type)
+    if os.path.isfile(target) and os.path.getsize(target) > 0:
+        return {"path": target}
+    raise HTTPException(status_code=404, detail="Not present")
+
+
+@api.post("/api/v1/worker/files")
+async def worker_file_upload(request: Request, kind: str, name: str, sha256: str, model_type: str = ""):
+    _require_worker_process()
+    import hashlib
+
+    target = _worker_file_target(kind, name, sha256, model_type)
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    part = f"{target}.{uuid.uuid4().hex[:8]}.part"
+    digest = hashlib.sha256()
+    try:
+        with open(part, "wb") as handle:
+            async for chunk in request.stream():
+                digest.update(chunk)
+                handle.write(chunk)
+        if digest.hexdigest() != sha256:
+            raise HTTPException(status_code=400, detail="sha256 mismatch")
+        os.replace(part, target)
+    finally:
+        if os.path.exists(part):
+            os.remove(part)
+    return {"path": target}
+
+
+@api.post("/api/v1/worker/jobs")
+async def worker_submit_job(request: Request):
+    """Queue already-prepared params verbatim (no planning, no enhancement)."""
+    _require_worker_process()
+    body = await request.json()
+    params = body.get("params") if isinstance(body, dict) else None
+    if not isinstance(params, dict):
+        raise HTTPException(status_code=400, detail="params must be an object")
+    if not params.get("sfx_mode") and wgp.get_model_def(params.get("model_type")) is None:
+        raise HTTPException(status_code=400, detail=f"Unknown model: {params.get('model_type')}")
+    job_id = uuid.uuid4().hex[:8]
+    out_dir = wgp.server_config.get("save_path") or wgp.save_path
+    _jobs[job_id] = {
+        "id": job_id,
+        "show_in_gallery": False,
+        "status": "queued",
+        "progress": 0,
+        "step": 0,
+        "total_steps": 0,
+        "phase": "",
+        "message": "Queued on remote worker",
+        "created_at": time.time(),
+        "params": params,
+        "output_files": [],
+        "error": None,
+        "workspace": None,
+        "out_dir": out_dir,
+    }
+    threading.Thread(target=_run_generation, args=(job_id,), daemon=False).start()
+    return {"job_id": job_id}
+
+
+def _worker_job_files(job: dict) -> tuple[list[str], list[str]]:
+    names: list[str] = []
+    for name in (
+        list(job.get("output_files") or [])
+        + list((job.get("clip_output_files") or {}).values())
+        + [job.get("join_output_file")]
+    ):
+        if isinstance(name, str) and name and name not in names:
+            names.append(os.path.basename(name))
+    out_dir = job.get("out_dir") or wgp.save_path
+    sidecars = [
+        f"{os.path.splitext(name)[0]}.json"
+        for name in names
+        if os.path.isfile(os.path.join(out_dir, f"{os.path.splitext(name)[0]}.json"))
+    ]
+    return names, sidecars
+
+
+@api.get("/api/v1/worker/jobs/{job_id}")
+def worker_job_status(job_id: str):
+    _require_worker_process()
+    job = _jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown job")
+    snapshot = snapshot_job(job)
+    files, sidecars = _worker_job_files(snapshot)
+    snapshot.pop("params", None)
+    snapshot["files"] = files
+    snapshot["sidecars"] = sidecars
+    return JSONResponse(json.loads(json.dumps(snapshot, default=str)))
+
+
+@api.get("/api/v1/worker/jobs/{job_id}/files/{name}")
+def worker_job_file(job_id: str, name: str):
+    _require_worker_process()
+    job = _jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown job")
+    files, sidecars = _worker_job_files(job)
+    if name not in files and name not in sidecars:
+        raise HTTPException(status_code=404, detail="Not an output of this job")
+    path = os.path.join(job.get("out_dir") or wgp.save_path, name)
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="File missing")
+    return FileResponse(path)
+
+
 def _run_generation(job_id: str, *, finalize: bool = True, _slot_owned: bool = False) -> bool:
     """Build and run a job, optionally deferring success finalization."""
     from shared.utils.thread_utils import AsyncStream, async_run
@@ -25697,6 +25886,12 @@ def _run_generation(job_id: str, *, finalize: bool = True, _slot_owned: bool = F
                 llm_service.unload_model()
             if is_cancel_requested(job):
                 return False
+
+            # Remote GPU worker: everything above (planning, enhancement,
+            # reference preparation) stays local; the GPU work runs on the
+            # worker through this same function there.
+            if _remote_generation_enabled():
+                return _run_remote_generation(job, raw_params, finalize=finalize)
 
             # Per-job VRAM coefficient adjustment — accounts for active
             # LoRAs and pipeline stage count beyond what the auto-tuned
