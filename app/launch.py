@@ -1331,6 +1331,56 @@ def _download_model_files(model_type: str):
         raise Exception("Download finished but the checkpoint could not be located — check disk space and earlier terminal output.")
 
 
+_checkpoint_cache_lock = threading.Lock()
+
+
+def _download_model_files_cached(model_type: str, entry: dict | None = None):
+    """On a remote worker, wrap the download with the R2 checkpoint cache.
+
+    The cache pulls the files this model needed last time, Maestro's own
+    resolution fetches anything still missing, and new files are published
+    back to R2. Cache failures only cost speed, never the download itself.
+    """
+    from services.remote_worker.checkpoint_cache import (
+        CheckpointCacheError,
+        R2CheckpointCache,
+    )
+
+    cache = None
+    if _is_remote_worker_process:
+        checkpoints_paths = wgp.server_config.get("checkpoints_paths") or ["ckpts"]
+        roots = {"ckpts": checkpoints_paths[0]}
+        if os.environ.get("HF_HOME"):
+            roots["hf"] = os.environ["HF_HOME"]
+        if wgp.server_config.get("loras_root"):
+            roots["loras"] = wgp.server_config["loras_root"]
+        cache = R2CheckpointCache.from_environment(roots)
+    if cache is None:
+        _download_model_files(model_type)
+        return
+
+    def phase(name: str) -> None:
+        if entry is not None:
+            entry["phase"] = name
+
+    # Snapshots diff the whole disk, so cached downloads run one at a time.
+    with _checkpoint_cache_lock:
+        phase("pulling_cache")
+        try:
+            cache.hydrate(model_type)
+        except CheckpointCacheError as exc:
+            print(f"[Worker] R2 cache pull failed for {model_type}, downloading instead: {exc}")
+        before = cache.snapshot()
+        phase("downloading")
+        _download_model_files(model_type)
+        phase("publishing_cache")
+        try:
+            cache.publish(model_type, before)
+        except CheckpointCacheError as exc:
+            print(f"[Worker] R2 cache publish failed for {model_type}: {exc}")
+        phase("done")
+
+
 @api.post("/api/v1/models/{model_type}/download")
 def download_model(model_type: str):
     """Start downloading a model's files in the background."""
@@ -1351,7 +1401,7 @@ def download_model(model_type: str):
         status, error = "completed", None
         try:
             with download_scope(control):
-                _download_model_files(model_type)
+                _download_model_files_cached(model_type, entry)
                 control.check()
         except Exception as e:
             status, error = "failed", str(e)
@@ -1380,6 +1430,7 @@ def model_downloads_status():
                 "error": entry["error"],
                 "cancel_id": snapshot.get("download_id"),
                 "cancellable": bool(snapshot.get("cancellable")),
+                "phase": entry.get("phase"),
             }
     return {"downloads": downloads}
 
