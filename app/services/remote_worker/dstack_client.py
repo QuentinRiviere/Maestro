@@ -7,9 +7,10 @@ to the dstack CLI, so Maestro only needs the server URL, project and token.
 from __future__ import annotations
 
 import base64
+import os
 from collections.abc import Mapping
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit, urlunsplit
 
 import requests
 
@@ -31,7 +32,7 @@ class DstackClient:
         timeout: float = 30.0,
         session: requests.Session | None = None,
     ) -> None:
-        self.server_url = server_url.rstrip("/")
+        self.server_url = apply_localhost_alias(server_url.rstrip("/"))
         self.project = project
         self._token = token
         self._timeout = timeout
@@ -145,6 +146,23 @@ class DstackClient:
         if url.startswith("http://") or url.startswith("https://"):
             return url.rstrip("/") + "/"
         return f"{self.server_url}/{url.strip('/')}/"
+
+
+def apply_localhost_alias(url: str) -> str:
+    """Point loopback URLs at the host when Maestro runs in a container.
+
+    A dstack server on the Mac answers on 127.0.0.1, which inside the
+    controller container is the container itself. MAESTRO_LOCALHOST_ALIAS
+    (set by the controller image) names the host instead.
+    """
+    alias = os.environ.get("MAESTRO_LOCALHOST_ALIAS", "").strip()
+    if not alias:
+        return url
+    parts = urlsplit(url)
+    if parts.hostname not in ("127.0.0.1", "localhost", "::1"):
+        return url
+    netloc = alias if parts.port is None else f"{alias}:{parts.port}"
+    return urlunsplit(parts._replace(netloc=netloc))
 
 
 def _error_detail(response: requests.Response) -> tuple[str, str | None]:

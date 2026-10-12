@@ -199,6 +199,14 @@ class DstackClientTests(unittest.TestCase):
         lines = self.client.poll_logs("maestro-worker", "sub-1")
         self.assertEqual(lines[0]["message"], "[maestro-worker] building venv")
 
+    def test_localhost_alias_for_containers(self):
+        os.environ["MAESTRO_LOCALHOST_ALIAS"] = "host.docker.internal"
+        self.addCleanup(os.environ.pop, "MAESTRO_LOCALHOST_ALIAS", None)
+        client = DstackClient("http://127.0.0.1:3000", "main", "t", session=self.fake)
+        self.assertEqual(client.server_url, "http://host.docker.internal:3000")
+        remote = DstackClient("https://sky.dstack.ai", "main", "t", session=self.fake)
+        self.assertEqual(remote.server_url, "https://sky.dstack.ai")
+
     def test_service_url_is_absolute(self):
         url = self.client.service_base_url({"service": {"url": "/proxy/services/main/w/"}})
         self.assertEqual(url, "http://127.0.0.1:3000/proxy/services/main/w/")

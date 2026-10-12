@@ -123,3 +123,4 @@ docs/development/*
 
 # Build context copy made by .github/workflows/remote-worker-image.yml
 docker/remote-worker/requirements.txt
+docker/controller/data/

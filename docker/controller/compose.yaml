@@ -1,0 +1,23 @@
+# Maestro controller on a Mac: UI and API locally, generations on the remote
+# GPU worker (Settings → Remote GPU).
+#
+#   docker compose -f docker/controller/compose.yaml up -d --build
+#   open http://localhost:7860
+services:
+  maestro:
+    build:
+      context: ../..
+      dockerfile: docker/controller/Dockerfile
+    image: maestro-controller:local
+    # decord has no linux/arm64 build; Rosetta runs the amd64 image.
+    platform: linux/amd64
+    ports:
+      - "127.0.0.1:${MAESTRO_PORT:-7860}:7860"
+    volumes:
+      - ${MAESTRO_DATA_DIR:-./data}:/data
+      # Lets "Import ~/.dstack" work; localhost URLs in it are rewritten
+      # to host.docker.internal inside the container.
+      - ${HOME}/.dstack:/root/.dstack:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped

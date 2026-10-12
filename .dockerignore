@@ -1,0 +1,14 @@
+.git
+**/__pycache__
+**/*.pyc
+**/node_modules
+ui/dist
+app/env
+app/ckpts
+app/outputs
+app/uploads
+app/settings
+app/loras
+app/wgp_config.json
+docker/controller/data
+docker/remote-worker/requirements.txt
