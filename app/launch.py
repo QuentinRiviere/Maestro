@@ -164,22 +164,11 @@ from models.minimax_h3.turbo import (
 print(f"[Maestro] WanGP loaded: {len(wgp.displayed_model_types)} models available")
 
 from inference import BackendRegistry, LocalWgpBackend, TaskRequest
-from inference.comfy.recipes import ALL_RECIPES as COMFY_RECIPES
-from inference.configure import register_configured_backends
 
 # Where each validated task runs. Routing is read from
 # wgp.server_config["inference"]; see inference/registry.py.
 _inference_backends = BackendRegistry()
 _inference_backends.register("local", lambda: LocalWgpBackend(wgp))
-_remote_backend_names = register_configured_backends(
-    _inference_backends,
-    wgp.server_config,
-    comfy_recipes=COMFY_RECIPES,
-    # wgp.save_path is locked to the job's output dir in _run_generation.
-    save_dir=lambda: wgp.save_path,
-)
-if _remote_backend_names:
-    print(f"[Maestro] Remote inference backends: {', '.join(_remote_backend_names)}")
 
 # Optional private HTTPS + closed-app notification services. Their state is
 # stored under app/settings (already gitignored), never in a Maestro cloud
