@@ -914,6 +914,46 @@ export interface PipelineStatus {
    *  active model (e.g. Flux 2 Dev LoRA on Klein 9B). The chat renders
    *  these inline so users see why some selected LoRAs weren't applied. */
   lora_warnings?: string[]
+  /** Read-only AI quality review (video LLM), when one was run. */
+  video_review?: VideoReview | null
+}
+
+export interface VideoReviewIssue {
+  at_sec: number | null
+  severity: 'minor' | 'major' | 'critical'
+  fixable_by: 'retake_segment' | 'new_seed' | 'prompt_revision' | 'new_start_image' | 'none_model_limit'
+  description: string
+}
+
+export interface VideoReviewShot {
+  index: number
+  start_sec: number | null
+  end_sec: number | null
+  score?: number
+  scores?: Record<string, number | null>
+  issues?: VideoReviewIssue[]
+  action?: 'accept' | 'retake_segment' | 'regenerate' | 'regenerate_start_image'
+  retake_range_sec?: [number, number] | null
+  revised_prompt_hint?: string | null
+  summary?: string
+  error?: string
+}
+
+export interface VideoReview {
+  status: 'running' | 'completed' | 'failed'
+  model?: string
+  score?: number | null
+  cost_usd?: number
+  error?: string
+  shots: VideoReviewShot[]
+}
+
+export async function requestPipelineReview(pid: string): Promise<void> {
+  const res = await fetch(`${BASE}/api/v1/director/pipeline/${encodeURIComponent(pid)}/review`, { method: 'POST' })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Review failed to start' }))
+    throw new Error(err.detail || 'Review failed to start')
+  }
 }
 
 export async function startPipeline(params: Record<string, unknown>): Promise<{ pipeline_id: string }> {

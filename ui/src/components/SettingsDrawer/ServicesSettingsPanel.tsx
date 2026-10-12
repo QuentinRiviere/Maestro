@@ -739,6 +739,41 @@ export function ServicesSettingsPanel() {
           Optional. Increases rate limits and enables access to restricted models.
         </p>
 
+        <div>
+          <label className="flex items-start gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={Boolean(servicesConfig.director_video_review)}
+              disabled={!servicesConfig.fal_api_key_set}
+              onChange={e => updateConfig({ director_video_review: e.target.checked })}
+              className="accent-accent-blue mt-0.5"
+            />
+            <span>
+              <span className="text-[11px] text-text-primary block">Review Director projects with AI</span>
+              <span className="text-[10px] text-text-muted block leading-snug">
+                {servicesConfig.fal_api_key_set
+                  ? 'After each finished project, a video-capable LLM (through fal.ai) scores every shot against its plan. Advisory only; about one cent per shot.'
+                  : 'Needs a fal.ai API key.'}
+              </span>
+            </span>
+          </label>
+          {servicesConfig.director_video_review && (
+            <input
+              type="text"
+              defaultValue={servicesConfig.director_video_review_model || ''}
+              placeholder="google/gemini-3.8-flash"
+              onBlur={e => {
+                const value = e.target.value.trim()
+                if (value !== (servicesConfig.director_video_review_model || '')) {
+                  void updateConfig({ director_video_review_model: value })
+                }
+              }}
+              className="mt-2 w-full bg-bg-tertiary border border-border rounded-lg px-3 py-1.5 text-xs text-text-primary focus:outline-none focus:border-accent-blue"
+              aria-label="Video review model"
+            />
+          )}
+        </div>
+
         {servicesConfig.r2_configured && (
           <div>
             <label className="text-[11px] text-text-muted uppercase tracking-wider mb-1.5 block">

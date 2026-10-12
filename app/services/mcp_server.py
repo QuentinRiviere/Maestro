@@ -351,6 +351,11 @@ class MaestroMcp:
                  _schema({"pipeline_id": _STR, "clip_plans": {"type": "array", "items": {"type": "object"}}},
                          ["pipeline_id"]),
                  self._director_continue),
+            Tool("director_review",
+                 "Run the read-only AI quality review (video LLM through fal.ai) on a finished Director "
+                 "project: a score, issues and a suggested fix per shot. Costs about one cent per shot. "
+                 "Read the result in director_status.video_review.",
+                 _schema({"pipeline_id": _STR}, ["pipeline_id"]), self._director_review),
             Tool("director_stop", "Stop a running Director project.",
                  _schema({"pipeline_id": _STR}, ["pipeline_id"]), self._director_stop, destructive=True),
             Tool("list_director_projects", "Saved Director projects.",
@@ -574,6 +579,10 @@ class MaestroMcp:
         body = {"clip_plans": args["clip_plans"]} if args.get("clip_plans") else None
         kwargs: dict[str, Any] = {"json": body} if body else {}
         return await self._api("POST", f"/api/v1/director/pipeline/{quote(pid, safe='')}/continue", **kwargs)
+
+    async def _director_review(self, args: dict[str, Any]) -> dict[str, Any]:
+        pid = _required(args, "pipeline_id")
+        return await self._api("POST", f"/api/v1/director/pipeline/{quote(pid, safe='')}/review")
 
     async def _director_stop(self, args: dict[str, Any]) -> dict[str, Any]:
         pid = _required(args, "pipeline_id")

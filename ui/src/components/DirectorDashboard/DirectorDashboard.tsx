@@ -3,6 +3,7 @@ import { X, ChevronDown, ChevronRight, Play, ImageIcon, Check, AlertTriangle, Cl
 import { useStore } from '../../stores/useStore'
 import { getFileUrl, updateClipPrompt } from '../../api/client'
 import type { PipelineClipState, SavedPipelineState } from '../../types'
+import { QualityReviewPanel } from './QualityReviewPanel'
 
 /** Safely coerce any value to a displayable string */
 function safeStr(val: unknown): string {
@@ -889,6 +890,12 @@ function DirectorDashboardInner() {
               <h3 className="text-[11px] text-text-secondary uppercase tracking-wider font-medium mb-2">LLM Planning Log</h3>
               <LlmLogPanel pipeline={selectedPipeline} />
             </div>
+
+            {/* AI quality review (advisory, read-only) */}
+            <QualityReviewPanel
+              pipelineId={selectedPipeline.pipeline_id}
+              canReview={selectedPipeline.status === 'completed' && !repairBusy}
+            />
 
             {/* Clip Grid */}
             <div>

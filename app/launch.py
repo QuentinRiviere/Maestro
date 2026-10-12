@@ -463,8 +463,96 @@ def _on_generation_job_terminal(job: dict, status: str) -> None:
         )
 
 
+_director_reviews_running: set[str] = set()
+_director_reviews_lock = threading.Lock()
+
+
+def _director_review_settings() -> tuple[bool, str]:
+    from services.director.video_judge import DEFAULT_MODEL
+
+    services = wgp.server_config.get("services", {})
+    return (bool(services.get("director_video_review", False)),
+            str(services.get("director_video_review_model") or DEFAULT_MODEL))
+
+
+def _director_state_dir(pid: str, base: str) -> str | None:
+    from services.director_pipeline import _find_pipeline_state_file
+
+    path = _find_pipeline_state_file(pid, base)
+    return os.path.dirname(path) if path else None
+
+
+def _start_director_review(pid: str, base: str, *, wait_for_save: bool = False) -> bool:
+    """Review a finished Director project in the background (read-only)."""
+    with _director_reviews_lock:
+        if pid in _director_reviews_running:
+            return False
+        _director_reviews_running.add(pid)
+    threading.Thread(target=_run_director_review, args=(pid, base, wait_for_save),
+                     name=f"director-review-{pid}", daemon=True).start()
+    return True
+
+
+def _run_director_review(pid: str, base: str, wait_for_save: bool) -> None:
+    import base64
+
+    from services import cloud_image
+    from services.director.video_judge import review_clips, save_review
+    from services.director_pipeline import load_pipeline_state
+    from services.remote_worker.job_forwarder import _sha256
+
+    state_dir, uploaded, store = None, [], None
+    try:
+        state = None
+        # The terminal callback fires just before the project is saved.
+        for _ in range(60 if wait_for_save else 1):
+            state_dir = _director_state_dir(pid, base)
+            state = load_pipeline_state(base, pid) if state_dir else None
+            if state and state.get("status") == "completed":
+                break
+            time.sleep(1)
+        if not state or not state_dir:
+            raise RuntimeError("Saved Director project not found")
+        _, model = _director_review_settings()
+        fal_key = cloud_image.provider_api_key("fal", wgp.server_config.get("services", {}))
+        if not fal_key:
+            raise RuntimeError("The video judge needs a fal.ai API key (Settings → Services)")
+        store = _lora_r2_store()
+
+        def publish(path: str) -> str:
+            if store is None:
+                with open(path, "rb") as handle:
+                    return "data:video/mp4;base64," + base64.b64encode(handle.read()).decode()
+            key = store.asset_key(_sha256(path), f"review_{pid}_{os.path.basename(path)}")
+            store.upload(path, key)
+            uploaded.append(key)
+            return store.presigned_url(key, expires_seconds=3600)
+
+        print(f"[Director review] {pid}: judging {len(state.get('clips') or [])} shot(s) with {model}")
+        review = review_clips(state.get("clips") or [], state.get("output_files") or [], state_dir,
+                              fal_key=fal_key, publish=publish, model=model,
+                              on_progress=lambda partial: save_review(state_dir, pid, partial))
+        save_review(state_dir, pid, review)
+        print(f"[Director review] {pid}: {review.get('status')} score={review.get('score')} "
+              f"cost=${review.get('cost_usd')}")
+    except Exception as error:
+        print(f"[Director review] {pid}: {error}")
+        if state_dir:
+            save_review(state_dir, pid, {"status": "failed", "error": str(error), "shots": []})
+    finally:
+        for key in uploaded:
+            try:
+                store.delete(key)
+            except Exception:
+                pass
+        with _director_reviews_lock:
+            _director_reviews_running.discard(pid)
+
+
 def _on_director_pipeline_terminal(pipeline: dict, status: str) -> None:
     pipeline_id = str(pipeline.get("id") or "director")
+    if status == "completed" and _director_review_settings()[0]:
+        _start_director_review(pipeline_id, pipeline.get("out_dir") or wgp.save_path, wait_for_save=True)
     if status == "completed":
         _play_host_completion_sound()
         _web_push.dispatch(
@@ -7858,6 +7946,8 @@ def get_services_config():
         "anthropic_api_key_set": bool(services.get("anthropic_api_key", "")),
         **_cloud_image_key_fields(services),
         "lora_download_storage": services.get("lora_download_storage", "local"),
+        "director_video_review": bool(services.get("director_video_review", False)),
+        "director_video_review_model": services.get("director_video_review_model") or "",
         "r2_configured": _lora_r2_store() is not None,
         # Director v2 (layered architecture: structured shot planning,
         # mode-specific renderers, prompt validation) is now the default
@@ -7942,6 +8032,7 @@ async def update_services_config(request: Request):
         "enhance_fidelity_retries", "enhance_fidelity_auto_continue",
         "google_api_key", "llm_remote_api_key", "openai_api_key", "openrouter_api_key",
         "anthropic_api_key", "fal_api_key", "replicate_api_key", "lora_download_storage",
+        "director_video_review", "director_video_review_model",
         "use_director_v2", "nsfw_mode", "nsfw_accepted_at", "director_prompt_polish",
         "civitai_api_key", "voice_reference_enabled", "ltx_progressive_pipeline",
         "show_experimental", "auto_performance", "storage_allow_linked_removal",
@@ -7959,6 +8050,10 @@ async def update_services_config(request: Request):
             continue
         if key == "enhance_fidelity_retries" and (type(value) is not int or not 0 <= value <= 5):
             raise HTTPException(status_code=400, detail="Fidelity retries must be a whole number from 0 to 5.")
+        if key == "director_video_review" and type(value) is not bool:
+            raise HTTPException(status_code=400, detail="director_video_review must be true or false.")
+        if key == "director_video_review_model" and (not isinstance(value, str) or len(value) > 200):
+            raise HTTPException(status_code=400, detail="director_video_review_model must be a model ID.")
         if key == "lora_download_storage":
             from services.lora_r2 import STORAGE_CHOICES
             if value not in STORAGE_CHOICES:
@@ -10582,6 +10677,11 @@ def director_pipeline_status(pid: str):
     p = get_pipeline_status(pid, base)
     if not p:
         raise HTTPException(status_code=404, detail="Pipeline not found")
+    from services.director.video_judge import load_review
+    review_dir = _director_state_dir(pid, p.get("out_dir") or base) or p.get("out_dir")
+    p["video_review"] = load_review(review_dir, pid) if review_dir else None
+    if p["video_review"] is not None and pid in _director_reviews_running:
+        p["video_review"]["status"] = "running"
     # Don't send immutable execution params or durable long-form planning
     # checkpoints on every two-second UI poll. A one-hour screenplay can make
     # the private checkpoint several megabytes even though the browser only
@@ -10592,6 +10692,22 @@ def director_pipeline_status(pid: str):
             p.pop(key, None)
     p.pop("out_dir", None)
     return p
+
+
+@api.post("/api/v1/director/pipeline/{pid}/review")
+def director_pipeline_review(pid: str):
+    """Run the read-only AI quality review on a finished Director project."""
+    from services import cloud_image
+
+    base = wgp.server_config.get("save_path", "outputs")
+    state_dir = _director_state_dir(pid, base)
+    if not state_dir:
+        raise HTTPException(status_code=404, detail="Saved Director project not found")
+    if not cloud_image.provider_api_key("fal", wgp.server_config.get("services", {})):
+        raise HTTPException(status_code=400, detail="The video judge needs a fal.ai API key (Settings → Services)")
+    if not _start_director_review(pid, base):
+        raise HTTPException(status_code=409, detail="A review of this project is already running")
+    return {"status": "running", "pipeline_id": pid}
 
 
 @api.post("/api/v1/director/pipeline/{pid}/continue")
