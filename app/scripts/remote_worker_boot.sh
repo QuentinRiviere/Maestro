@@ -37,7 +37,8 @@ BAKED_HASH="$(cat /opt/maestro/requirements.sha256 2>/dev/null || true)"
 CURRENT_HASH="$(sha256sum "${APP_DIR}/requirements.txt" | cut -d' ' -f1)"
 if [ "${BAKED_HASH}" != "${CURRENT_HASH}" ]; then
   log "requirements.txt differs from the image; installing the delta"
-  "${VENV}/bin/uv" pip install --python "${VENV}/bin/python" -r "${APP_DIR}/requirements.txt"
+  "${VENV}/bin/uv" pip install --python "${VENV}/bin/python" -r "${APP_DIR}/requirements.txt" \
+    --index-strategy unsafe-best-match
 else
   log "dependencies match the image"
 fi

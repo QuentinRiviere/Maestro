@@ -34,8 +34,10 @@ RUN python3 -m venv "$VIRTUAL_ENV" \
  && pip install --upgrade pip uv \
  && uv pip install torch==2.10.0 torchvision==0.25.0 torchaudio==2.10.0 --index-url "$TORCH_INDEX"
 
+# Same resolution strategy as install.js: requirements.txt mixes an extra
+# index with PyPI pins (e.g. onnxruntime-gpu).
 COPY requirements.txt /opt/maestro/requirements.txt
-RUN uv pip install -r /opt/maestro/requirements.txt \
+RUN uv pip install -r /opt/maestro/requirements.txt --index-strategy unsafe-best-match \
  && sha256sum /opt/maestro/requirements.txt | cut -d' ' -f1 > /opt/maestro/requirements.sha256
 
 WORKDIR /workspace
