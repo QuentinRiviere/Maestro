@@ -25596,6 +25596,7 @@ def _run_remote_generation(job: dict, raw_params: dict, *, finalize: bool) -> bo
     try:
         result = _remote_job_forwarder.run(
             raw_params,
+            job_id=str(job.get("id") or ""),
             out_dir=out_dir,
             resolve_lora=wgp.resolve_lora_path,
             update=lambda **updates: update_job(job, **updates),
@@ -25690,6 +25691,45 @@ async def worker_file_upload(request: Request, kind: str, name: str, sha256: str
     return {"path": target}
 
 
+def _worker_r2_store():
+    from services.remote_worker.r2_store import R2Store
+
+    store = R2Store.from_environment()
+    if store is None:
+        raise HTTPException(status_code=409, detail="R2 is not configured on this worker")
+    return store
+
+
+@api.post("/api/v1/worker/files/fetch")
+async def worker_file_fetch(request: Request):
+    """Pull an input the controller already put in R2 (content-addressed)."""
+    _require_worker_process()
+    import hashlib
+
+    from services.remote_worker.r2_store import R2StoreError
+
+    body = await request.json()
+    kind, name, sha256 = body.get("kind"), body.get("name"), body.get("sha256")
+    model_type = body.get("model_type") or ""
+    target = _worker_file_target(kind, name, sha256, model_type)
+    if os.path.isfile(target) and os.path.getsize(target) > 0:
+        return {"path": target}
+    store = _worker_r2_store()
+    key = store.asset_key(sha256, name)
+    try:
+        await asyncio.to_thread(store.download, key, target)
+    except R2StoreError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    digest = hashlib.sha256()
+    with open(target, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    if digest.hexdigest() != sha256:
+        os.remove(target)
+        raise HTTPException(status_code=502, detail=f"sha256 mismatch for {key}")
+    return {"path": target}
+
+
 @api.post("/api/v1/worker/jobs")
 async def worker_submit_job(request: Request):
     """Queue already-prepared params verbatim (no planning, no enhancement)."""
@@ -25752,6 +25792,35 @@ def worker_job_status(job_id: str):
     snapshot["files"] = files
     snapshot["sidecars"] = sidecars
     return JSONResponse(json.loads(json.dumps(snapshot, default=str)))
+
+
+@api.post("/api/v1/worker/jobs/{job_id}/publish")
+async def worker_job_publish(job_id: str, request: Request):
+    """Upload a finished job's outputs and sidecars to R2; return their keys."""
+    _require_worker_process()
+    from services.remote_worker.r2_store import R2StoreError
+
+    job = _jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown job")
+    if job.get("status") != "completed":
+        raise HTTPException(status_code=409, detail="Job is not completed")
+    body = await request.json()
+    label = str((body or {}).get("job_id") or job_id)
+    store = _worker_r2_store()
+    files, sidecars = _worker_job_files(job)
+    out_dir = job.get("out_dir") or wgp.save_path
+    objects = {}
+    try:
+        for name in files + sidecars:
+            path = os.path.join(out_dir, name)
+            if os.path.isfile(path):
+                objects[name] = await asyncio.to_thread(
+                    store.upload, path, store.output_key(label, name), skip_if_exists=False,
+                )
+    except R2StoreError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    return {"objects": objects}
 
 
 @api.get("/api/v1/worker/jobs/{job_id}/files/{name}")

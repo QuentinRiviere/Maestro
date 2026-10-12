@@ -482,14 +482,14 @@ export function RemoteWorkerPanel() {
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <HardDrive size={14} className="text-accent-blue" />
-            <div className="text-xs font-medium text-text-primary">Checkpoint cache (R2)</div>
+            <div className="text-xs font-medium text-text-primary">Cloudflare R2 storage</div>
           </div>
           <span className={`text-[9px] ${merged.r2_configured ? 'text-emerald-300' : 'text-text-muted'}`}>
             {merged.r2_configured ? 'Enabled' : 'Off'}
           </span>
         </div>
         <div className="text-[9px] leading-relaxed text-text-muted">
-          Weights the worker downloads are copied to your Cloudflare R2 bucket, then pulled from there on the next boot. Credentials are sent to dstack as project secrets, never written in the run spec.
+          Your Cloudflare R2 bucket carries model weights (cached between boots), reference assets (uploaded once, by content hash) and generated videos (kept under outputs/ as a remote copy of the gallery). Credentials reach the worker as dstack project secrets, never in the run spec.
         </div>
         <Field locked={isLocked('r2_account_id')} label="Account ID" value={merged.r2_account_id} onChange={value => update('r2_account_id', value)} />
         {secretField('r2_access_key_id', 'Access key ID', merged.r2_access_key_id_set)}

@@ -9,6 +9,8 @@
 # LTX-2.5 INT8 ConvRot checkpoints require that path; older MMGP releases
 # produce corrupted/noise video whenever an otherwise-compatible LoRA is active.
 mmgp==3.8.2
+# Remote GPU worker: R2 (S3 API) transfer of reference assets and outputs.
+boto3==1.43.111
 
 # Optional CUDA acceleration with a guarded fallback on CUDA 12 runtimes.
 comfy-kitchen==0.2.35

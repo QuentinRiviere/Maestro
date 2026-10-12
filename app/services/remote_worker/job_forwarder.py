@@ -6,9 +6,13 @@ this runs), the gallery, sidecars and notifications. The worker is Maestro
 itself, so the job runs there through the very same ``_run_generation``.
 
 Steps: make sure the worker is ready (auto-start), preload the model through
-the worker's download route (R2 cache aware), upload every local file the
+the worker's download route (R2 cache aware), transfer every local file the
 params reference plus the LoRAs, submit, mirror progress and cancellation,
-then download the outputs and their sidecars into the local output folder.
+then bring the outputs and their sidecars into the local output folder.
+
+With R2 configured, inputs go controller -> R2 -> worker (content-addressed,
+uploaded once) and outputs worker -> R2 -> controller, where they stay as a
+remote copy. Without R2, files travel through the dstack service proxy.
 """
 from __future__ import annotations
 
@@ -24,6 +28,7 @@ from urllib.parse import quote
 import requests
 
 from services.remote_worker.manager import RemoteWorkerManager
+from services.remote_worker.r2_store import R2Store
 
 
 log = logging.getLogger("maestro.remote_worker.forwarder")
@@ -51,6 +56,8 @@ class RemoteJobResult:
     output_files: list[str]
     clip_output_files: dict[str, str] = field(default_factory=dict)
     join_output_file: str | None = None
+    # Local output name -> R2 key of its retained remote copy.
+    r2_objects: dict[str, str] = field(default_factory=dict)
 
 
 class WorkerClient:
@@ -97,6 +104,20 @@ class WorkerClient:
             )
         return str(response.json()["path"])
 
+    def fetch_from_r2(self, *, kind: str, name: str, sha256: str, model_type: str = "") -> str | None:
+        """Ask the worker to pull an input from R2; None when it has no R2."""
+        response = self._session.post(
+            self._url("api/v1/worker/files/fetch"),
+            headers=self._headers,
+            json={"kind": kind, "name": name, "sha256": sha256, "model_type": model_type},
+            timeout=600,
+        )
+        if response.status_code == 409:
+            return None
+        if not response.ok:
+            raise RemoteJobError(f"Worker R2 fetch of {name} failed: HTTP {response.status_code} {response.text[:300]}")
+        return str(response.json()["path"])
+
     def download(self, path: str, dest: str) -> None:
         part = dest + ".part"
         with self._session.get(self._url(path), headers=self._headers, timeout=600, stream=True) as response:
@@ -132,11 +153,13 @@ class RemoteJobForwarder:
         manager: RemoteWorkerManager,
         *,
         client_factory: Callable[[str, str], WorkerClient] = WorkerClient,
+        store_factory: Callable[[Any], R2Store | None] = R2Store.from_settings,
         poll_interval: float = 2.0,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self._manager = manager
         self._client_factory = client_factory
+        self._store_factory = store_factory
         self._poll_interval = poll_interval
         self._sleep = sleep
 
@@ -144,6 +167,7 @@ class RemoteJobForwarder:
         self,
         params: Mapping[str, Any],
         *,
+        job_id: str = "",
         out_dir: str,
         resolve_lora: Callable[[str, str], str | None],
         update: Callable[..., Any],
@@ -164,15 +188,18 @@ class RemoteJobForwarder:
             if is_cancelled():
                 raise RemoteJobCancelled()
             client = self._client_factory(str(status["service_url"]), self._manager.settings.token)
+            store = self._store_factory(self._manager.settings)
 
             self._preload(client, model_type, update=update, is_cancelled=is_cancelled)
             remote_params = self._transfer_inputs(
-                client, params, model_type, resolve_lora=resolve_lora, update=update,
+                client, store, params, model_type, resolve_lora=resolve_lora, update=update,
             )
             update(phase="Remote worker", message="Submitting to the remote worker…")
             remote_id = str(client.post_json("api/v1/worker/jobs", {"params": remote_params})["job_id"])
             remote = self._follow(client, remote_id, update=update, is_cancelled=is_cancelled)
-            return self._fetch_outputs(client, remote_id, remote, out_dir=out_dir, update=update)
+            return self._fetch_outputs(
+                client, store, remote_id, remote, job_id=job_id or remote_id, out_dir=out_dir, update=update,
+            )
         finally:
             self._manager.job_finished()
 
@@ -201,14 +228,28 @@ class RemoteJobForwarder:
             update(phase="Remote worker", message=phase)
             self._sleep(max(self._poll_interval, 3.0))
 
-    def _transfer_inputs(self, client, params, model_type, *, resolve_lora, update) -> dict[str, Any]:
+    def _send_file(self, client, store, path: str, *, kind: str, model_type: str = "", update) -> str:
+        """Put one local file on the worker, through R2 when available."""
+        name = os.path.basename(path)
+        sha = _sha256(path)
+        if store is not None:
+            key = store.asset_key(sha, name)
+            if not store.exists(key):
+                update(phase="Remote worker", message=f"Uploading {name} to R2…")
+                store.upload(path, key, skip_if_exists=False)
+            remote = client.fetch_from_r2(kind=kind, name=name, sha256=sha, model_type=model_type)
+            if remote is not None:
+                return remote
+        update(phase="Remote worker", message=f"Uploading {name}…")
+        return client.upload_file(path, kind=kind, sha256=sha, model_type=model_type)
+
+    def _transfer_inputs(self, client, store, params, model_type, *, resolve_lora, update) -> dict[str, Any]:
         uploaded: dict[str, str] = {}
 
         def upload(path: str) -> str:
             real = os.path.realpath(path)
             if real not in uploaded:
-                update(phase="Remote worker", message=f"Uploading {os.path.basename(path)}…")
-                uploaded[real] = client.upload_file(real, kind="input", sha256=_sha256(real))
+                uploaded[real] = self._send_file(client, store, real, kind="input", update=update)
             return uploaded[real]
 
         def rewrite(value: Any, key: str = "") -> Any:
@@ -230,8 +271,7 @@ class RemoteJobForwarder:
                 continue  # URLs are downloaded by the worker itself.
             local = resolve_lora(model_type, name)
             if local and os.path.isfile(local):
-                update(phase="Remote worker", message=f"Uploading LoRA {os.path.basename(local)}…")
-                client.upload_file(local, kind="lora", sha256=_sha256(local), model_type=model_type)
+                self._send_file(client, store, local, kind="lora", model_type=model_type, update=update)
         return remote_params
 
     def _follow(self, client, remote_id: str, *, update, is_cancelled) -> Mapping[str, Any]:
@@ -268,20 +308,35 @@ class RemoteJobForwarder:
                 update(**{k: remote[k] for k in _MIRRORED_FIELDS if k in remote})
             self._sleep(self._poll_interval)
 
-    def _fetch_outputs(self, client, remote_id, remote, *, out_dir, update) -> RemoteJobResult:
+    def _fetch_outputs(self, client, store, remote_id, remote, *, job_id, out_dir, update) -> RemoteJobResult:
         os.makedirs(out_dir, exist_ok=True)
+        objects: dict[str, str] = {}
+        if store is not None:
+            update(phase="Remote worker", message="Saving outputs to R2…")
+            try:
+                published = client.post_json(
+                    f"api/v1/worker/jobs/{remote_id}/publish", {"job_id": job_id}, timeout=900,
+                )
+                objects = dict((published or {}).get("objects") or {})
+            except RemoteJobError as exc:
+                log.warning("R2 publish of %s failed, using the worker proxy: %s", remote_id, exc)
+
+        def fetch(name: str, dest: str) -> None:
+            key = objects.get(name)
+            if store is not None and key:
+                store.download(key, dest)
+            else:
+                client.download(f"api/v1/worker/jobs/{remote_id}/files/{quote(name)}", dest)
+
         renamed: dict[str, str] = {}
         for name in remote.get("files") or []:
             update(phase="Remote worker", message=f"Downloading {name}…")
             local_name = _unique_local_name(out_dir, name)
-            client.download(f"api/v1/worker/jobs/{remote_id}/files/{quote(name)}", os.path.join(out_dir, local_name))
+            fetch(name, os.path.join(out_dir, local_name))
             renamed[name] = local_name
             sidecar = f"{os.path.splitext(name)[0]}.json"
             if sidecar in (remote.get("sidecars") or []):
-                client.download(
-                    f"api/v1/worker/jobs/{remote_id}/files/{quote(sidecar)}",
-                    os.path.join(out_dir, f"{os.path.splitext(local_name)[0]}.json"),
-                )
+                fetch(sidecar, os.path.join(out_dir, f"{os.path.splitext(local_name)[0]}.json"))
         output_files = [renamed[n] for n in remote.get("output_files") or [] if n in renamed]
         clip_files = {
             str(k): renamed[v] for k, v in (remote.get("clip_output_files") or {}).items() if v in renamed
@@ -291,6 +346,7 @@ class RemoteJobForwarder:
             output_files=output_files or list(renamed.values()),
             clip_output_files=clip_files,
             join_output_file=renamed.get(join) if join else None,
+            r2_objects={renamed[n]: k for n, k in objects.items() if n in renamed},
         )
 
 
