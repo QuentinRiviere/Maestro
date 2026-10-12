@@ -27,6 +27,7 @@ from services.remote_worker.settings import (
     SECRET_FIELDS,
     RemoteWorkerSettings,
     RemoteWorkerSettingsStore,
+    env_overrides,
     is_masked,
     read_local_dstack_config,
 )
@@ -52,9 +53,12 @@ class RemoteWorkerManager:
         clock: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
         proxy_check: Callable[[str, str], bool] | None = None,
+        environ: Mapping[str, str] | None = None,
     ) -> None:
         self._store = store
-        self._settings = store.load()
+        self._env = env_overrides(environ)
+        self._stored = store.load()
+        self._settings = self._effective(self._stored)
         self._client_factory = client_factory or (
             lambda s: DstackClient(s.server_url, s.project, s.token)
         )
@@ -76,23 +80,40 @@ class RemoteWorkerManager:
 
     # ── settings ───────────────────────────────────────────────────────────
 
+    def _effective(self, stored: RemoteWorkerSettings) -> RemoteWorkerSettings:
+        """Stored settings with the environment overrides applied on top."""
+        effective = RemoteWorkerSettings.from_mapping(vars(stored))
+        effective.update(self._env)
+        return effective
+
+    @property
+    def env_locked(self) -> frozenset[str]:
+        return frozenset(self._env)
+
     @property
     def settings(self) -> RemoteWorkerSettings:
         with self._lock:
             return self._settings
 
+    def public_settings(self) -> dict[str, Any]:
+        return self.settings.public(self.env_locked)
+
     def update_settings(self, data: Mapping[str, Any]) -> dict[str, Any]:
         with self._lock:
-            updated = RemoteWorkerSettings.from_mapping(vars(self._settings))
+            updated = RemoteWorkerSettings.from_mapping(vars(self._stored))
             payload = dict(data)
             # The UI sends masked secrets back unchanged; keep the stored ones.
             for name in SECRET_FIELDS:
                 if is_masked(payload.get(name)):
                     payload.pop(name)
+            # Environment-managed values are never stored nor overridden.
+            for name in self._env:
+                payload.pop(name, None)
             updated.update(payload)
             self._store.save(updated)
-            self._settings = updated
-            return updated.public()
+            self._stored = updated
+            self._settings = self._effective(updated)
+            return self.public_settings()
 
     def import_local_dstack_config(self) -> dict[str, Any]:
         found = read_local_dstack_config()

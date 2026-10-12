@@ -84,8 +84,9 @@ class RemoteWorkerSettings:
                 changed.append(item.name)
         return changed
 
-    def public(self) -> dict[str, Any]:
+    def public(self, env_locked: frozenset[str] = frozenset()) -> dict[str, Any]:
         payload = asdict(self)
+        payload["env_locked"] = sorted(env_locked)
         for name in SECRET_FIELDS:
             payload[name] = _mask(getattr(self, name))
             payload[f"{name}_set"] = bool(getattr(self, name))
@@ -94,8 +95,14 @@ class RemoteWorkerSettings:
         return payload
 
 
+ENV_PREFIX = "MAESTRO_REMOTE_"
+_FALSE_STRINGS = {"", "0", "false", "no", "off"}
+
+
 def _coerce(name: str, value: Any, current: Any) -> Any:
     if isinstance(current, bool):
+        if isinstance(value, str):
+            return value.strip().lower() not in _FALSE_STRINGS
         return bool(value)
     if isinstance(current, int):
         number = int(value)
@@ -122,6 +129,21 @@ def _mask(secret: str) -> str:
     if not secret:
         return ""
     return f"{secret[:4]}…{secret[-4:]}" if len(secret) > 12 else "••••"
+
+
+def env_overrides(environ: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Settings fixed by ``MAESTRO_REMOTE_<FIELD>`` variables (e.g. in Docker).
+
+    They take precedence over stored values, are never written to the
+    settings file, and are read-only in the UI.
+    """
+    env = os.environ if environ is None else environ
+    names = {item.name for item in fields(RemoteWorkerSettings)}
+    return {
+        name: env[f"{ENV_PREFIX}{name.upper()}"]
+        for name in names
+        if f"{ENV_PREFIX}{name.upper()}" in env
+    }
 
 
 class RemoteWorkerSettingsStore:

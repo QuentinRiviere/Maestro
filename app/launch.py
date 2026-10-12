@@ -7114,7 +7114,7 @@ def _remote_worker_call(fn, *args, **kwargs):
 
 @api.get("/api/v1/remote-worker/settings")
 def get_remote_worker_settings():
-    return _remote_worker_call(lambda: _remote_worker.settings.public())
+    return _remote_worker_call(_remote_worker.public_settings)
 
 
 @api.put("/api/v1/remote-worker/settings")

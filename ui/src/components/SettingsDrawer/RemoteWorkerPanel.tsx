@@ -58,6 +58,7 @@ function Field({
   type = 'text',
   placeholder,
   hint,
+  locked = false,
 }: {
   label: string
   value: string | number
@@ -65,6 +66,7 @@ function Field({
   type?: 'text' | 'password' | 'number'
   placeholder?: string
   hint?: string
+  locked?: boolean
 }) {
   return (
     <label className="block space-y-1">
@@ -73,9 +75,11 @@ function Field({
         type={type}
         value={value}
         placeholder={placeholder}
+        disabled={locked}
         onChange={event => onChange(event.target.value)}
-        className="w-full rounded-md border border-border bg-bg-primary px-2 py-1.5 text-[11px] text-text-primary placeholder:text-text-muted focus:border-accent-blue focus:outline-none"
+        className="w-full rounded-md border border-border bg-bg-primary px-2 py-1.5 text-[11px] text-text-primary placeholder:text-text-muted focus:border-accent-blue focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
       />
+      {locked && <span className="block text-[9px] leading-relaxed text-amber-200">Set by environment</span>}
       {hint && <span className="block text-[9px] leading-relaxed text-text-muted">{hint}</span>}
     </label>
   )
@@ -134,6 +138,7 @@ export function RemoteWorkerPanel() {
     [settings, draft],
   )
   const dirty = Object.keys(draft).length > 0
+  const isLocked = (key: string) => Boolean(settings?.env_locked?.includes(key))
   const state: RemoteWorkerState = status?.state ?? 'not_configured'
 
   const videoModels = useMemo(
@@ -244,6 +249,7 @@ export function RemoteWorkerPanel() {
     stored: boolean,
   ) => (
     <Field
+      locked={isLocked(key)}
       label={label}
       type="password"
       value={draft[key] ?? ''}
@@ -356,17 +362,17 @@ export function RemoteWorkerPanel() {
           checked={merged.route_generations}
           onChange={checked => update('route_generations', checked)}
           label="Run generations on the remote worker"
-          description="Studio and Director jobs execute on the remote GPU; outputs come back to this computer's gallery."
-          disabled={!merged.configured}
+          description={isLocked('route_generations') ? 'Set by environment.' : "Studio and Director jobs execute on the remote GPU; outputs come back to this computer's gallery."}
+          disabled={!merged.configured || isLocked('route_generations')}
         />
         <Toggle
           checked={merged.auto_start}
           onChange={checked => update('auto_start', checked)}
           label="Start the worker automatically"
-          description="Clicking Generate deploys the worker when it is not running, then sends the job once it is ready."
-          disabled={!merged.configured}
+          description={isLocked('auto_start') ? 'Set by environment.' : 'Clicking Generate deploys the worker when it is not running, then sends the job once it is ready.'}
+          disabled={!merged.configured || isLocked('auto_start')}
         />
-        <Field
+        <Field locked={isLocked('idle_ttl_minutes')}
           label="Stop after idle (minutes)"
           type="number"
           value={merged.idle_ttl_minutes}
@@ -381,9 +387,9 @@ export function RemoteWorkerPanel() {
           <PlugZap size={14} className="text-accent-blue" />
           <div className="text-xs font-medium text-text-primary">dstack access</div>
         </div>
-        <Field label="Server URL" value={merged.server_url} onChange={value => update('server_url', value)} placeholder="http://127.0.0.1:3000" />
-        <Field label="Project" value={merged.project} onChange={value => update('project', value)} placeholder="main" />
-        <Field
+        <Field locked={isLocked('server_url')} label="Server URL" value={merged.server_url} onChange={value => update('server_url', value)} placeholder="http://127.0.0.1:3000" />
+        <Field locked={isLocked('project')} label="Project" value={merged.project} onChange={value => update('project', value)} placeholder="main" />
+        <Field locked={isLocked('token')}
           label="Token"
           type="password"
           value={draft.token ?? ''}
@@ -392,7 +398,10 @@ export function RemoteWorkerPanel() {
           hint="Stored on this computer only, in app/settings."
         />
         <div className="grid grid-cols-2 gap-2">
-          <ActionButton onClick={importDstack} disabled={busy !== null}>
+          <ActionButton
+            onClick={importDstack}
+            disabled={busy !== null || ['server_url', 'project', 'token'].every(isLocked)}
+          >
             <Download size={11} /> Import ~/.dstack
           </ActionButton>
           <ActionButton onClick={testConnection} disabled={busy !== null || !merged.configured || dirty}>
@@ -416,6 +425,7 @@ export function RemoteWorkerPanel() {
           <label className="block space-y-1">
             <span className="text-[10px] text-text-secondary">Fleet</span>
             <select
+              disabled={isLocked('fleet')}
               value={merged.fleet}
               onChange={event => update('fleet', event.target.value)}
               className="w-full rounded-md border border-border bg-bg-primary px-2 py-1.5 text-[11px] text-text-primary focus:border-accent-blue focus:outline-none"
@@ -425,13 +435,13 @@ export function RemoteWorkerPanel() {
             </select>
           </label>
         ) : (
-          <Field label="Fleet" value={merged.fleet} onChange={value => update('fleet', value)} hint="Test the connection to pick from your fleets." />
+          <Field locked={isLocked('fleet')} label="Fleet" value={merged.fleet} onChange={value => update('fleet', value)} hint="Test the connection to pick from your fleets." />
         )}
         <div className="grid grid-cols-2 gap-2">
-          <Field label="GPU" value={merged.gpu} onChange={value => update('gpu', value)} placeholder="48GB.." />
-          <Field label="Max price ($/h)" type="number" value={merged.max_price} onChange={value => update('max_price', Number(value))} />
-          <Field label="Max duration" value={merged.max_duration} onChange={value => update('max_duration', value)} placeholder="4h" />
-          <Field label="Disk" value={merged.disk} onChange={value => update('disk', value)} placeholder="200GB.." />
+          <Field locked={isLocked('gpu')} label="GPU" value={merged.gpu} onChange={value => update('gpu', value)} placeholder="48GB.." />
+          <Field locked={isLocked('max_price')} label="Max price ($/h)" type="number" value={merged.max_price} onChange={value => update('max_price', Number(value))} />
+          <Field locked={isLocked('max_duration')} label="Max duration" value={merged.max_duration} onChange={value => update('max_duration', value)} placeholder="4h" />
+          <Field locked={isLocked('disk')} label="Disk" value={merged.disk} onChange={value => update('disk', value)} placeholder="200GB.." />
         </div>
         <div className="text-[9px] leading-relaxed text-text-muted">
           Max duration and max price are enforced by dstack even if this computer is off.
@@ -446,19 +456,19 @@ export function RemoteWorkerPanel() {
         </button>
         {showAdvanced && (
           <div className="space-y-2">
-            <Field label="Repository" value={merged.repo_url} onChange={value => update('repo_url', value)} />
-            <Field label="Branch or tag" value={merged.repo_ref} onChange={value => update('repo_ref', value)} />
-            <Field label="Run name" value={merged.run_name} onChange={value => update('run_name', value)} />
-            <Field label="Container image" value={merged.image} onChange={value => update('image', value)} />
-            <Field
+            <Field locked={isLocked('repo_url')} label="Repository" value={merged.repo_url} onChange={value => update('repo_url', value)} />
+            <Field locked={isLocked('repo_ref')} label="Branch or tag" value={merged.repo_ref} onChange={value => update('repo_ref', value)} />
+            <Field locked={isLocked('run_name')} label="Run name" value={merged.run_name} onChange={value => update('run_name', value)} />
+            <Field locked={isLocked('image')} label="Container image" value={merged.image} onChange={value => update('image', value)} />
+            <Field locked={isLocked('registry_username')}
               label="Registry username"
               value={merged.registry_username}
               onChange={value => update('registry_username', value)}
               hint="Only while the GHCR image is private; use a token with read:packages."
             />
             {secretField('registry_token', 'Registry token', merged.registry_token_set)}
-            <Field label="Spot policy" value={merged.spot_policy} onChange={value => update('spot_policy', value)} placeholder="on-demand | spot | auto" />
-            <Field
+            <Field locked={isLocked('spot_policy')} label="Spot policy" value={merged.spot_policy} onChange={value => update('spot_policy', value)} placeholder="on-demand | spot | auto" />
+            <Field locked={isLocked('backends')}
               label="Backends"
               value={merged.backends.join(', ')}
               onChange={value => update('backends', value.split(',').map(part => part.trim()).filter(Boolean))}
@@ -481,12 +491,12 @@ export function RemoteWorkerPanel() {
         <div className="text-[9px] leading-relaxed text-text-muted">
           Weights the worker downloads are copied to your Cloudflare R2 bucket, then pulled from there on the next boot. Credentials are sent to dstack as project secrets, never written in the run spec.
         </div>
-        <Field label="Account ID" value={merged.r2_account_id} onChange={value => update('r2_account_id', value)} />
+        <Field locked={isLocked('r2_account_id')} label="Account ID" value={merged.r2_account_id} onChange={value => update('r2_account_id', value)} />
         {secretField('r2_access_key_id', 'Access key ID', merged.r2_access_key_id_set)}
         {secretField('r2_secret_access_key', 'Secret access key', merged.r2_secret_access_key_set)}
         <div className="grid grid-cols-2 gap-2">
-          <Field label="Bucket" value={merged.r2_bucket} onChange={value => update('r2_bucket', value)} />
-          <Field label="Prefix" value={merged.r2_prefix} onChange={value => update('r2_prefix', value)} placeholder="maestro" />
+          <Field locked={isLocked('r2_bucket')} label="Bucket" value={merged.r2_bucket} onChange={value => update('r2_bucket', value)} />
+          <Field locked={isLocked('r2_prefix')} label="Prefix" value={merged.r2_prefix} onChange={value => update('r2_prefix', value)} placeholder="maestro" />
         </div>
       </section>
 

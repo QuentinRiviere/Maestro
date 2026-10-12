@@ -144,6 +144,52 @@ class SettingsTests(unittest.TestCase):
                              {"server_url": "http://127.0.0.1:3000", "project": "main", "token": "b"})
 
 
+class EnvOverrideTests(unittest.TestCase):
+    def test_env_values_win_are_locked_and_never_stored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RemoteWorkerSettingsStore(tmp)
+            env = {
+                "MAESTRO_REMOTE_SERVER_URL": "http://host.docker.internal:3000",
+                "MAESTRO_REMOTE_TOKEN": "env-token-1234567890",
+                "MAESTRO_REMOTE_ROUTE_GENERATIONS": "false",
+                "MAESTRO_REMOTE_IDLE_TTL_MINUTES": "45",
+                "MAESTRO_REMOTE_BACKENDS": "runpod,vastai",
+                "UNRELATED": "x",
+            }
+            manager = RemoteWorkerManager(store, environ=env)
+            settings = manager.settings
+            self.assertEqual(settings.server_url, "http://host.docker.internal:3000")
+            self.assertEqual(settings.token, "env-token-1234567890")
+            self.assertFalse(settings.route_generations)
+            self.assertEqual(settings.idle_ttl_minutes, 45)
+            self.assertEqual(settings.backends, ["runpod", "vastai"])
+            public = manager.public_settings()
+            self.assertEqual(public["env_locked"], sorted([
+                "backends", "idle_ttl_minutes", "route_generations", "server_url", "token",
+            ]))
+            self.assertNotIn("env-token", json.dumps(public))
+
+            # UI edits to locked fields are ignored; other fields are stored.
+            manager.update_settings({"token": "ui-token-abcdef123456", "route_generations": True,
+                                     "fleet": "studio-comfy-fleet"})
+            self.assertEqual(manager.settings.token, "env-token-1234567890")
+            self.assertFalse(manager.settings.route_generations)
+            self.assertEqual(manager.settings.fleet, "studio-comfy-fleet")
+            with open(os.path.join(tmp, "remote_worker.json")) as handle:
+                stored = json.load(handle)
+            self.assertEqual(stored["token"], "")
+            self.assertEqual(stored["server_url"], "http://127.0.0.1:3000")
+            self.assertEqual(stored["fleet"], "studio-comfy-fleet")
+
+    def test_true_strings(self):
+        manager = RemoteWorkerManager(
+            RemoteWorkerSettingsStore(tempfile.mkdtemp()),
+            environ={"MAESTRO_REMOTE_ROUTE_GENERATIONS": "1", "MAESTRO_REMOTE_AUTO_START": "no"},
+        )
+        self.assertTrue(manager.settings.route_generations)
+        self.assertFalse(manager.settings.auto_start)
+
+
 class RunSpecTests(unittest.TestCase):
     def test_spec_has_safety_limits_probe_and_no_volume(self):
         settings = RemoteWorkerSettings(fleet="studio-comfy-fleet", repo_ref="feat/remote")

@@ -1307,6 +1307,8 @@ export interface RemoteWorkerSettings {
   r2_bucket: string
   r2_prefix: string
   r2_configured: boolean
+  /** Fields fixed by MAESTRO_REMOTE_* environment variables (read-only). */
+  env_locked: string[]
   idle_ttl_minutes: number
   route_generations: boolean
   auto_start: boolean
