@@ -346,7 +346,7 @@ export function ServicesSettingsPanel() {
             <p className="text-[10px] text-text-muted mt-1">
               {servicesConfig.openrouter_api_key_env
                 ? 'Using the key from the OPENROUTER_API_KEY environment variable. A key saved here takes precedence.'
-                : 'Requests go to openrouter.ai. Pick any model ID it serves, e.g. google/gemini-2.5-flash.'}
+                : 'Requests go to openrouter.ai. Pick any model ID it serves, e.g. google/gemini-3.8-flash.'}
             </p>
           </div>
         )}
