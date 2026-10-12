@@ -770,7 +770,30 @@ def _finalize_payload(payload: dict) -> dict:
             f"accepted by provider={_provider}: {', '.join(dropped)}"
         )
     prepared["model"] = _model_id
+    if _provider == "openrouter" and payload.get("enable_thinking") is not True:
+        _limit_openrouter_reasoning(prepared)
     return record_payload(prepared, model_id=_model_id)
+
+
+# Headroom for models that reason even when Maestro asks for none.
+OPENROUTER_REASONING_HEADROOM = 4096
+
+
+def _limit_openrouter_reasoning(prepared: dict) -> None:
+    """Keep reasoning models from spending the whole answer budget.
+
+    OpenRouter counts reasoning inside ``max_tokens``. Routers such as
+    ``openrouter/free`` may land on a model with mandatory reasoning, which
+    rejects ``effort: none`` and otherwise thinks until the answer budget is
+    gone (empty content, finish=length). Low effort is accepted everywhere,
+    is ignored by non-reasoning models, and the extra headroom still leaves
+    the requested answer length intact.
+    """
+
+    prepared.pop("reasoning_effort", None)
+    prepared["reasoning"] = {"effort": "low", "exclude": True}
+    if isinstance(prepared.get("max_tokens"), int):
+        prepared["max_tokens"] += OPENROUTER_REASONING_HEADROOM
 
 
 def _server_url() -> str:

@@ -106,5 +106,27 @@ class TestApiHeaders(unittest.TestCase):
         self.assertNotIn("Authorization", self._headers_for("remote", ""))
 
 
+class TestOpenRouterReasoning(unittest.TestCase):
+    def finalize(self, provider, payload):
+        saved = (llm_service._provider, llm_service._model_id)
+        llm_service._provider, llm_service._model_id = provider, "openrouter/free"
+        try:
+            return llm_service._finalize_payload(dict(payload))
+        finally:
+            llm_service._provider, llm_service._model_id = saved
+
+    def test_thinking_off_bounds_reasoning_and_keeps_the_answer_budget(self):
+        prepared = self.finalize("openrouter", {"max_tokens": 768, "enable_thinking": False, "messages": []})
+        self.assertEqual(prepared["reasoning"], {"effort": "low", "exclude": True})
+        self.assertEqual(prepared["max_tokens"], 768 + llm_service.OPENROUTER_REASONING_HEADROOM)
+
+    def test_thinking_on_and_other_providers_are_untouched(self):
+        on = self.finalize("openrouter", {"max_tokens": 768, "enable_thinking": True, "messages": []})
+        self.assertNotIn("reasoning", on)
+        openai = self.finalize("openai", {"max_tokens": 768, "enable_thinking": False, "messages": []})
+        self.assertNotIn("reasoning", openai)
+        self.assertEqual(openai["max_tokens"], 768)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
