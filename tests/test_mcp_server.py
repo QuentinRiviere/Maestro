@@ -154,7 +154,9 @@ class ProtocolTests(unittest.TestCase):
         body = self.api.calls[-1][2]["json"]
         self.assertEqual(body["pipeline_type"], "short_film_story")
         self.assertEqual(body["llm_provider"], "openrouter")
-        self.assertEqual(body["video_params"], {"resolution": "1280x704", "num_inference_steps": 8})
+        # 16:9 with the default 720p preset, as the Director UI resolves it.
+        self.assertEqual(body["video_params"], {"resolution": "1280x720", "num_inference_steps": 8})
+        self.assertEqual(body["image_params"]["resolution"], "1280x720")
         self.assertEqual(body["image_model"], "flux2_klein_9b")
         self.assertEqual(body["director_aspect_ratio"], "16:9")
         self.assertEqual(body["target_duration"], 30)
@@ -172,14 +174,18 @@ class ProtocolTests(unittest.TestCase):
         self.api.on("GET", "/api/v1/defaults/ltx2", {"resolution": "720x1280"})
         self.api.on("GET", "/api/v1/defaults/flux2_klein_9b", {"resolution": "1024x1024"})
         self.api.on("POST", "/api/v1/director/pipeline/start", {"pipeline_id": "p2"})
+        self.api.on("GET", "/api/v1/model-options/ltx2",
+                     {"resolution_presets": {"720p": {"values": {"9:16": "704x1280"}}}})
         result = self.call("director_start", {"scene_description": "Cat vs cucumber", "video_model": "ltx2",
                                               "pipeline_type": "viral_video", "platform": "tiktok",
-                                              "style": "meme"})
+                                              "style": "meme", "aspect_ratio": "9:16"})
         self.assertFalse(result["isError"], result)
         body = self.api.calls[-1][2]["json"]
         self.assertEqual(body["pipeline_type"], "short_film_story")
         self.assertEqual((body["director_skill"], body["platform"], body["style"]), ("viral_video", "tiktok", "meme"))
         self.assertEqual(body["target_duration"], 30)
+        self.assertEqual(body["video_params"]["resolution"], "704x1280")  # model-specific preset
+        self.assertEqual(body["image_params"]["resolution"], "720x1280")  # UI fallback table
         bad = self.call("director_start", {"scene_description": "x", "video_model": "ltx2",
                                            "pipeline_type": "podcast"})
         self.assertTrue(bad["isError"])

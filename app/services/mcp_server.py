@@ -37,6 +37,56 @@ _TERMINAL = {"completed", "failed", "cancelled"}
 _PIPELINE_TERMINAL = {"completed", "failed", "cancelled", "stopped", "error"}
 DIRECTOR_PIPELINE_TYPES = ("short_film_story", "short_film_audio", "music_video", "viral_video")
 VIRAL_PLATFORMS = ("general", "tiktok", "reels", "shorts")
+# Mirror of the Director UI's resolutionMap (ui/src/stores/useStore.ts), used
+# when a model has no resolution_presets of its own.
+RESOLUTION_MAP: dict[str, dict[str, str]] = {
+    "480p": {
+        "auto": "auto_480p",
+        "21:9": "1120x480",
+        "16:9": "848x480",
+        "9:16": "480x848",
+        "1:1": "672x672",
+        "4:3": "736x544",
+        "3:4": "544x736"
+    },
+    "540p": {
+        "auto": "auto_540p",
+        "21:9": "1280x544",
+        "16:9": "960x544",
+        "9:16": "544x960",
+        "1:1": "736x736",
+        "4:3": "832x608",
+        "3:4": "608x832"
+    },
+    "720p": {
+        "auto": "auto_720p",
+        "21:9": "1632x704",
+        "16:9": "1280x720",
+        "9:16": "720x1280",
+        "1:1": "1024x1024",
+        "4:3": "1104x832",
+        "3:4": "832x1104"
+    },
+    "768p": {
+        "auto": "auto_768p",
+        "21:9": "1792x768",
+        "16:9": "1344x768",
+        "9:16": "768x1344",
+        "1:1": "768x768",
+        "4:3": "1024x768",
+        "3:4": "768x1024"
+    },
+    "1080p": {
+        "auto": "auto_1080p",
+        "21:9": "2528x1088",
+        "16:9": "1920x1088",
+        "9:16": "1088x1920",
+        "1:1": "1024x1024",
+        "4:3": "1920x1088",
+        "3:4": "1088x1920"
+    }
+}
+
 VIRAL_STYLES = ("cinematic", "meme", "ugc", "direct_address", "reaction", "tutorial")
 
 INSTRUCTIONS = """\
@@ -193,6 +243,16 @@ class MaestroMcp:
 
     async def _defaults(self, model_type: str) -> dict[str, Any]:
         return dict(await self._api("GET", f"/api/v1/defaults/{quote(model_type, safe='')}") or {})
+
+    async def _resolution(self, model_type: str, preset: str, ratio: str) -> str | None:
+        """WxH for a preset and aspect ratio, as the Director UI resolves it."""
+        try:
+            options = await self._api("GET", f"/api/v1/model-options/{quote(model_type, safe='')}") or {}
+        except ToolError:
+            options = {}
+        values = ((options.get("resolution_presets") or {}).get(preset) or {}).get("values") or {}
+        table = RESOLUTION_MAP.get(preset) or {}
+        return values.get(ratio) or table.get(ratio) or values.get("16:9") or table.get("16:9")
 
     async def _wait(self, fetch: Callable[[], Awaitable[dict[str, Any]]], done: Callable[[dict[str, Any]], bool],
                     wait_seconds: Any) -> dict[str, Any]:
@@ -477,6 +537,15 @@ class MaestroMcp:
         for arg, key in optional.items():
             if args.get(arg) not in (None, "", []):
                 body[key] = args[arg]
+        # The Director UI sends concrete resolutions; the pipeline does not
+        # derive them from director_aspect_ratio for every model.
+        if args.get("aspect_ratio") or args.get("resolution_preset"):
+            preset = str(args.get("resolution_preset") or "720p")
+            ratio = str(args.get("aspect_ratio") or "16:9")
+            for model_key, params_key in (("video_model", "video_params"), ("image_model", "image_params")):
+                resolution = await self._resolution(body[model_key], preset, ratio)
+                if resolution:
+                    body[params_key]["resolution"] = resolution
         extra = args.get("params") or {}
         if not isinstance(extra, dict):
             raise ToolError("params must be an object.")
