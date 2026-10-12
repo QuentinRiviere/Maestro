@@ -35,7 +35,9 @@ MAX_UPLOAD_BYTES = 500 * 1024 * 1024
 MAX_WAIT_SECONDS = 55
 _TERMINAL = {"completed", "failed", "cancelled"}
 _PIPELINE_TERMINAL = {"completed", "failed", "cancelled", "stopped", "error"}
-DIRECTOR_PIPELINE_TYPES = ("short_film_story", "short_film_audio", "music_video", "podcast", "viral_video")
+DIRECTOR_PIPELINE_TYPES = ("short_film_story", "short_film_audio", "music_video", "viral_video")
+VIRAL_PLATFORMS = ("general", "tiktok", "reels", "shorts")
+VIRAL_STYLES = ("cinematic", "meme", "ugc", "direct_address", "reaction", "tutorial")
 
 INSTRUCTIONS = """\
 Maestro generates video, images and audio (MiniMax H3, LTX, Wan, Flux, ...).
@@ -253,7 +255,8 @@ class MaestroMcp:
             Tool("director_start",
                  "Start a Director project: the LLM plans the shots from the brief, then Maestro renders "
                  "start images and videos and joins them. Returns a pipeline_id; follow it with "
-                 "director_status. music_video and short_film_audio need audio_path (upload_media first).",
+                 "director_status. music_video and short_film_audio need audio_path (upload_media first). "
+                 "viral_video writes a short hook-first vertical-style piece from the brief.",
                  _schema({
                      "scene_description": {"type": "string", "description": "The brief: story, style, characters"},
                      "pipeline_type": {"type": "string", "enum": list(DIRECTOR_PIPELINE_TYPES),
@@ -261,7 +264,10 @@ class MaestroMcp:
                      "video_model": {"type": "string", "description": "model_type of the video model"},
                      "image_model": {"type": "string", "description": "model_type for start images "
                                                                      "(default flux2_klein_9b)"},
-                     "target_duration": {"type": "number", "description": "Seconds (short films)"},
+                     "target_duration": {"type": "number", "description": "Seconds (short films, viral videos)"},
+                     "platform": {"type": "string", "enum": list(VIRAL_PLATFORMS),
+                                  "description": "viral_video only"},
+                     "style": {"type": "string", "enum": list(VIRAL_STYLES), "description": "viral_video only"},
                      "aspect_ratio": {"type": "string", "description": "e.g. 16:9, 9:16, 1:1"},
                      "resolution_preset": {"type": "string", "description": "e.g. 720p, 1080p"},
                      "audio_path": _STR,
@@ -423,6 +429,20 @@ class MaestroMcp:
             raise ToolError(f"pipeline_type must be one of {', '.join(DIRECTOR_PIPELINE_TYPES)}.")
         if pipeline_type in ("music_video", "short_film_audio") and not args.get("audio_path"):
             raise ToolError(f"{pipeline_type} needs audio_path (upload the track with upload_media).")
+        skill_fields: dict[str, Any] = {}
+        if pipeline_type == "viral_video":
+            if args.get("audio_path"):
+                raise ToolError("viral_video from MCP is written from the brief; audio-driven viral videos "
+                                "need the audio analysis of the Director UI.")
+            platform = str(args.get("platform") or "general")
+            style = str(args.get("style") or "cinematic")
+            if platform not in VIRAL_PLATFORMS or style not in VIRAL_STYLES:
+                raise ToolError(f"platform must be one of {', '.join(VIRAL_PLATFORMS)}; "
+                                f"style one of {', '.join(VIRAL_STYLES)}.")
+            # A viral video is the story workflow with the viral planner.
+            pipeline_type = "short_film_story"
+            skill_fields = {"director_skill": "viral_video", "platform": platform, "style": style,
+                            "target_duration": args.get("target_duration") or 30}
         scene_description = _required(args, "scene_description")
         video_model = _required(args, "video_model")
         image_model = str(args.get("image_model") or "flux2_klein_9b")
@@ -441,6 +461,7 @@ class MaestroMcp:
             "image_model": image_model,
             "image_params": await self._defaults(image_model),
             "video_loras": {}, "image_loras": {},
+            **skill_fields,
         }
         optional = {
             "target_duration": "target_duration",

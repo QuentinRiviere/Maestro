@@ -41,13 +41,14 @@ class ViralVideoPlanner(BasePlanner):
 
     def plan(
         self,
-        concept: str,
+        concept: str = "",
         audio_path: Optional[str] = None,
         reference_image_path: Optional[str] = None,
         characters: Optional[list[dict]] = None,
         target_duration: int = 30,
         platform: str = "general",
         style: str = "cinematic",
+        clips: Optional[list[dict]] = None,
         **kwargs,
     ) -> ProductionPlan:
         """Create a ProductionPlan for a viral video.
@@ -60,8 +61,19 @@ class ViralVideoPlanner(BasePlanner):
             target_duration: Target duration in seconds.
             platform: Target platform (tiktok, reels, shorts, general).
             style: Visual style (meme, ugc, cinematic, direct_address, reaction, tutorial).
+            clips: Audio timeline from Director's audio analysis. When given,
+                one shot is written per clip with the clip's exact duration.
         """
+        # Director's pipeline and /director/v2/plan send the brief as
+        # scene_description; the concept argument is the planner's own name.
+        concept = concept or kwargs.get("scene_description") or kwargs.get("story_description") or ""
+        if not concept.strip():
+            raise ValueError("A viral video needs a concept")
         has_reference = bool(reference_image_path)
+        clip_durations = [
+            max(0.5, float(c.get("duration_sec") or (float(c.get("end", 0)) - float(c.get("start", 0))) or 3))
+            for c in (clips or []) if isinstance(c, dict)
+        ]
 
         # Clamp duration to platform norms
         max_dur = _PLATFORM_DURATIONS.get(platform, 30)
@@ -85,6 +97,15 @@ class ViralVideoPlanner(BasePlanner):
 
         # Plan number of shots — viral videos use more cuts
         target_scenes = max(3, min(12, target_duration // 5))
+        timing_rule = f"Output exactly {target_scenes} shot plans totaling ~{target_duration}s."
+        if clip_durations:
+            # The soundtrack is already cut: shots must follow its timeline.
+            target_scenes = len(clip_durations)
+            timing_rule = (
+                f"The audio is already cut into {target_scenes} segments. Output exactly {target_scenes} "
+                "shot plans, in order, with these durations in seconds: "
+                + ", ".join(f"{d:.1f}" for d in clip_durations) + "."
+            )
 
         style_desc = _VIRAL_STYLES.get(style, _VIRAL_STYLES["cinematic"])
 
@@ -131,7 +152,7 @@ OUTPUT FORMAT — respond with ONLY a JSON array:
   }}
 ]
 
-Output exactly {target_scenes} shot plans totaling ~{target_duration}s. Go:"""
+{timing_rule} Go:"""
 
         if kwargs.get("polish_block"):
             system_prompt = f"{system_prompt}\n\n{kwargs['polish_block']}"
@@ -153,9 +174,17 @@ Create {target_scenes} short, punchy shots. Hook first! Go:"""
             image_paths=image_paths,
         )
 
+        if clip_durations:
+            if not shot_dicts:
+                raise ValueError("The LLM returned no viral video shots")
+            # Keep exactly one shot per audio segment whatever the LLM wrote.
+            shot_dicts = (list(shot_dicts) + [shot_dicts[-1]] * len(clip_durations))[: len(clip_durations)]
+
         shots = []
         for i, raw in enumerate(shot_dicts):
             duration = raw.get("duration_sec", raw.get("duration", 5))
+            if clip_durations:
+                duration = clip_durations[i]
 
             subjects = [SubjectRef.from_dict(s) if isinstance(s, dict) else SubjectRef(visual_description=str(s))
                         for s in raw.get("subjects_on_screen", [])]
@@ -170,9 +199,11 @@ Create {target_scenes} short, punchy shots. Hook first! Go:"""
 
             audio_raw = raw.get("audio_plan", {})
             audio = AudioPlan(
-                mode=audio_raw.get("mode", "generated_audio"),
+                # An uploaded soundtrack drives every shot; otherwise the
+                # video model generates sound from the prompt.
+                mode="audio_driven" if clip_durations else audio_raw.get("mode", "generated_audio"),
                 ambience=audio_raw.get("ambience"),
-                timing_anchor="video",
+                timing_anchor="audio" if clip_durations else "video",
             )
 
             dialogue_beats = [DialogueBeat.from_dict(db) for db in raw.get("dialogue_beats", [])] if raw.get("dialogue_beats") else None

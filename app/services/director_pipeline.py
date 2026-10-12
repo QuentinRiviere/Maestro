@@ -6071,6 +6071,19 @@ def _capture_llm_pass(pid: str, pass_name: str):
         pass
 
 
+# Skills that reuse a short-film workflow (story or uploaded audio) for
+# timeline, images, video and assembly, and only swap the planner.
+DIRECTOR_SKILL_OVERRIDES = frozenset({"viral_video"})
+
+
+def director_skill(params: dict, pipeline_type: str) -> str | None:
+    """The planner override requested for this run, if valid."""
+    skill = str(params.get("director_skill") or "").strip()
+    if skill in DIRECTOR_SKILL_OVERRIDES and pipeline_type in ("short_film_story", "short_film_audio"):
+        return skill
+    return None
+
+
 def _run_planning(pid: str, params: dict, pipeline_type: str):
     """Run LLM planning and return (clip_plans, planned_clips).
 
@@ -6094,6 +6107,9 @@ def _run_planning(pid: str, params: dict, pipeline_type: str):
             f"[Pipeline {pid}] MiniMax H3 requires Director v2 native-shot "
             "planning; ignoring the legacy Director toggle for this run."
         )
+        use_v2 = True
+    if director_skill(params, pipeline_type) and not use_v2:
+        print(f"[Pipeline {pid}] {params.get('director_skill')} has no legacy planner; using Director v2.")
         use_v2 = True
 
     if use_v2:
@@ -6180,7 +6196,7 @@ def _run_planning_v2(pid: str, params: dict, pipeline_type: str):
         "podcast": "podcast",
         "viral_video": "viral_video",
     }
-    skill_type = skill_map.get(pipeline_type, "music_video")
+    skill_type = director_skill(params, pipeline_type) or skill_map.get(pipeline_type, "music_video")
 
     # Build planner kwargs
     scene_description = params.get("scene_description", "")
@@ -6287,7 +6303,17 @@ def _run_planning_v2(pid: str, params: dict, pipeline_type: str):
         "_planning_checkpoint": planning_checkpoint,
     }
 
-    if pipeline_type == "short_film_story":
+    if skill_type == "viral_video":
+        planner_kwargs.update({
+            "concept": scene_description,
+            "target_duration": params.get("target_duration", 30),
+            "platform": params.get("platform", "general"),
+            "style": params.get("style", "cinematic"),
+            "audio_path": params.get("audio_path") if pipeline_type == "short_film_audio" else None,
+            # Uploaded audio: one shot per analysed segment.
+            "clips": planned_clips if pipeline_type == "short_film_audio" else None,
+        })
+    elif pipeline_type == "short_film_story":
         native_bounded = selected_video_strategy in {
             BOUNDED_START_END,
             OMNI_REFERENCE,

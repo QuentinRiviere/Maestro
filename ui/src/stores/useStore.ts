@@ -5,7 +5,7 @@ import type { SavedOmniCharacter, TtsVoice } from '../types'
 import { applyTtsVoices, ttsAudioModeForCount, ttsCharacterEnhancePrompt, ttsSpeakingVoiceCount, ttsVoiceLimit, ttsVoicePaths } from '../lib/ttsVoices'
 import { vigglePreparationKey, viggleTimeline } from '../lib/viggle'
 import { DEFAULT_AVATAR_SPEAKER_LOCATIONS, isLongCatAvatarModel, isMultiSpeakerAvatarModel, parseAvatarSpeakerRegions } from '../lib/avatarWorkflow'
-import type { GenerateParams, OutputFile, MediaFilter, AspectRatio, ResolutionPreset, ScailResolutionProfile, GenerationJob, ModelFamily, ModelDef, GenerationMode, StudioVideoWorkflow, StudioVideoCreateRoute, StudioVideoEffectiveCreateRoute, StudioImageWorkflow, ModelOptions, SystemConfig, SettingsTab, OutputMetadata, MultiClip, ServicesConfig, LlmStatus, LlmModelOption, AudioAnalysisResult, PlannedClip, ClipPlan, DirectorClipImage, DirectorImageGenProgress, SpeakerMapping, DirectorSkill, DirectorShotImageGuidance, ShortFilmCharacter, ShortFilmPath, CivitAIModel, CivitAIDownload, PipelineListItem, PipelineClipState, PipelineRepairState, SavedPipelineState, DirectorQueueState, SystemDetectResponse, SystemStats, RecastCharacterMapping, RepaintRegionMapping, H3WindowPlan, MiniMaxH3Reference, AppMode } from '../types'
+import type { GenerateParams, OutputFile, MediaFilter, AspectRatio, ResolutionPreset, ScailResolutionProfile, GenerationJob, ModelFamily, ModelDef, GenerationMode, StudioVideoWorkflow, StudioVideoCreateRoute, StudioVideoEffectiveCreateRoute, StudioImageWorkflow, ModelOptions, SystemConfig, SettingsTab, OutputMetadata, MultiClip, ServicesConfig, LlmStatus, LlmModelOption, AudioAnalysisResult, PlannedClip, ClipPlan, DirectorClipImage, DirectorImageGenProgress, SpeakerMapping, DirectorSkill, DirectorShotImageGuidance, ShortFilmCharacter, ShortFilmPath, ViralPlatform, ViralStyle, CivitAIModel, CivitAIDownload, PipelineListItem, PipelineClipState, PipelineRepairState, SavedPipelineState, DirectorQueueState, SystemDetectResponse, SystemStats, RecastCharacterMapping, RepaintRegionMapping, H3WindowPlan, MiniMaxH3Reference, AppMode } from '../types'
 import * as api from '../api/client'
 import { applyThemePrefs, getStoredPrefs, type FamilyId, type ThemeMode, type ThemePrefs } from '../lib/theme'
 import {
@@ -1111,6 +1111,20 @@ const MUSIC_DEFAULTS_KEY = 'maestro_music_defaults_version'
 let _musicDefaultsVersion = 0
 
 const ENABLED_MODELS_KEY = 'maestro_enabled_models'
+
+/** Planner selection for the short-film workflows: Viral Video swaps the
+ *  planner and adds its platform/style; Short Film keeps its own. */
+function _viralPlanFields(state: Pick<AppState, 'directorSkill' | 'viralPlatform' | 'viralStyle'>) {
+  return state.directorSkill === 'viral_video'
+    ? { skill_type: 'viral_video', platform: state.viralPlatform, style: state.viralStyle }
+    : { skill_type: 'short_film' }
+}
+
+function _viralPipelineFields(state: Pick<AppState, 'directorSkill' | 'viralPlatform' | 'viralStyle'>) {
+  return state.directorSkill === 'viral_video'
+    ? { director_skill: 'viral_video', platform: state.viralPlatform, style: state.viralStyle }
+    : {}
+}
 let _initializedMatureModels = new Set<string>()
 let _modelVisibilityHydrated = false
 let _modelVisibilityDefaultsVersion = 1
@@ -2219,6 +2233,11 @@ interface AppState {
   shortFilmPath: ShortFilmPath | null
   shortFilmTargetDuration: number
   shortFilmNarrative: boolean
+  // Viral Video reuses the short-film workflows with its own planner.
+  viralPlatform: ViralPlatform
+  viralStyle: ViralStyle
+  setViralPlatform: (platform: ViralPlatform) => void
+  setViralStyle: (style: ViralStyle) => void
   shortFilmSetCharacters: (characters: ShortFilmCharacter[]) => void
   shortFilmSetPath: (path: ShortFilmPath) => void
   shortFilmSetTargetDuration: (duration: number) => void
@@ -2474,7 +2493,9 @@ async function _buildDirectorRestorePatch(
     }
   }
   const pipelineType = String(params.pipeline_type || pipeline.pipeline_type || 'music_video')
-  const skill: DirectorSkill = pipelineType.startsWith('short_film')
+  const skill: DirectorSkill = params.director_skill === 'viral_video'
+    ? 'viral_video'
+    : pipelineType.startsWith('short_film')
     ? 'short_film'
     : (ui.directorSkill as DirectorSkill) || 'music_video'
   const shortFilmPath: ShortFilmPath | null = pipelineType === 'short_film_story'
@@ -2562,6 +2583,8 @@ async function _buildDirectorRestorePatch(
     shortFilmTargetDuration: Number(ui.shortFilmTargetDuration || params.target_duration || 30),
     shortFilmNarrative: ui.shortFilmNarrative == null
       ? Boolean(params.narrative_mode) : Boolean(ui.shortFilmNarrative),
+    viralPlatform: (params.platform as ViralPlatform) || 'general',
+    viralStyle: (params.style as ViralStyle) || 'cinematic',
     directorLoading: false,
     directorLoadingMessage: null,
     directorError: null,
@@ -10325,6 +10348,8 @@ export const useStore = create<AppState>((set, get) => ({
   shortFilmPath: null,
   shortFilmTargetDuration: 30,
   shortFilmNarrative: false,
+  viralPlatform: 'general',
+  viralStyle: 'cinematic',
   llmStreamText: '',
   llmStreamDone: true,
   pipelineId: null,
@@ -11441,6 +11466,8 @@ export const useStore = create<AppState>((set, get) => ({
       shortFilmPath: null,
       shortFilmTargetDuration: 30,
       shortFilmNarrative: false,
+      viralPlatform: 'general',
+      viralStyle: 'cinematic',
       directorSourcePipelineId: null,
       directorProjectId: null,
       directorQueueEditingEntryId: null,
@@ -11455,6 +11482,8 @@ export const useStore = create<AppState>((set, get) => ({
     shortFilmTargetDuration: Math.min(60 * 60, Math.max(10, duration)),
   }),
   shortFilmSetNarrative: (v) => set({ shortFilmNarrative: v }),
+  setViralPlatform: (platform) => set({ viralPlatform: platform }),
+  setViralStyle: (style) => set({ viralStyle: style }),
 
   shortFilmUploadAndAnalyze: async (file) => {
     set({
@@ -11589,12 +11618,13 @@ export const useStore = create<AppState>((set, get) => ({
       // ?? not || — an explicit user-toggled `false` must be respected
       // (legacy v1 path); only fall back to true when servicesConfig
       // hasn't loaded yet or the field is undefined.
-      const useV2 = get().servicesConfig?.use_director_v2 ?? true
+      // Viral Video has no legacy (v1) planner.
+      const useV2 = get().directorSkill === 'viral_video' || (get().servicesConfig?.use_director_v2 ?? true)
       let plans: Array<{ video_prompt: string; image_prompt: string }>
 
       if (useV2) {
         const result = await api.directorV2Plan({
-          skill_type: 'short_film',
+          ..._viralPlanFields(get()),
           clips: directorPlannedClips,
           scene_description: directorSceneDescription,
           lyrics: directorAnalysis?.lyrics ?? undefined,
@@ -11711,13 +11741,14 @@ export const useStore = create<AppState>((set, get) => ({
       // ?? not || — an explicit user-toggled `false` must be respected
       // (legacy v1 path); only fall back to true when servicesConfig
       // hasn't loaded yet or the field is undefined.
-      const useV2 = get().servicesConfig?.use_director_v2 ?? true
+      // Viral Video has no legacy (v1) planner.
+      const useV2 = get().directorSkill === 'viral_video' || (get().servicesConfig?.use_director_v2 ?? true)
       let plans: Array<{ video_prompt: string; image_prompt: string }>
       let storyClips: PlannedClip[] | undefined
 
       if (useV2) {
         const result = await api.directorV2Plan({
-          skill_type: 'short_film',
+          ..._viralPlanFields(get()),
           scene_description: directorSceneDescription,
           story_description: directorSceneDescription,
           characters: shortFilmCharacters.length > 0 ? shortFilmCharacters : undefined,
@@ -13976,6 +14007,7 @@ export const useStore = create<AppState>((set, get) => ({
 
     const pipelineParams: Record<string, unknown> = {
       pipeline_type: pipelineType,
+      ..._viralPipelineFields(state),
       ...(pipelineType === 'music_video' && !state.directorSeamless
         ? {director_music_clip_seconds: state.directorMusicClipSeconds} : {}),
       // Held work and reviewed revisions cannot pause for browser review.

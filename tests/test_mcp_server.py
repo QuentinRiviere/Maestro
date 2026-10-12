@@ -167,6 +167,23 @@ class ProtocolTests(unittest.TestCase):
         self.assertTrue(result["isError"])
         self.assertIn("audio_path", result["content"][0]["text"])
 
+    def test_director_viral_video_runs_the_story_workflow_with_its_planner(self):
+        self.api.on("GET", "/api/v1/services-config", {"llm_provider": "openrouter"})
+        self.api.on("GET", "/api/v1/defaults/ltx2", {"resolution": "720x1280"})
+        self.api.on("GET", "/api/v1/defaults/flux2_klein_9b", {"resolution": "1024x1024"})
+        self.api.on("POST", "/api/v1/director/pipeline/start", {"pipeline_id": "p2"})
+        result = self.call("director_start", {"scene_description": "Cat vs cucumber", "video_model": "ltx2",
+                                              "pipeline_type": "viral_video", "platform": "tiktok",
+                                              "style": "meme"})
+        self.assertFalse(result["isError"], result)
+        body = self.api.calls[-1][2]["json"]
+        self.assertEqual(body["pipeline_type"], "short_film_story")
+        self.assertEqual((body["director_skill"], body["platform"], body["style"]), ("viral_video", "tiktok", "meme"))
+        self.assertEqual(body["target_duration"], 30)
+        bad = self.call("director_start", {"scene_description": "x", "video_model": "ltx2",
+                                           "pipeline_type": "podcast"})
+        self.assertTrue(bad["isError"])
+
     def test_director_status_waits_for_pause(self):
         self.api.on("GET", "/api/v1/director/pipeline/p1", {"status": "running", "phase": "planning"})
         self.api.on("GET", "/api/v1/director/pipeline/p1", {"status": "paused", "phase": "review"})

@@ -14,7 +14,7 @@ import { formatSeconds, recommendedWindowProfile } from './DurationSlider'
 import { DurationPresetControl } from './DurationPresetControl'
 import { LONG_FORM_MAX_SECONDS, formatDuration } from '../../lib/durationPlanning'
 import { formatEstimatedClock, formatEtaDuration } from '../../lib/format'
-import type { DirectorPipelineType, DirectorShotImageGuidance, DirectorSkill, ModelOptions, ShortFilmCharacter, ShortFilmPath } from '../../types'
+import type { DirectorPipelineType, DirectorShotImageGuidance, DirectorSkill, ModelOptions, ShortFilmCharacter, ShortFilmPath, ViralPlatform, ViralStyle } from '../../types'
 
 // AUDIO_ACCEPT lists both audio formats AND video formats. When a video
 // file is uploaded, the backend's /api/v1/upload-audio endpoint extracts
@@ -554,7 +554,10 @@ export function DirectorChat() {
     directorHasVisualReferences,
   )
 
-  const isShortFilm = skill === 'short_film'
+  // Viral Video runs the short-film workflows (story or uploaded audio)
+  // with its own planner, so it shares every short-film step.
+  const isViral = skill === 'viral_video'
+  const isShortFilm = skill === 'short_film' || isViral
   const isStoryPath = isShortFilm && shortFilmPath === 'story'
   const isMusicVideo = !!skill && !isShortFilm
   // Music Video "Generate a track" setup: the bottom chat IS the song
@@ -806,8 +809,8 @@ export function DirectorChat() {
         ) : (
           <UserBubble>
             <div className="flex items-center gap-1.5 text-xs text-text-primary">
-              {isShortFilm ? <Film size={12} className="text-accent-blue" /> : <Music size={12} className="text-accent-blue" />}
-              <span>{isShortFilm ? 'Short Film' : 'Music Video'}</span>
+              {isViral ? <Sparkles size={12} className="text-accent-blue" /> : isShortFilm ? <Film size={12} className="text-accent-blue" /> : <Music size={12} className="text-accent-blue" />}
+              <span>{isViral ? 'Viral Video' : isShortFilm ? 'Short Film' : 'Music Video'}</span>
             </div>
           </UserBubble>
         )}
@@ -815,7 +818,11 @@ export function DirectorChat() {
         {/* Short Film path chooser */}
         {isShortFilm && skill && !shortFilmPath && (
           <SystemBubble>
-            <p className="text-xs text-text-secondary mb-2">How would you like to create your short film?</p>
+            <p className="text-xs text-text-secondary mb-2">
+              {isViral
+                ? 'Describe the idea, or upload a voice-over or sound to cut the video on.'
+                : 'How would you like to create your short film?'}
+            </p>
             <PathChooser onSelect={(path: ShortFilmPath) => {
               shortFilmSetPath(path)
               if (path === 'story') {
@@ -1059,7 +1066,9 @@ export function DirectorChat() {
             {isStoryPath && atStep('style') && (
               <SystemBubble>
                 <p className="text-xs text-text-secondary mb-2">
-                  {directorUsesOmniManifest
+                  {isViral
+                    ? 'Set up your viral video: platform, style, optional reference photo, and duration.'
+                    : directorUsesOmniManifest
                     ? 'Set up your short film with ordered H3 Omni image, video, and audio references, then set the target duration.'
                     : 'Set up your short film. Upload a reference photo, name your characters, and set the target duration.'}
                 </p>
@@ -1075,8 +1084,9 @@ export function DirectorChat() {
                       setCharacters={shortFilmSetCharacters}
                     />
                   )}
+                  {isViral && <ViralOptions />}
                   <DirectorTargetDurationControl />
-                  <label className="flex items-center gap-2 cursor-pointer group">
+                  {!isViral && <label className="flex items-center gap-2 cursor-pointer group">
                     <input
                       type="checkbox"
                       checked={shortFilmNarrative}
@@ -1089,7 +1099,7 @@ export function DirectorChat() {
                         Structure scenes around a character arc with rising tension and emotional resolution
                       </p>
                     </div>
-                  </label>
+                  </label>}
                 </div>
               </SystemBubble>
             )}
@@ -1097,11 +1107,12 @@ export function DirectorChat() {
               <UserBubble>
                 <div className="flex items-center gap-2 text-xs text-text-primary">
                   <img src={refImagePreview} alt="Ref" className="w-8 h-8 object-cover rounded border border-border" />
-                  <span>{shortFilmTargetDuration}s film</span>
+                  <span>{shortFilmTargetDuration}s {isViral ? 'video' : 'film'}</span>
                 </div>
               </UserBubble>
             )}
             <SystemBubble>
+              {isViral && !isStoryPath && <div className="mb-3"><ViralOptions /></div>}
               <StyleForm
                 speakers={speakers}
                 speakerMappings={speakerMappings}
@@ -1557,12 +1568,51 @@ function DirectorSetupPanel({ locked }: { locked: boolean }) {
   )
 }
 
+const VIRAL_PLATFORMS: Array<{ value: ViralPlatform; label: string }> = [
+  { value: 'general', label: 'Any platform' },
+  { value: 'tiktok', label: 'TikTok' },
+  { value: 'reels', label: 'Instagram Reels' },
+  { value: 'shorts', label: 'YouTube Shorts' },
+]
+const VIRAL_STYLES: Array<{ value: ViralStyle; label: string }> = [
+  { value: 'cinematic', label: 'Cinematic' },
+  { value: 'meme', label: 'Meme' },
+  { value: 'ugc', label: 'UGC (handheld, authentic)' },
+  { value: 'direct_address', label: 'Talking to camera' },
+  { value: 'reaction', label: 'Reaction' },
+  { value: 'tutorial', label: 'Tutorial' },
+]
+
+function ViralOptions() {
+  const platform = useStore(s => s.viralPlatform)
+  const style = useStore(s => s.viralStyle)
+  const setPlatform = useStore(s => s.setViralPlatform)
+  const setStyle = useStore(s => s.setViralStyle)
+  const select = 'w-full bg-bg-tertiary border border-border rounded-lg px-2 py-1.5 text-xs text-text-primary focus:outline-none focus:border-accent-blue'
+  return (
+    <div className="grid grid-cols-2 gap-2">
+      <label className="block">
+        <span className="text-[10px] text-text-muted uppercase tracking-wider block mb-1">Platform</span>
+        <select value={platform} onChange={e => setPlatform(e.target.value as ViralPlatform)} className={select}>
+          {VIRAL_PLATFORMS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select>
+      </label>
+      <label className="block">
+        <span className="text-[10px] text-text-muted uppercase tracking-wider block mb-1">Style</span>
+        <select value={style} onChange={e => setStyle(e.target.value as ViralStyle)} className={select}>
+          {VIRAL_STYLES.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select>
+      </label>
+    </div>
+  )
+}
+
 function SkillSelector({ onSelect }: { onSelect: (skill: DirectorSkill) => void }) {
   const skills = [
     { id: 'music_video' as DirectorSkill, label: 'Music Video', desc: 'Automated music video from audio', icon: Music, active: true },
     { id: 'short_film' as DirectorSkill, label: 'Short Film', desc: 'Dialogue-driven scenes from audio', icon: Film, active: true },
     { id: 'music_video' as DirectorSkill, label: 'Video Podcast', desc: 'Coming Soon', icon: Mic, active: false },
-    { id: 'music_video' as DirectorSkill, label: 'Viral Video', desc: 'Coming Soon', icon: Sparkles, active: false },
+    { id: 'viral_video' as DirectorSkill, label: 'Viral Video', desc: 'Hook-first shorts for TikTok, Reels, Shorts', icon: Sparkles, active: true },
   ]
 
   return (
