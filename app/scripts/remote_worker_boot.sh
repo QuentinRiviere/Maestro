@@ -19,6 +19,8 @@ set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DATA="${MAESTRO_DATA:-/workspace/data}"
+# Read by launch.py (worker file uploads land under $MAESTRO_DATA/inputs).
+export MAESTRO_DATA="${DATA}"
 VENV="${VIRTUAL_ENV:-/opt/maestro-venv}"
 export SERVER_PORT="${SERVER_PORT:-7860}"
 

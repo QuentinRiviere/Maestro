@@ -51,6 +51,7 @@ class RemoteWorkerManager:
         client_factory: Callable[[RemoteWorkerSettings], DstackClient] | None = None,
         clock: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
+        proxy_check: Callable[[str, str], bool] | None = None,
     ) -> None:
         self._store = store
         self._settings = store.load()
@@ -68,6 +69,8 @@ class RemoteWorkerManager:
         self._preloaded: set[tuple[str, str]] = set()
         self._preload: Callable[[str, str, str], None] = _request_worker_preload
         self._stop_reason: str | None = None
+        self._proxy_check = proxy_check or _proxy_reachable
+        self._proxy_ok_run: str | None = None
         self._watchdog: threading.Thread | None = None
         self._watchdog_stop = threading.Event()
 
@@ -166,15 +169,22 @@ class RemoteWorkerManager:
             return {**details, "state": "starting"}
         if not _probes_ready(run, submission):
             return {**details, "state": "booting"}
+        # Probes passing is not enough: the dstack proxy registers the
+        # replica a little later and answers 404 "Service not found" until
+        # then. Only call the worker ready once a request goes through.
+        run_id = str(run.get("id") or "")
+        service_url = self.client().service_base_url(run)
+        if self._proxy_ok_run != run_id:
+            if not service_url or not self._proxy_check(service_url, self.settings.token):
+                return {**details, "state": "booting", "message": "Waiting for the dstack proxy route"}
+            self._proxy_ok_run = run_id
 
         with self._lock:
-            run_id = str(run.get("id") or "")
             if self._run_id != run_id or self._ready_since is None:
                 self._run_id = run_id
                 self._ready_since = self._clock()
                 self._last_activity = self._ready_since
             idle_seconds = 0 if self._active_jobs else max(0.0, self._clock() - (self._last_activity or self._clock()))
-        service_url = self.client().service_base_url(run)
         self._maybe_preload(service_url)
         details.update({
             "state": "ready",
@@ -336,6 +346,22 @@ class RemoteWorkerManager:
 
     def shutdown_watchdog(self) -> None:
         self._watchdog_stop.set()
+
+
+def _proxy_reachable(service_url: str, token: str) -> bool:
+    import requests
+
+    from services.remote_worker.worker_spec import HEALTH_PATH
+
+    try:
+        response = requests.get(
+            service_url + HEALTH_PATH.lstrip("/"),
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10,
+        )
+        return response.status_code == 200
+    except Exception:
+        return False
 
 
 def _request_worker_preload(service_url: str, token: str, model_type: str) -> None:

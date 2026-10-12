@@ -216,7 +216,9 @@ class ManagerTests(unittest.TestCase):
             client_factory=lambda s: DstackClient(s.server_url, s.project, s.token, session=self.fake),
             clock=self.clock,
             sleep=self.clock.sleep,
+            proxy_check=lambda url, token: self.proxy_up,
         )
+        self.proxy_up = True
         self.manager._preload = lambda url, token, model: self.preloads.append((url, model))
         self.manager.update_settings({"token": self.fake.token})
 
@@ -257,6 +259,18 @@ class ManagerTests(unittest.TestCase):
         self.assertEqual(self.manager.stop()["state"], "stopping")
         self.fake.finish()
         self.assertEqual(self.manager.status()["message"], "Stopped by user")
+
+    def test_ready_waits_for_the_proxy_route(self):
+        self.manager.start()
+        self.fake.to_running(ready=True)
+        self.proxy_up = False
+        status = self.manager.status()
+        self.assertEqual(status["state"], "booting")
+        self.assertIn("proxy", status["message"])
+        self.proxy_up = True
+        self.assertEqual(self.manager.status()["state"], "ready")
+        self.proxy_up = False  # checked once per run, not on every poll
+        self.assertEqual(self.manager.status()["state"], "ready")
 
     def test_idle_ttl_stops_ready_worker_but_not_during_jobs(self):
         self.manager.start()
