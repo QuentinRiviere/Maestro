@@ -15,6 +15,10 @@ from typing import Any
 
 
 DEFAULT_REPO_URL = "https://github.com/QuentinRiviere/Maestro.git"
+DEFAULT_IMAGE = "ghcr.io/quentinriviere/maestro-worker:latest"
+
+# Never returned in clear by the API; a masked value sent back is ignored.
+SECRET_FIELDS = ("token", "registry_token", "r2_access_key_id", "r2_secret_access_key")
 
 
 @dataclass
@@ -27,21 +31,25 @@ class RemoteWorkerSettings:
     run_name: str = "maestro-worker"
     repo_url: str = DEFAULT_REPO_URL
     repo_ref: str = "main"
-    image: str = "pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime"
-    torch_index: str = "https://download.pytorch.org/whl/cu128"
+    image: str = DEFAULT_IMAGE
+    # Only needed while the GHCR package is private.
+    registry_username: str = ""
+    registry_token: str = ""
     default_model_type: str = ""
     # where and how much
     backends: list[str] = field(default_factory=lambda: ["runpod"])
     fleet: str = ""
     gpu: str = "48GB.."
-    disk: str = "100GB.."
+    disk: str = "200GB.."
     spot_policy: str = "on-demand"
     max_price: float = 0.8
     max_duration: str = "4h"
-    volume_name: str = "maestro-models"
-    volume_path: str = "/workspace/vol"
-    volume_region: str = "EU-SE-1"
-    volume_size: str = "200GB"
+    # Cloudflare R2 checkpoint cache (optional)
+    r2_account_id: str = ""
+    r2_access_key_id: str = ""
+    r2_secret_access_key: str = ""
+    r2_bucket: str = ""
+    r2_prefix: str = "maestro"
     # behaviour
     idle_ttl_minutes: int = 30
     route_generations: bool = False
@@ -50,6 +58,13 @@ class RemoteWorkerSettings:
     @property
     def configured(self) -> bool:
         return bool(self.server_url and self.project and self.token)
+
+    @property
+    def r2_configured(self) -> bool:
+        return bool(
+            self.r2_account_id and self.r2_access_key_id
+            and self.r2_secret_access_key and self.r2_bucket
+        )
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any] | None) -> "RemoteWorkerSettings":
@@ -71,9 +86,11 @@ class RemoteWorkerSettings:
 
     def public(self) -> dict[str, Any]:
         payload = asdict(self)
-        payload["token"] = _mask(self.token)
-        payload["token_set"] = bool(self.token)
+        for name in SECRET_FIELDS:
+            payload[name] = _mask(getattr(self, name))
+            payload[f"{name}_set"] = bool(getattr(self, name))
         payload["configured"] = self.configured
+        payload["r2_configured"] = self.r2_configured
         return payload
 
 
@@ -95,6 +112,10 @@ def _coerce(name: str, value: Any, current: Any) -> Any:
             value = [part.strip() for part in value.split(",")]
         return [str(part) for part in value if str(part).strip()]
     return str(value or "").strip()
+
+
+def is_masked(value: object) -> bool:
+    return isinstance(value, str) and ("…" in value or value == "••••")
 
 
 def _mask(secret: str) -> str:

@@ -1287,7 +1287,10 @@ export interface RemoteWorkerSettings {
   repo_url: string
   repo_ref: string
   image: string
-  torch_index: string
+  registry_username: string
+  /** Masked by the server, like every *_set companion below. */
+  registry_token: string
+  registry_token_set: boolean
   default_model_type: string
   backends: string[]
   fleet: string
@@ -1296,10 +1299,14 @@ export interface RemoteWorkerSettings {
   spot_policy: string
   max_price: number
   max_duration: string
-  volume_name: string
-  volume_path: string
-  volume_region: string
-  volume_size: string
+  r2_account_id: string
+  r2_access_key_id: string
+  r2_access_key_id_set: boolean
+  r2_secret_access_key: string
+  r2_secret_access_key_set: boolean
+  r2_bucket: string
+  r2_prefix: string
+  r2_configured: boolean
   idle_ttl_minutes: number
   route_generations: boolean
   auto_start: boolean
@@ -1337,7 +1344,6 @@ export interface RemoteWorkerStatus {
 export interface RemoteWorkerConnectionTest {
   server_version: string
   fleets: string[]
-  volumes: { name: string; status: string; region: string | null }[]
 }
 
 export interface RemoteWorkerLogLine {

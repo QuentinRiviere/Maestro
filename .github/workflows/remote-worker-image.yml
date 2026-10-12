@@ -1,0 +1,57 @@
+name: Remote worker image
+
+# Builds the dependency image used by the remote GPU worker
+# (docker/remote-worker/Dockerfile) and pushes it to GHCR. Code is cloned at
+# pod boot, so this only needs to run when the dependency set changes.
+on:
+  push:
+    branches: [main, feat/comfy-inference-backend]
+    paths:
+      - app/requirements.txt
+      - docker/remote-worker/**
+      - .github/workflows/remote-worker-image.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free runner disk space
+        # CUDA + torch + Maestro's dependencies exceed the default free space.
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          df -h /
+
+      - name: Prepare build context
+        run: cp app/requirements.txt docker/remote-worker/requirements.txt
+
+      - name: Compute tags
+        id: meta
+        run: |
+          owner="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          deps="$(sha256sum app/requirements.txt docker/remote-worker/Dockerfile | sha256sum | cut -c1-12)"
+          echo "image=ghcr.io/${owner}/maestro-worker" >> "$GITHUB_OUTPUT"
+          echo "deps=${deps}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: docker/remote-worker
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image }}:latest
+            ${{ steps.meta.outputs.image }}:deps-${{ steps.meta.outputs.deps }}

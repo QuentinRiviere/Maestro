@@ -7082,11 +7082,6 @@ def test_remote_worker_connection():
     return _remote_worker_call(_remote_worker.test_connection)
 
 
-@api.post("/api/v1/remote-worker/volume")
-def create_remote_worker_volume():
-    return _remote_worker_call(_remote_worker.create_volume)
-
-
 @api.get("/api/v1/remote-worker/status")
 def get_remote_worker_status():
     return _remote_worker_call(_remote_worker.status)

@@ -23,7 +23,7 @@ from services.remote_worker import (  # noqa: E402
     RemoteWorkerSettingsStore,
 )
 from services.remote_worker.settings import read_local_dstack_config  # noqa: E402
-from services.remote_worker.worker_spec import build_run_spec  # noqa: E402
+from services.remote_worker.worker_spec import build_run_spec, dstack_secrets  # noqa: E402
 
 
 class FakeResponse:
@@ -48,8 +48,7 @@ class FakeDstack:
         self.calls = []
         self.run = None
         self.token = "tok-123456789abc"
-        self.volumes = [{"name": "maestro-models", "status": "active",
-                         "configuration": {"region": "EU-SE-1"}}]
+        self.secrets = {}
 
     def post(self, url, json=None, headers=None, timeout=None):
         path = url.split("127.0.0.1:3000", 1)[1]
@@ -60,12 +59,9 @@ class FakeDstack:
             return FakeResponse(body={"server_version": "0.20.29"})
         if path.endswith("/fleets/list"):
             return FakeResponse(body=[{"name": "studio-comfy-fleet"}])
-        if path.endswith("/volumes/list"):
-            return FakeResponse(body=self.volumes)
-        if path.endswith("/volumes/create"):
-            config = json["configuration"]
-            self.volumes.append({"name": config["name"], "status": "submitted", "configuration": config})
-            return FakeResponse(body=self.volumes[-1])
+        if path.endswith("/secrets/create_or_update"):
+            self.secrets[json["name"]] = json["value"]
+            return FakeResponse(body={"name": json["name"]})
         if path.endswith("/runs/get"):
             if self.run is None:
                 return FakeResponse(400, {"detail": [{"msg": "Run not found", "code": "resource_not_exists"}]})
@@ -149,21 +145,41 @@ class SettingsTests(unittest.TestCase):
 
 
 class RunSpecTests(unittest.TestCase):
-    def test_spec_has_safety_limits_volume_and_probe(self):
+    def test_spec_has_safety_limits_probe_and_no_volume(self):
         settings = RemoteWorkerSettings(fleet="studio-comfy-fleet", repo_ref="feat/remote")
         spec = build_run_spec(settings)
         config = spec["configuration"]
         self.assertEqual(spec["run_name"], "maestro-worker")
         self.assertEqual(config["type"], "service")
+        self.assertEqual(config["image"], "ghcr.io/quentinriviere/maestro-worker:latest")
         self.assertEqual(config["max_duration"], "4h")
         self.assertEqual(config["max_price"], 0.8)
         self.assertTrue(config["auth"])
-        self.assertEqual(config["volumes"], [{"name": "maestro-models", "path": "/workspace/vol"}])
+        self.assertNotIn("volumes", config)
+        self.assertNotIn("registry_auth", config)
         self.assertEqual(config["fleets"], ["studio-comfy-fleet"])
         self.assertTrue(config["probes"][0]["url"].startswith("/"))
-        self.assertTrue(any("--branch feat/remote" in c for c in config["commands"]))
+        self.assertIn("--branch feat/remote", config["commands"][0])
         self.assertTrue(config["commands"][-1].endswith("remote_worker_boot.sh"))
-        self.assertNotIn("repo_id", spec)
+        self.assertNotIn("R2_ACCOUNT_ID", config["env"])
+        self.assertEqual(dstack_secrets(settings), {})
+
+    def test_r2_and_registry_credentials_are_secret_references(self):
+        settings = RemoteWorkerSettings(
+            r2_account_id="acct", r2_access_key_id="key-id", r2_secret_access_key="key-secret",
+            r2_bucket="videogen", registry_username="quentin", registry_token="ghp_x",
+        )
+        spec = build_run_spec(settings)
+        rendered = json.dumps(spec)
+        for value in ("acct", "key-id", "key-secret", "ghp_x"):
+            self.assertNotIn(value, rendered)
+        env = spec["configuration"]["env"]
+        self.assertEqual(env["R2_SECRET_ACCESS_KEY"], "${{ secrets.MAESTRO_R2_SECRET_ACCESS_KEY }}")
+        self.assertEqual(env["MAESTRO_R2_BUCKET"], "videogen")
+        self.assertEqual(env["MAESTRO_R2_PREFIX"], "maestro")
+        self.assertEqual(spec["configuration"]["registry_auth"]["password"],
+                         "${{ secrets.MAESTRO_REGISTRY_TOKEN }}")
+        self.assertEqual(set(dstack_secrets(settings).values()), {"acct", "key-id", "key-secret", "ghp_x"})
 
 
 class DstackClientTests(unittest.TestCase):
@@ -290,20 +306,24 @@ class ManagerTests(unittest.TestCase):
             self.manager.ensure_ready(None, on_update=on_update, poll_interval=5)
         self.assertIn("no_capacity", str(ctx.exception))
 
-    def test_start_refuses_missing_or_inactive_volume(self):
-        self.fake.volumes = []
-        with self.assertRaises(RemoteWorkerError):
-            self.manager.start()
-        created = self.manager.create_volume()
-        self.assertEqual(created, {"name": "maestro-models", "status": "submitted"})
-        create_body = [c[1] for c in self.fake.calls if c[0].endswith("/volumes/create")][0]
-        self.assertEqual(create_body["configuration"]["region"], "EU-SE-1")
-        self.assertEqual(create_body["configuration"]["size"], "200GB")
-        with self.assertRaises(RemoteWorkerError):
-            self.manager.start()  # still "submitted"
-        with self.assertRaises(RemoteWorkerError):
-            self.manager.create_volume()  # already exists
-        self.assertFalse(any(c[0].endswith("/runs/apply") for c in self.fake.calls))
+    def test_start_pushes_secrets_before_apply(self):
+        self.manager.update_settings({
+            "r2_account_id": "acct", "r2_access_key_id": "key-id",
+            "r2_secret_access_key": "key-secret", "r2_bucket": "videogen",
+        })
+        self.manager.start()
+        paths = [c[0] for c in self.fake.calls]
+        last_secret = max(i for i, p in enumerate(paths) if p.endswith("/secrets/create_or_update"))
+        apply_index = paths.index("/api/project/main/runs/apply")
+        self.assertLess(last_secret, apply_index)
+        self.assertEqual(self.fake.secrets["MAESTRO_R2_SECRET_ACCESS_KEY"], "key-secret")
+
+    def test_masked_secrets_from_ui_keep_stored_values(self):
+        self.manager.update_settings({"r2_secret_access_key": "super-secret-value-123"})
+        public = self.manager.settings.public()
+        self.assertNotIn("super-secret", json.dumps(public))
+        self.manager.update_settings({"r2_secret_access_key": public["r2_secret_access_key"]})
+        self.assertEqual(self.manager.settings.r2_secret_access_key, "super-secret-value-123")
 
     def test_ensure_ready_respects_disabled_auto_start(self):
         self.manager.update_settings({"auto_start": False})

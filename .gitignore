@@ -120,3 +120,6 @@ app/dlss5/
 !docs/development/
 docs/development/*
 !docs/development/wan2gp-12-71-port-plan.md
+
+# Build context copy made by .github/workflows/remote-worker-image.yml
+docker/remote-worker/requirements.txt

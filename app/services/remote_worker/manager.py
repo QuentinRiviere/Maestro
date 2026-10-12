@@ -24,11 +24,13 @@ from typing import Any
 
 from services.remote_worker.dstack_client import DstackClient, DstackError
 from services.remote_worker.settings import (
+    SECRET_FIELDS,
     RemoteWorkerSettings,
     RemoteWorkerSettingsStore,
+    is_masked,
     read_local_dstack_config,
 )
-from services.remote_worker.worker_spec import build_run_spec
+from services.remote_worker.worker_spec import build_run_spec, dstack_secrets
 
 
 log = logging.getLogger("maestro.remote_worker")
@@ -80,10 +82,10 @@ class RemoteWorkerManager:
         with self._lock:
             updated = RemoteWorkerSettings.from_mapping(vars(self._settings))
             payload = dict(data)
-            # The UI sends the masked token back unchanged; ignore it.
-            token = payload.get("token")
-            if isinstance(token, str) and ("…" in token or token == "••••"):
-                payload.pop("token")
+            # The UI sends masked secrets back unchanged; keep the stored ones.
+            for name in SECRET_FIELDS:
+                if is_masked(payload.get(name)):
+                    payload.pop(name)
             updated.update(payload)
             self._store.save(updated)
             self._settings = updated
@@ -105,35 +107,7 @@ class RemoteWorkerManager:
         client = self.client()
         info = client.get_info()
         fleets = [f.get("name") for f in client.list_fleets() if isinstance(f, Mapping)]
-        volumes = [
-            {"name": v.get("name"), "status": v.get("status"),
-             "region": (v.get("configuration") or {}).get("region")}
-            for v in client.list_volumes() if isinstance(v, Mapping)
-        ]
-        return {"server_version": info.get("server_version"), "fleets": fleets, "volumes": volumes}
-
-    def create_volume(self) -> dict[str, Any]:
-        """Create the configured network volume (billed storage, explicit action)."""
-        settings = self.settings
-        if not settings.volume_name:
-            raise RemoteWorkerError("No volume name configured")
-        client = self.client()
-        if self._find_volume(client, settings.volume_name):
-            raise RemoteWorkerError(f"Volume {settings.volume_name} already exists")
-        volume = client.create_volume(
-            name=settings.volume_name,
-            region=settings.volume_region,
-            size=settings.volume_size,
-            backend=(settings.backends or ["runpod"])[0],
-        )
-        return {"name": volume.get("name"), "status": volume.get("status")}
-
-    @staticmethod
-    def _find_volume(client: DstackClient, name: str) -> Mapping[str, Any] | None:
-        for volume in client.list_volumes():
-            if isinstance(volume, Mapping) and volume.get("name") == name and not volume.get("deleted"):
-                return volume
-        return None
+        return {"server_version": info.get("server_version"), "fleets": fleets}
 
     # ── status ─────────────────────────────────────────────────────────────
 
@@ -246,16 +220,8 @@ class RemoteWorkerManager:
             run = client.get_run(settings.run_name)
             if run and str(run.get("status") or "") not in _FINISHED_RUN and not run.get("deleted"):
                 return self.status()
-            if settings.volume_name:
-                volume = self._find_volume(client, settings.volume_name)
-                if volume is None:
-                    raise RemoteWorkerError(
-                        f"Network volume {settings.volume_name} does not exist; create it first"
-                    )
-                if str(volume.get("status") or "") != "active":
-                    raise RemoteWorkerError(
-                        f"Network volume {settings.volume_name} is {volume.get('status')}, not active yet"
-                    )
+            for name, value in dstack_secrets(settings).items():
+                client.set_secret(name, value)
             self._stop_reason = None
             self._last_activity = self._clock()
             client.apply(build_run_spec(settings))

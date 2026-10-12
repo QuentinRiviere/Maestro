@@ -12,36 +12,61 @@ SOURCE_DIR = "/workspace/maestro"
 # Cheap endpoint that answers once launch.py has finished importing wgp.
 HEALTH_PATH = "/api/v1/system-stats"
 
+# dstack project secrets pushed by the manager before each start. The run spec
+# only references them, so credentials never appear in run specs or logs.
+SECRET_R2_ACCOUNT_ID = "MAESTRO_R2_ACCOUNT_ID"
+SECRET_R2_ACCESS_KEY_ID = "MAESTRO_R2_ACCESS_KEY_ID"
+SECRET_R2_SECRET_ACCESS_KEY = "MAESTRO_R2_SECRET_ACCESS_KEY"
+SECRET_REGISTRY_TOKEN = "MAESTRO_REGISTRY_TOKEN"
+
+
+def _secret_ref(name: str) -> str:
+    return "${{ secrets.%s }}" % name
+
+
+def dstack_secrets(settings: RemoteWorkerSettings) -> dict[str, str]:
+    """Secrets the run spec references, with their values."""
+    secrets: dict[str, str] = {}
+    if settings.r2_configured:
+        secrets[SECRET_R2_ACCOUNT_ID] = settings.r2_account_id
+        secrets[SECRET_R2_ACCESS_KEY_ID] = settings.r2_access_key_id
+        secrets[SECRET_R2_SECRET_ACCESS_KEY] = settings.r2_secret_access_key
+    if settings.registry_username and settings.registry_token:
+        secrets[SECRET_REGISTRY_TOKEN] = settings.registry_token
+    return secrets
+
 
 def build_run_spec(settings: RemoteWorkerSettings) -> dict[str, Any]:
     """Service spec: clone Maestro at ``repo_ref`` and run the boot script.
 
-    Safety nets live in the spec itself so a crashed or closed Maestro can
-    never leave a pod billing forever: ``max_duration`` and ``max_price`` are
-    always set. The 30 min idle stop is enforced by Maestro, because dstack's
-    ``idle_duration`` is not honoured on RunPod.
+    The image (docker/remote-worker) carries the Python environment, so a boot
+    is: pull image, clone code, start Maestro. Safety nets live in the spec so
+    a crashed or closed Maestro never leaves a pod billing forever:
+    ``max_duration`` and ``max_price`` are always set. The idle stop is
+    enforced by Maestro because dstack's ``idle_duration`` is not honoured on
+    RunPod.
     """
     clone = (
         f"rm -rf {SOURCE_DIR} && "
         f"git clone --depth 1 --branch {shlex.quote(settings.repo_ref)} "
         f"{shlex.quote(settings.repo_url)} {SOURCE_DIR}"
     )
+    env: dict[str, str] = {"SERVER_PORT": str(WORKER_PORT)}
+    if settings.r2_configured:
+        env.update({
+            "R2_ACCOUNT_ID": _secret_ref(SECRET_R2_ACCOUNT_ID),
+            "R2_ACCESS_KEY_ID": _secret_ref(SECRET_R2_ACCESS_KEY_ID),
+            "R2_SECRET_ACCESS_KEY": _secret_ref(SECRET_R2_SECRET_ACCESS_KEY),
+            "MAESTRO_R2_BUCKET": settings.r2_bucket,
+            "MAESTRO_R2_PREFIX": settings.r2_prefix,
+        })
     configuration: dict[str, Any] = {
         "type": "service",
         "name": settings.run_name,
         "image": settings.image,
-        "commands": [
-            "export DEBIAN_FRONTEND=noninteractive",
-            "command -v git >/dev/null || (apt-get update -qq && apt-get install -y -qq git >/dev/null)",
-            clone,
-            f"bash {SOURCE_DIR}/app/scripts/remote_worker_boot.sh",
-        ],
+        "commands": [clone, f"bash {SOURCE_DIR}/app/scripts/remote_worker_boot.sh"],
         "port": WORKER_PORT,
-        "env": {
-            "SERVER_PORT": str(WORKER_PORT),
-            "MAESTRO_VOLUME": settings.volume_path,
-            "MAESTRO_TORCH_INDEX": settings.torch_index,
-        },
+        "env": env,
         "resources": {"gpu": settings.gpu, "disk": settings.disk},
         "backends": list(settings.backends),
         "spot_policy": settings.spot_policy,
@@ -57,8 +82,11 @@ def build_run_spec(settings: RemoteWorkerSettings) -> dict[str, Any]:
             "ready_after": 2,
         }],
     }
-    if settings.volume_name:
-        configuration["volumes"] = [{"name": settings.volume_name, "path": settings.volume_path}]
+    if settings.registry_username and settings.registry_token:
+        configuration["registry_auth"] = {
+            "username": settings.registry_username,
+            "password": _secret_ref(SECRET_REGISTRY_TOKEN),
+        }
     if settings.fleet:
         configuration["fleets"] = [settings.fleet]
     return {"run_name": settings.run_name, "configuration": configuration}

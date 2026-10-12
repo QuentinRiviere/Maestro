@@ -73,20 +73,9 @@ class DstackClient:
     def list_fleets(self) -> list[Mapping[str, Any]]:
         return self._post(self._project_path("fleets/list")) or []
 
-    def list_volumes(self) -> list[Mapping[str, Any]]:
-        return self._post(self._project_path("volumes/list")) or []
-
-    def create_volume(self, *, name: str, region: str, size: str, backend: str = "runpod") -> Mapping[str, Any]:
-        return self._post(self._project_path("volumes/create"), {
-            "configuration": {
-                "type": "volume",
-                "backend": backend,
-                "name": name,
-                "region": region,
-                "size": size,
-                "auto_cleanup_duration": "off",
-            },
-        })
+    def set_secret(self, name: str, value: str) -> None:
+        """Create or update a project secret, referenced as ``${{ secrets.NAME }}``."""
+        self._post(self._project_path("secrets/create_or_update"), {"name": name, "value": value})
 
     # ── runs ───────────────────────────────────────────────────────────────
 

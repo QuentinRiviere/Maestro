@@ -224,12 +224,6 @@ export function RemoteWorkerPanel() {
     setMessage({ tone: 'info', text: `Connected to dstack ${result.server_version}.` })
   })
 
-  const createVolume = () => run('volume', async () => {
-    const created = await api.createRemoteWorkerVolume()
-    setMessage({ tone: 'info', text: `Volume ${created.name} is ${created.status}. It becomes usable once active.` })
-    setConnection(await api.testRemoteWorkerConnection())
-  })
-
   const start = () => run('start', async () => {
     setLogs([])
     lastLogTimestamp.current = undefined
@@ -244,7 +238,19 @@ export function RemoteWorkerPanel() {
     return <div className="text-[10px] text-text-muted">{busy === 'load' ? 'Loading…' : message?.text}</div>
   }
 
-  const volumeKnown = connection?.volumes.find(volume => volume.name === merged.volume_name)
+  const secretField = (
+    key: 'registry_token' | 'r2_access_key_id' | 'r2_secret_access_key',
+    label: string,
+    stored: boolean,
+  ) => (
+    <Field
+      label={label}
+      type="password"
+      value={draft[key] ?? ''}
+      onChange={value => update(key, value)}
+      placeholder={stored ? `Stored (${settings?.[key]}) · type to replace` : ''}
+    />
+  )
   const canStart = merged.configured && !dirty && !ACTIVE_STATES.includes(state) && busy === null
   const canStop = merged.configured && (state === 'starting' || state === 'booting' || state === 'ready') && busy === null
 
@@ -404,7 +410,7 @@ export function RemoteWorkerPanel() {
       <section className="space-y-3 rounded-lg border border-border bg-bg-tertiary p-3">
         <div className="flex items-center gap-2">
           <HardDrive size={14} className="text-accent-blue" />
-          <div className="text-xs font-medium text-text-primary">GPU, limits and storage</div>
+          <div className="text-xs font-medium text-text-primary">GPU and limits</div>
         </div>
         {connection?.fleets.length ? (
           <label className="block space-y-1">
@@ -425,27 +431,10 @@ export function RemoteWorkerPanel() {
           <Field label="GPU" value={merged.gpu} onChange={value => update('gpu', value)} placeholder="48GB.." />
           <Field label="Max price ($/h)" type="number" value={merged.max_price} onChange={value => update('max_price', Number(value))} />
           <Field label="Max duration" value={merged.max_duration} onChange={value => update('max_duration', value)} placeholder="4h" />
-          <Field label="Disk" value={merged.disk} onChange={value => update('disk', value)} placeholder="100GB.." />
+          <Field label="Disk" value={merged.disk} onChange={value => update('disk', value)} placeholder="200GB.." />
         </div>
         <div className="text-[9px] leading-relaxed text-text-muted">
           Max duration and max price are enforced by dstack even if this computer is off.
-        </div>
-
-        <div className="grid grid-cols-2 gap-2">
-          <Field label="Volume" value={merged.volume_name} onChange={value => update('volume_name', value)} />
-          <Field label="Region" value={merged.volume_region} onChange={value => update('volume_region', value)} placeholder="EU-SE-1" />
-          <Field label="Size" value={merged.volume_size} onChange={value => update('volume_size', value)} placeholder="200GB" />
-          <div className="flex items-end">
-            <ActionButton
-              onClick={createVolume}
-              disabled={busy !== null || dirty || !merged.configured || !connection || Boolean(volumeKnown)}
-            >
-              <HardDrive size={11} /> {volumeKnown ? volumeKnown.status : 'Create volume'}
-            </ActionButton>
-          </div>
-        </div>
-        <div className="text-[9px] leading-relaxed text-text-muted">
-          The volume keeps weights, LoRAs and the Python environment between runs (billed storage, about $0.07/GB/month). It pins the worker to its region.
         </div>
 
         <button
@@ -461,7 +450,13 @@ export function RemoteWorkerPanel() {
             <Field label="Branch or tag" value={merged.repo_ref} onChange={value => update('repo_ref', value)} />
             <Field label="Run name" value={merged.run_name} onChange={value => update('run_name', value)} />
             <Field label="Container image" value={merged.image} onChange={value => update('image', value)} />
-            <Field label="PyTorch wheel index" value={merged.torch_index} onChange={value => update('torch_index', value)} />
+            <Field
+              label="Registry username"
+              value={merged.registry_username}
+              onChange={value => update('registry_username', value)}
+              hint="Only while the GHCR image is private; use a token with read:packages."
+            />
+            {secretField('registry_token', 'Registry token', merged.registry_token_set)}
             <Field label="Spot policy" value={merged.spot_policy} onChange={value => update('spot_policy', value)} placeholder="on-demand | spot | auto" />
             <Field
               label="Backends"
@@ -470,6 +465,29 @@ export function RemoteWorkerPanel() {
             />
           </div>
         )}
+      </section>
+
+      {/* ── R2 checkpoint cache ──────────────────────────────────── */}
+      <section className="space-y-3 rounded-lg border border-border bg-bg-tertiary p-3">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <HardDrive size={14} className="text-accent-blue" />
+            <div className="text-xs font-medium text-text-primary">Checkpoint cache (R2)</div>
+          </div>
+          <span className={`text-[9px] ${merged.r2_configured ? 'text-emerald-300' : 'text-text-muted'}`}>
+            {merged.r2_configured ? 'Enabled' : 'Off'}
+          </span>
+        </div>
+        <div className="text-[9px] leading-relaxed text-text-muted">
+          Weights the worker downloads are copied to your Cloudflare R2 bucket, then pulled from there on the next boot. Credentials are sent to dstack as project secrets, never written in the run spec.
+        </div>
+        <Field label="Account ID" value={merged.r2_account_id} onChange={value => update('r2_account_id', value)} />
+        {secretField('r2_access_key_id', 'Access key ID', merged.r2_access_key_id_set)}
+        {secretField('r2_secret_access_key', 'Secret access key', merged.r2_secret_access_key_set)}
+        <div className="grid grid-cols-2 gap-2">
+          <Field label="Bucket" value={merged.r2_bucket} onChange={value => update('r2_bucket', value)} />
+          <Field label="Prefix" value={merged.r2_prefix} onChange={value => update('r2_prefix', value)} placeholder="maestro" />
+        </div>
       </section>
 
       <div className="flex items-center gap-2">

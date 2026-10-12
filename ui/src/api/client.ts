@@ -2174,10 +2174,6 @@ export function stopRemoteWorker(): Promise<import('../types').RemoteWorkerStatu
   return remoteWorkerRequest('/stop', { method: 'POST' }, 'Could not stop the remote worker')
 }
 
-export function createRemoteWorkerVolume(): Promise<{ name: string; status: string }> {
-  return remoteWorkerRequest('/volume', { method: 'POST' }, 'Could not create the network volume')
-}
-
 export async function fetchRemoteWorkerLogs(since?: string): Promise<import('../types').RemoteWorkerLogLine[]> {
   const query = since ? `?since=${encodeURIComponent(since)}` : ''
   const payload = await remoteWorkerRequest<{ lines: import('../types').RemoteWorkerLogLine[] }>(
