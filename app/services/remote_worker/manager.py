@@ -174,7 +174,16 @@ class RemoteWorkerManager:
             self._mark_not_ready()
             reason = submission.get("termination_reason_message") or submission.get("termination_reason")
             if run_status == "failed":
-                details["message"] = f"Last run failed: {reason or run.get('termination_reason') or 'unknown'}"
+                reason = reason or run.get("termination_reason") or "unknown"
+                details["message"] = f"Last run failed: {reason}"
+                if "no_capacity" in str(reason) or "no offers" in str(reason).lower():
+                    settings = self.settings
+                    details["message"] += (
+                        f". No GPU offer matched gpu {settings.gpu}, disk {settings.disk}, "
+                        f"max ${settings.max_price}/h"
+                        + (f" and fleet {settings.fleet}" if settings.fleet else "")
+                        + ". Raise the max price, relax the GPU or disk, or drop the fleet."
+                    )
             elif self._stop_reason:
                 details["message"] = self._stop_reason
             return {**details, "state": "stopped"}
