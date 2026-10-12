@@ -2,7 +2,7 @@
     "model": {
         "name": "FLUX.1 Dev + LoRA (Replicate)",
         "architecture": "cloud_flux_lora",
-        "description": "FLUX.1 [dev] on Replicate with up to two Flux.1 D LoRAs. CivitAI LoRAs are fetched by Replicate (latest version, using your CivitAI key); others are uploaded (100 MB max). About $0.032 per image.",
+        "description": "FLUX.1 [dev] on Replicate with up to two Flux.1 D LoRAs. LoRAs are served from your R2 bucket when configured; otherwise CivitAI LoRAs are fetched by Replicate (latest version) and others uploaded (100 MB max). About $0.032 per image.",
         "cloud": {
             "provider": "replicate",
             "endpoint": "black-forest-labs/flux-dev-lora",

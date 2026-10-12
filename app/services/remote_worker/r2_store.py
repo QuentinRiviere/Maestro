@@ -128,6 +128,15 @@ class R2Store:
             raise R2StoreError(f"R2 upload of {os.path.basename(local_path)} failed: {exc}") from exc
         return key
 
+    def presigned_url(self, key: str, *, expires_seconds: int = 6 * 3600) -> str:
+        """Time-limited GET URL; lets a third party read one object only."""
+        try:
+            return self._client.generate_presigned_url(
+                "get_object", Params={"Bucket": self.bucket, "Key": key}, ExpiresIn=int(expires_seconds),
+            )
+        except Exception as exc:
+            raise R2StoreError(f"R2 presign of {key} failed: {exc}") from exc
+
     def download(self, key: str, local_path: str) -> str:
         os.makedirs(os.path.dirname(os.path.abspath(local_path)), exist_ok=True)
         part = f"{local_path}.part"

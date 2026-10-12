@@ -24,8 +24,10 @@ provider endpoint, so a new hosted model needs only a JSON file:
         "input": {"output_format": "png"}          # static extra input
     }
 
-LoRAs are local files: fal receives them through its storage upload (cached),
-Replicate through the CivitAI model ID when known, else its Files API.
+LoRAs are local files. When the controller has an R2 bucket they are served
+from it through presigned URLs (both providers accept any .safetensors URL).
+Otherwise fal receives them through its CDN upload (cached), Replicate through
+the CivitAI model ID when known, else its Files API.
 """
 from __future__ import annotations
 
@@ -48,7 +50,10 @@ PROVIDER_API_KEY_ENV = {
     "replicate": ("MAESTRO_REPLICATE_API_TOKEN", "REPLICATE_API_TOKEN"),
 }
 FAL_QUEUE_URL = "https://queue.fal.run"
-FAL_STORAGE_URL = "https://rest.fal.ai/storage/upload/initiate?storage_type=gcs"
+FAL_TOKEN_URL = "https://rest.fal.ai/storage/auth/token?storage_type=fal-cdn-v3"
+FAL_CDN_URL = "https://v3.fal.media"
+FAL_MULTIPART_THRESHOLD = 100 * 1024 * 1024
+FAL_MULTIPART_CHUNK = 10 * 1024 * 1024
 REPLICATE_API_URL = "https://api.replicate.com/v1"
 POLL_SECONDS = 1.5
 TIMEOUT_SECONDS = 15 * 60
@@ -261,18 +266,31 @@ class FalClient:
         return _data_uri(path)
 
     def upload_lora(self, lora: CloudLora) -> str:
-        initiate = self._http.post(
-            FAL_STORAGE_URL,
-            json={"file_name": lora.name, "content_type": "application/octet-stream"},
-            headers=self._headers,
-        )
-        target = _check(initiate, self.provider).json()
+        """Upload to the fal CDN (v3), in parts above 100 MB like fal_client."""
+        token = _check(self._http.post(FAL_TOKEN_URL, json={}, headers=self._headers), self.provider).json()
+        auth = {"Authorization": f"{token['token_type']} {token['token']}"}
+        headers = {**auth, "Content-Type": "application/octet-stream", "X-Fal-File-Name": lora.name}
+        slow = httpx.Timeout(1800.0, connect=15.0)
+        if os.path.getsize(lora.path) <= FAL_MULTIPART_THRESHOLD:
+            with open(lora.path, "rb") as handle:
+                response = self._http.post(f"{FAL_CDN_URL}/files/upload", content=handle.read(),
+                                           headers=headers, timeout=slow)
+            return _check(response, self.provider).json()["access_url"]
+        base = token.get("base_url") or FAL_CDN_URL
+        created = _check(self._http.post(f"{base}/files/upload/multipart",
+                                         headers={**headers, "Accept": "application/json"}), self.provider).json()
+        access_url, upload_id = created["access_url"], created["uploadId"]
+        parts = []
         with open(lora.path, "rb") as handle:
-            put = self._http.put(target["upload_url"], content=handle,
-                                 headers={"Content-Type": "application/octet-stream"},
-                                 timeout=httpx.Timeout(1800.0, connect=15.0))
-        _check(put, self.provider)
-        return target["file_url"]
+            for number, chunk in enumerate(iter(lambda: handle.read(FAL_MULTIPART_CHUNK), b""), start=1):
+                response = _check(self._http.put(
+                    f"{access_url}/multipart/{upload_id}/{number}", content=chunk, timeout=slow,
+                    headers={**auth, "Content-Type": "application/octet-stream", "Accept-Encoding": "identity"},
+                ), self.provider)
+                parts.append({"partNumber": number, "etag": response.headers["etag"]})
+        _check(self._http.post(f"{access_url}/multipart/{upload_id}/complete",
+                               json={"parts": parts}, headers=auth), self.provider)
+        return access_url
 
     @staticmethod
     def lora_reference(lora: CloudLora) -> str | None:
@@ -403,6 +421,7 @@ def generate(
     civitai_token: str = "",
     upload_cache: UploadCache | None = None,
     wall_clock: Callable[[], float] = time.time,
+    lora_url: Callable[[CloudLora], str | None] | None = None,
 ) -> list[CloudImage]:
     """Run one cloud request and return the downloaded images."""
     provider = spec["provider"]
@@ -435,7 +454,11 @@ def generate(
         if loras:
             refs = []
             for lora in loras:
-                url = client.lora_reference(lora)
+                url = None
+                if lora_url is not None:
+                    update(phase="Cloud", message=f"Publishing LoRA {lora.name} from R2…", progress=5)
+                    url = lora_url(lora)
+                url = url or client.lora_reference(lora)
                 if url is None and upload_cache is not None:
                     url = upload_cache.get(provider, lora.path, wall_clock())
                 if url is None:

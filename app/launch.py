@@ -25669,6 +25669,27 @@ def _cloud_loras(raw_params: dict) -> list:
     return loras
 
 
+def _cloud_lora_r2_url():
+    """Serve cloud LoRAs from the R2 bucket when one is configured.
+
+    Keys are the same content-addressed assets the remote worker uses, so a
+    LoRA already sent to the GPU worker is not uploaded again. Presigned URLs
+    keep the bucket private and expire after a few hours.
+    """
+    from services.remote_worker.r2_store import R2Store
+    from services.remote_worker.job_forwarder import _sha256
+
+    store = R2Store.from_settings(_remote_worker.settings)
+    if store is None:
+        return None
+
+    def url_for(lora):
+        key = store.asset_key(_sha256(lora.path), lora.name)
+        store.upload(lora.path, key)
+        return store.presigned_url(key)
+    return url_for
+
+
 def _run_cloud_generation(job: dict, raw_params: dict, *, finalize: bool) -> bool:
     """Generate images through a hosted provider API and save them here."""
     from datetime import datetime
@@ -25693,6 +25714,7 @@ def _run_cloud_generation(job: dict, raw_params: dict, *, finalize: bool) -> boo
             loras=_cloud_loras(raw_params),
             civitai_token=str(services.get("civitai_api_key") or ""),
             upload_cache=cloud_image.UploadCache(_CLOUD_UPLOAD_CACHE_PATH),
+            lora_url=_cloud_lora_r2_url(),
         )
     except cloud_image.CloudImageCancelled:
         return False

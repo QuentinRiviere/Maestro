@@ -2,7 +2,7 @@
     "model": {
         "name": "FLUX.1 Dev + LoRA (fal.ai)",
         "architecture": "cloud_flux_lora",
-        "description": "FLUX.1 [dev] on fal.ai with your Flux.1 D LoRAs (any number). Local LoRA files are uploaded to fal storage once and reused. About $0.035 per megapixel.",
+        "description": "FLUX.1 [dev] on fal.ai with your Flux.1 D LoRAs (up to 5). LoRAs are served from your R2 bucket when configured, else uploaded to the fal CDN once and reused. About $0.035 per megapixel.",
         "cloud": {
             "provider": "fal",
             "endpoint": "fal-ai/flux-lora",
