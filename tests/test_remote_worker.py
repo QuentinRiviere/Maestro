@@ -369,6 +369,42 @@ class ManagerTests(unittest.TestCase):
         self.assertTrue(self.manager.idle_tick())
         self.assertTrue(any(c[0].endswith("/runs/stop") for c in self.fake.calls))
 
+    def test_stop_when_queue_empty_skips_the_ttl(self):
+        self.manager.update_settings({"stop_when_queue_empty": True})
+        pending = [True]
+        self.manager.pending_work = lambda: pending[0]
+        self.manager.start()
+        self.fake.to_running(ready=True)
+        self.manager.status()
+        self.clock.now += 5 * 60
+        self.assertFalse(self.manager.idle_tick())  # queue still busy: TTL applies
+
+        pending[0] = False
+        self.assertTrue(self.manager.idle_tick())
+        self.fake.finish()
+        self.assertEqual(self.manager.status()["message"], "Stopped: generation queue is empty")
+
+    def test_queue_empty_stop_waits_a_short_grace(self):
+        self.manager.update_settings({"stop_when_queue_empty": True})
+        self.manager.start()
+        self.fake.to_running(ready=True)
+        self.manager.status()
+        self.manager.job_started()
+        self.manager.job_finished()
+        self.clock.now += 10
+        self.assertFalse(self.manager.idle_tick())
+        self.clock.now += 30
+        self.assertTrue(self.manager.idle_tick())
+
+    def test_failing_queue_check_keeps_the_worker(self):
+        self.manager.update_settings({"stop_when_queue_empty": True})
+        self.manager.pending_work = lambda: 1 / 0
+        self.manager.start()
+        self.fake.to_running(ready=True)
+        self.manager.status()
+        self.clock.now += 5 * 60
+        self.assertFalse(self.manager.idle_tick())
+
     def test_idle_clock_does_not_run_while_booting(self):
         self.manager.start()
         self.fake.to_running(ready=False)

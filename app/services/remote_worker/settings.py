@@ -56,6 +56,8 @@ class RemoteWorkerSettings:
     r2_prefix: str = "maestro"
     # behaviour
     idle_ttl_minutes: int = 30
+    # Stop as soon as nothing is queued or running instead of waiting the TTL.
+    stop_when_queue_empty: bool = False
     route_generations: bool = False
     auto_start: bool = True
 

@@ -44,6 +44,11 @@ class RemoteWorkerError(RuntimeError):
     pass
 
 
+# With stop_when_queue_empty, the worker waits this long after its last job so
+# a follow-up job (next queue item, next Director shot) can claim it.
+QUEUE_EMPTY_GRACE_SECONDS = 30.0
+
+
 class RemoteWorkerManager:
     def __init__(
         self,
@@ -54,6 +59,7 @@ class RemoteWorkerManager:
         sleep: Callable[[float], None] = time.sleep,
         proxy_check: Callable[[str, str], bool] | None = None,
         environ: Mapping[str, str] | None = None,
+        pending_work: Callable[[], bool] | None = None,
     ) -> None:
         self._store = store
         self._env = env_overrides(environ)
@@ -64,6 +70,9 @@ class RemoteWorkerManager:
         )
         self._clock = clock
         self._sleep = sleep
+        # Whether the host still has queued or running generations (set by
+        # launch.py, which owns the job queue).
+        self.pending_work: Callable[[], bool] = pending_work or (lambda: False)
         self._lock = threading.RLock()
         self._active_jobs = 0
         self._ready_since: float | None = None
@@ -222,7 +231,7 @@ class RemoteWorkerManager:
             "idle_seconds": int(idle_seconds),
             "idle_stop_in_seconds": (
                 None if self._active_jobs
-                else max(0, int(self.settings.idle_ttl_minutes * 60 - idle_seconds))
+                else max(0, int(self._idle_limit_seconds() - idle_seconds))
             ),
         })
         return details
@@ -345,8 +354,22 @@ class RemoteWorkerManager:
 
     # ── idle watchdog ──────────────────────────────────────────────────────
 
+    def _idle_limit_seconds(self) -> float:
+        settings = self.settings
+        ttl = settings.idle_ttl_minutes * 60
+        if settings.stop_when_queue_empty and not self._has_pending_work():
+            return min(ttl, QUEUE_EMPTY_GRACE_SECONDS)
+        return ttl
+
+    def _has_pending_work(self) -> bool:
+        try:
+            return bool(self.pending_work())
+        except Exception as exc:  # an unknown queue state must not stop the worker
+            log.warning("remote worker pending-work check failed: %s", exc)
+            return True
+
     def idle_tick(self) -> bool:
-        """Stop the worker when idle past the TTL. Returns True if stopped."""
+        """Stop the worker when idle past its limit. Returns True if stopped."""
         settings = self.settings
         if not settings.configured:
             return False
@@ -354,9 +377,13 @@ class RemoteWorkerManager:
             if self._active_jobs or self._ready_since is None or self._last_activity is None:
                 return False
             idle = self._clock() - self._last_activity
-        if idle < settings.idle_ttl_minutes * 60:
+        limit = self._idle_limit_seconds()
+        if idle < limit:
             return False
-        self.stop(reason=f"Stopped after {settings.idle_ttl_minutes} min without generation")
+        if limit < settings.idle_ttl_minutes * 60:
+            self.stop(reason="Stopped: generation queue is empty")
+        else:
+            self.stop(reason=f"Stopped after {settings.idle_ttl_minutes} min without generation")
         return True
 
     def start_watchdog(self, interval: float = 30.0) -> None:

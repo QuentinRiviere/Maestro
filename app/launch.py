@@ -412,6 +412,12 @@ register_terminal_listener(_studio_job_archive.save)
 register_terminal_listener(lambda job, status: _generation_previews.clear(str(job.get("id") or "")))
 _studio_submission_lock = threading.RLock()
 _gen_lock = threading.Lock()
+# Director projects keep their parent job running between shots, so this also
+# holds the remote worker across a whole project.
+_remote_worker.pending_work = lambda: any(
+    snapshot_job(job).get("status") in {"queued", "running"}
+    for job in list(_jobs.values())
+)
 
 
 def _play_host_completion_sound() -> None:

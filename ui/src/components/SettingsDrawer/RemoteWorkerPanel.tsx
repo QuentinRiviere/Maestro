@@ -372,6 +372,13 @@ export function RemoteWorkerPanel() {
           description={isLocked('auto_start') ? 'Set by environment.' : 'Clicking Generate deploys the worker when it is not running, then sends the job once it is ready.'}
           disabled={!merged.configured || isLocked('auto_start')}
         />
+        <Toggle
+          checked={merged.stop_when_queue_empty}
+          onChange={checked => update('stop_when_queue_empty', checked)}
+          label="Stop the worker when the queue is empty"
+          description={isLocked('stop_when_queue_empty') ? 'Set by environment.' : 'Stops about 30 seconds after the last queued generation (or Director project) finishes, instead of waiting the idle time below.'}
+          disabled={!merged.configured || isLocked('stop_when_queue_empty')}
+        />
         <Field locked={isLocked('idle_ttl_minutes')}
           label="Stop after idle (minutes)"
           type="number"
