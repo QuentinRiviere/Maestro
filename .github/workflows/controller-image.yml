@@ -1,0 +1,67 @@
+name: Controller image
+
+# Builds the Maestro controller image (docker/controller/Dockerfile): UI + API
+# without a local GPU, for a Mac that sends generations to the remote worker.
+# Unlike the worker image it bakes the application code, so it rebuilds on
+# any app/UI change.
+on:
+  push:
+    branches: [main, feat/comfy-inference-backend]
+    paths:
+      - app/**
+      - ui/**
+      - docker/controller/**
+      - .dockerignore
+      - .github/workflows/controller-image.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: controller-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          df -h /
+
+      - name: Compute tags
+        id: meta
+        run: |
+          owner="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          branch="$(echo '${{ github.ref_name }}' | tr '/' '-')"
+          echo "image=ghcr.io/${owner}/maestro-controller" >> "$GITHUB_OUTPUT"
+          echo "branch=${branch}" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/controller/Dockerfile
+          # decord has no linux/arm64 build; Apple Silicon runs it via Rosetta.
+          platforms: linux/amd64
+          push: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          tags: |
+            ${{ steps.meta.outputs.image }}:latest
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.branch }}
+            ${{ steps.meta.outputs.image }}:sha-${{ steps.meta.outputs.sha }}

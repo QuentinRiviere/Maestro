@@ -1,7 +1,8 @@
 # Maestro controller image: UI + API without a local GPU, for a Mac (or any
 # CPU host) that sends generations to the remote GPU worker.
 #
-#   docker compose -f docker/controller/compose.yaml up --build
+#   docker compose -f docker/controller/compose.yaml up -d   (published image)
+#   add -f docker/controller/compose.build.yaml --build to build locally
 #
 # Build context is the repository root. The image targets linux/amd64 (run
 # through Rosetta on Apple Silicon) because decord, imported by the engine at

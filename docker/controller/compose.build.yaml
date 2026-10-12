@@ -1,0 +1,7 @@
+# Override: build the controller image from this checkout.
+services:
+  maestro:
+    image: maestro-controller:local
+    build:
+      context: ../..
+      dockerfile: docker/controller/Dockerfile
