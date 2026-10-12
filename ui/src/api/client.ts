@@ -2125,6 +2125,67 @@ export async function disableTailscaleRemoteAccess(): Promise<import('../types')
   return res.json()
 }
 
+// --- Remote GPU worker (dstack) ---
+
+async function remoteWorkerRequest<T>(path: string, init?: RequestInit, fallback = 'Remote worker request failed'): Promise<T> {
+  const res = await fetch(`${BASE}/api/v1/remote-worker${path}`, init)
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: fallback }))
+    throw new Error(typeof err.detail === 'string' ? err.detail : fallback)
+  }
+  return res.json()
+}
+
+export function fetchRemoteWorkerSettings(): Promise<import('../types').RemoteWorkerSettings> {
+  return remoteWorkerRequest('/settings', undefined, 'Failed to read remote worker settings')
+}
+
+export function updateRemoteWorkerSettings(
+  settings: Partial<import('../types').RemoteWorkerSettings>,
+): Promise<import('../types').RemoteWorkerSettings> {
+  return remoteWorkerRequest('/settings', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(settings),
+  }, 'Failed to save remote worker settings')
+}
+
+export function importRemoteWorkerDstackConfig(): Promise<import('../types').RemoteWorkerSettings> {
+  return remoteWorkerRequest('/settings/import-dstack', { method: 'POST' }, 'Could not read ~/.dstack/config.yml')
+}
+
+export function testRemoteWorkerConnection(): Promise<import('../types').RemoteWorkerConnectionTest> {
+  return remoteWorkerRequest('/test', { method: 'POST' }, 'Could not reach the dstack server')
+}
+
+export function fetchRemoteWorkerStatus(): Promise<import('../types').RemoteWorkerStatus> {
+  return remoteWorkerRequest('/status', undefined, 'Failed to read remote worker status')
+}
+
+export function startRemoteWorker(modelType?: string): Promise<import('../types').RemoteWorkerStatus> {
+  return remoteWorkerRequest('/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model_type: modelType || null }),
+  }, 'Could not start the remote worker')
+}
+
+export function stopRemoteWorker(): Promise<import('../types').RemoteWorkerStatus> {
+  return remoteWorkerRequest('/stop', { method: 'POST' }, 'Could not stop the remote worker')
+}
+
+export function createRemoteWorkerVolume(): Promise<{ name: string; status: string }> {
+  return remoteWorkerRequest('/volume', { method: 'POST' }, 'Could not create the network volume')
+}
+
+export async function fetchRemoteWorkerLogs(since?: string): Promise<import('../types').RemoteWorkerLogLine[]> {
+  const query = since ? `?since=${encodeURIComponent(since)}` : ''
+  const payload = await remoteWorkerRequest<{ lines: import('../types').RemoteWorkerLogLine[] }>(
+    `/logs${query}`, undefined, 'Failed to read worker logs',
+  )
+  return payload.lines
+}
+
 // --- Performance Auto-Tune ---
 
 /** Read the user's current hardware + the auto-tune recommendation

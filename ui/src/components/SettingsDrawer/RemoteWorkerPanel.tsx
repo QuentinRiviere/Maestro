@@ -1,0 +1,488 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  ChevronDown,
+  ChevronRight,
+  Cloud,
+  Download,
+  HardDrive,
+  Play,
+  PlugZap,
+  RefreshCw,
+  Save,
+  Square,
+} from 'lucide-react'
+import { useStore } from '../../stores/useStore'
+import * as api from '../../api/client'
+import type {
+  RemoteWorkerConnectionTest,
+  RemoteWorkerLogLine,
+  RemoteWorkerSettings,
+  RemoteWorkerState,
+  RemoteWorkerStatus,
+} from '../../types'
+import { Toggle } from './NotificationSettingsPanel'
+
+const STATE_LABEL: Record<RemoteWorkerState, string> = {
+  not_configured: 'Not configured',
+  unknown: 'Unreachable',
+  stopped: 'Stopped',
+  starting: 'Starting · waiting for a GPU',
+  booting: 'Booting Maestro',
+  ready: 'Ready',
+  stopping: 'Stopping',
+}
+
+const STATE_DOT: Record<RemoteWorkerState, string> = {
+  not_configured: 'bg-text-muted',
+  unknown: 'bg-amber-400',
+  stopped: 'bg-text-muted',
+  starting: 'bg-amber-400 animate-pulse',
+  booting: 'bg-amber-400 animate-pulse',
+  ready: 'bg-emerald-400',
+  stopping: 'bg-amber-400',
+}
+
+const ACTIVE_STATES: RemoteWorkerState[] = ['starting', 'booting', 'ready', 'stopping']
+const LOG_STATES: RemoteWorkerState[] = ['starting', 'booting']
+
+function formatMinutes(seconds: number | null | undefined): string {
+  if (seconds == null) return '—'
+  const minutes = Math.ceil(seconds / 60)
+  return minutes <= 1 ? '< 1 min' : `${minutes} min`
+}
+
+function Field({
+  label,
+  value,
+  onChange,
+  type = 'text',
+  placeholder,
+  hint,
+}: {
+  label: string
+  value: string | number
+  onChange: (value: string) => void
+  type?: 'text' | 'password' | 'number'
+  placeholder?: string
+  hint?: string
+}) {
+  return (
+    <label className="block space-y-1">
+      <span className="text-[10px] text-text-secondary">{label}</span>
+      <input
+        type={type}
+        value={value}
+        placeholder={placeholder}
+        onChange={event => onChange(event.target.value)}
+        className="w-full rounded-md border border-border bg-bg-primary px-2 py-1.5 text-[11px] text-text-primary placeholder:text-text-muted focus:border-accent-blue focus:outline-none"
+      />
+      {hint && <span className="block text-[9px] leading-relaxed text-text-muted">{hint}</span>}
+    </label>
+  )
+}
+
+function ActionButton({
+  onClick,
+  disabled,
+  children,
+  tone = 'neutral',
+}: {
+  onClick: () => void
+  disabled?: boolean
+  children: React.ReactNode
+  tone?: 'neutral' | 'primary' | 'danger'
+}) {
+  const toneClass = tone === 'primary'
+    ? 'border-accent-blue/50 bg-accent-blue/15 text-text-primary hover:bg-accent-blue/25'
+    : tone === 'danger'
+      ? 'border-red-500/40 bg-red-500/10 text-red-100 hover:bg-red-500/20'
+      : 'border-border text-text-secondary hover:bg-bg-hover hover:text-text-primary'
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={`flex items-center justify-center gap-1.5 rounded-md border px-2 py-1.5 text-[10px] transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${toneClass}`}
+    >
+      {children}
+    </button>
+  )
+}
+
+/**
+ * Remote GPU worker: a headless Maestro running on a dstack/RunPod service.
+ *
+ * Generations routed here start the worker automatically when needed; the
+ * worker stops itself after the idle TTL, and can be stopped right away.
+ */
+export function RemoteWorkerPanel() {
+  const models = useStore(s => s.models)
+  const [settings, setSettings] = useState<RemoteWorkerSettings | null>(null)
+  const [draft, setDraft] = useState<Partial<RemoteWorkerSettings>>({})
+  const [status, setStatus] = useState<RemoteWorkerStatus | null>(null)
+  const [connection, setConnection] = useState<RemoteWorkerConnectionTest | null>(null)
+  const [logs, setLogs] = useState<RemoteWorkerLogLine[]>([])
+  const [showLogs, setShowLogs] = useState(false)
+  const [showAdvanced, setShowAdvanced] = useState(false)
+  const [busy, setBusy] = useState<string | null>(null)
+  const [message, setMessage] = useState<{ tone: 'info' | 'error'; text: string } | null>(null)
+  const [modelType, setModelType] = useState('')
+  const lastLogTimestamp = useRef<string | undefined>(undefined)
+
+  const merged = useMemo(
+    () => (settings ? { ...settings, ...draft } as RemoteWorkerSettings : null),
+    [settings, draft],
+  )
+  const dirty = Object.keys(draft).length > 0
+  const state: RemoteWorkerState = status?.state ?? 'not_configured'
+
+  const videoModels = useMemo(
+    () => [...models]
+      .filter(model => model.is_t2v || model.is_i2v)
+      .sort((a, b) => a.name.localeCompare(b.name)),
+    [models],
+  )
+
+  const run = useCallback(async (label: string, action: () => Promise<void>) => {
+    setBusy(label)
+    setMessage(null)
+    try {
+      await action()
+    } catch (error) {
+      setMessage({ tone: 'error', text: error instanceof Error ? error.message : String(error) })
+    } finally {
+      setBusy(null)
+    }
+  }, [])
+
+  const refreshStatus = useCallback(async () => {
+    try {
+      setStatus(await api.fetchRemoteWorkerStatus())
+    } catch (error) {
+      setMessage({ tone: 'error', text: error instanceof Error ? error.message : String(error) })
+    }
+  }, [])
+
+  useEffect(() => {
+    void run('load', async () => {
+      const loaded = await api.fetchRemoteWorkerSettings()
+      setSettings(loaded)
+      setModelType(current => current || loaded.default_model_type)
+      await refreshStatus()
+    })
+  }, [run, refreshStatus])
+
+  // Poll faster while the worker is changing state.
+  useEffect(() => {
+    if (!settings?.configured) return
+    const delay = state === 'starting' || state === 'booting' || state === 'stopping' ? 4000 : 15000
+    const timer = window.setInterval(() => void refreshStatus(), delay)
+    return () => window.clearInterval(timer)
+  }, [settings?.configured, state, refreshStatus])
+
+  useEffect(() => {
+    if (!showLogs || !LOG_STATES.includes(state)) return
+    const tick = async () => {
+      try {
+        const lines = await api.fetchRemoteWorkerLogs(lastLogTimestamp.current)
+        if (lines.length) {
+          lastLogTimestamp.current = lines[lines.length - 1].timestamp
+          setLogs(previous => [...previous, ...lines].slice(-200))
+        }
+      } catch {
+        // Logs are best effort while the pod is still being scheduled.
+      }
+    }
+    void tick()
+    const timer = window.setInterval(() => void tick(), 4000)
+    return () => window.clearInterval(timer)
+  }, [showLogs, state])
+
+  const update = <K extends keyof RemoteWorkerSettings>(key: K, value: RemoteWorkerSettings[K]) => {
+    setDraft(previous => ({ ...previous, [key]: value }))
+  }
+
+  const save = () => run('save', async () => {
+    const saved = await api.updateRemoteWorkerSettings(draft)
+    setSettings(saved)
+    setDraft({})
+    setMessage({ tone: 'info', text: 'Remote worker settings saved.' })
+    await refreshStatus()
+  })
+
+  const importDstack = () => run('import', async () => {
+    const saved = await api.importRemoteWorkerDstackConfig()
+    setSettings(saved)
+    setDraft({})
+    setMessage({ tone: 'info', text: `Imported project "${saved.project}" from ~/.dstack/config.yml.` })
+    await refreshStatus()
+  })
+
+  const testConnection = () => run('test', async () => {
+    const result = await api.testRemoteWorkerConnection()
+    setConnection(result)
+    setMessage({ tone: 'info', text: `Connected to dstack ${result.server_version}.` })
+  })
+
+  const createVolume = () => run('volume', async () => {
+    const created = await api.createRemoteWorkerVolume()
+    setMessage({ tone: 'info', text: `Volume ${created.name} is ${created.status}. It becomes usable once active.` })
+    setConnection(await api.testRemoteWorkerConnection())
+  })
+
+  const start = () => run('start', async () => {
+    setLogs([])
+    lastLogTimestamp.current = undefined
+    setStatus(await api.startRemoteWorker(modelType || undefined))
+  })
+
+  const stop = () => run('stop', async () => {
+    setStatus(await api.stopRemoteWorker())
+  })
+
+  if (!merged) {
+    return <div className="text-[10px] text-text-muted">{busy === 'load' ? 'Loading…' : message?.text}</div>
+  }
+
+  const volumeKnown = connection?.volumes.find(volume => volume.name === merged.volume_name)
+  const canStart = merged.configured && !dirty && !ACTIVE_STATES.includes(state) && busy === null
+  const canStop = merged.configured && (state === 'starting' || state === 'booting' || state === 'ready') && busy === null
+
+  return (
+    <div className="space-y-4">
+      {message && (
+        <div className={`rounded-md border px-2.5 py-2 text-[10px] leading-relaxed ${
+          message.tone === 'error'
+            ? 'border-red-500/30 bg-red-500/5 text-red-100'
+            : 'border-border/60 bg-bg-primary/40 text-text-secondary'
+        }`}>
+          {message.text}
+        </div>
+      )}
+
+      {/* ── Worker status & controls ─────────────────────────────── */}
+      <section className="space-y-3 rounded-lg border border-border bg-bg-tertiary p-3">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Cloud size={15} className="text-accent-blue" />
+            <div>
+              <div className="text-xs font-medium text-text-primary">Remote GPU worker</div>
+              <div className="text-[10px] text-text-muted">Headless Maestro on RunPod via dstack</div>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => void refreshStatus()}
+            aria-label="Refresh worker status"
+            className="rounded p-1 text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary"
+          >
+            <RefreshCw size={12} />
+          </button>
+        </div>
+
+        <div className="space-y-1.5 rounded-md border border-border/60 bg-bg-primary/40 px-2.5 py-2">
+          <div className="flex items-center gap-2 text-[11px] text-text-primary">
+            <span className={`h-2 w-2 rounded-full ${STATE_DOT[state]}`} />
+            {STATE_LABEL[state]}
+            {state === 'starting' && status?.image_pull_percent != null && (
+              <span className="text-text-muted">· image {status.image_pull_percent}%</span>
+            )}
+          </div>
+          {status?.message && <div className="text-[10px] leading-relaxed text-text-muted">{status.message}</div>}
+          {ACTIVE_STATES.includes(state) && (
+            <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[10px] text-text-secondary">
+              {status?.model_type && <span className="col-span-2 truncate">Model · {status.model_type}</span>}
+              {status?.price_per_hour != null && <span>${status.price_per_hour.toFixed(2)}/h</span>}
+              {status?.cost != null && <span>Spent ${status.cost.toFixed(2)}</span>}
+              {status?.gpu_region && <span>{status.gpu_region}</span>}
+              {state === 'ready' && (
+                <span>
+                  {status?.active_jobs
+                    ? `${status.active_jobs} job running`
+                    : `Auto-stop in ${formatMinutes(status?.idle_stop_in_seconds)}`}
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+
+        <label className="block space-y-1">
+          <span className="text-[10px] text-text-secondary">Model to preload</span>
+          <select
+            value={modelType}
+            onChange={event => setModelType(event.target.value)}
+            className="w-full rounded-md border border-border bg-bg-primary px-2 py-1.5 text-[11px] text-text-primary focus:border-accent-blue focus:outline-none"
+          >
+            <option value="">None (download on first generation)</option>
+            {videoModels.map(model => (
+              <option key={model.model_type} value={model.model_type}>{model.name}</option>
+            ))}
+          </select>
+        </label>
+
+        <div className="grid grid-cols-2 gap-2">
+          <ActionButton onClick={start} disabled={!canStart} tone="primary">
+            <Play size={11} /> {busy === 'start' ? 'Starting…' : 'Start worker'}
+          </ActionButton>
+          <ActionButton onClick={stop} disabled={!canStop} tone="danger">
+            <Square size={11} /> {busy === 'stop' ? 'Stopping…' : 'Stop worker'}
+          </ActionButton>
+        </div>
+        {dirty && <div className="text-[9px] text-amber-200">Save settings before starting the worker.</div>}
+
+        <button
+          type="button"
+          onClick={() => setShowLogs(value => !value)}
+          className="flex items-center gap-1 text-[10px] text-text-secondary hover:text-text-primary"
+        >
+          {showLogs ? <ChevronDown size={11} /> : <ChevronRight size={11} />} Boot logs
+        </button>
+        {showLogs && (
+          <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-md bg-bg-primary/70 p-2 text-[9px] leading-relaxed text-text-secondary">
+            {logs.length ? logs.map(line => line.message).join('') : 'Logs appear while the worker is starting.'}
+          </pre>
+        )}
+      </section>
+
+      {/* ── Generation routing ───────────────────────────────────── */}
+      <section className="space-y-3 rounded-lg border border-border bg-bg-tertiary p-3">
+        <Toggle
+          checked={merged.route_generations}
+          onChange={checked => update('route_generations', checked)}
+          label="Run generations on the remote worker"
+          description="Studio and Director jobs execute on the remote GPU; outputs come back to this computer's gallery."
+          disabled={!merged.configured}
+        />
+        <Toggle
+          checked={merged.auto_start}
+          onChange={checked => update('auto_start', checked)}
+          label="Start the worker automatically"
+          description="Clicking Generate deploys the worker when it is not running, then sends the job once it is ready."
+          disabled={!merged.configured}
+        />
+        <Field
+          label="Stop after idle (minutes)"
+          type="number"
+          value={merged.idle_ttl_minutes}
+          onChange={value => update('idle_ttl_minutes', Number(value) || 1)}
+          hint="The idle clock starts once the worker is ready and pauses while a generation runs."
+        />
+      </section>
+
+      {/* ── dstack connection ────────────────────────────────────── */}
+      <section className="space-y-3 rounded-lg border border-border bg-bg-tertiary p-3">
+        <div className="flex items-center gap-2">
+          <PlugZap size={14} className="text-accent-blue" />
+          <div className="text-xs font-medium text-text-primary">dstack access</div>
+        </div>
+        <Field label="Server URL" value={merged.server_url} onChange={value => update('server_url', value)} placeholder="http://127.0.0.1:3000" />
+        <Field label="Project" value={merged.project} onChange={value => update('project', value)} placeholder="main" />
+        <Field
+          label="Token"
+          type="password"
+          value={draft.token ?? ''}
+          onChange={value => update('token', value)}
+          placeholder={settings?.token_set ? `Stored (${settings.token}) · type to replace` : 'dstack user token'}
+          hint="Stored on this computer only, in app/settings."
+        />
+        <div className="grid grid-cols-2 gap-2">
+          <ActionButton onClick={importDstack} disabled={busy !== null}>
+            <Download size={11} /> Import ~/.dstack
+          </ActionButton>
+          <ActionButton onClick={testConnection} disabled={busy !== null || !merged.configured || dirty}>
+            <PlugZap size={11} /> {busy === 'test' ? 'Testing…' : 'Test connection'}
+          </ActionButton>
+        </div>
+        {connection && (
+          <div className="text-[9px] leading-relaxed text-text-muted">
+            dstack {connection.server_version} · fleets: {connection.fleets.join(', ') || 'none'}
+          </div>
+        )}
+      </section>
+
+      {/* ── Worker resources ─────────────────────────────────────── */}
+      <section className="space-y-3 rounded-lg border border-border bg-bg-tertiary p-3">
+        <div className="flex items-center gap-2">
+          <HardDrive size={14} className="text-accent-blue" />
+          <div className="text-xs font-medium text-text-primary">GPU, limits and storage</div>
+        </div>
+        {connection?.fleets.length ? (
+          <label className="block space-y-1">
+            <span className="text-[10px] text-text-secondary">Fleet</span>
+            <select
+              value={merged.fleet}
+              onChange={event => update('fleet', event.target.value)}
+              className="w-full rounded-md border border-border bg-bg-primary px-2 py-1.5 text-[11px] text-text-primary focus:border-accent-blue focus:outline-none"
+            >
+              <option value="">Any matching fleet</option>
+              {connection.fleets.map(fleet => <option key={fleet} value={fleet}>{fleet}</option>)}
+            </select>
+          </label>
+        ) : (
+          <Field label="Fleet" value={merged.fleet} onChange={value => update('fleet', value)} hint="Test the connection to pick from your fleets." />
+        )}
+        <div className="grid grid-cols-2 gap-2">
+          <Field label="GPU" value={merged.gpu} onChange={value => update('gpu', value)} placeholder="48GB.." />
+          <Field label="Max price ($/h)" type="number" value={merged.max_price} onChange={value => update('max_price', Number(value))} />
+          <Field label="Max duration" value={merged.max_duration} onChange={value => update('max_duration', value)} placeholder="4h" />
+          <Field label="Disk" value={merged.disk} onChange={value => update('disk', value)} placeholder="100GB.." />
+        </div>
+        <div className="text-[9px] leading-relaxed text-text-muted">
+          Max duration and max price are enforced by dstack even if this computer is off.
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          <Field label="Volume" value={merged.volume_name} onChange={value => update('volume_name', value)} />
+          <Field label="Region" value={merged.volume_region} onChange={value => update('volume_region', value)} placeholder="EU-SE-1" />
+          <Field label="Size" value={merged.volume_size} onChange={value => update('volume_size', value)} placeholder="200GB" />
+          <div className="flex items-end">
+            <ActionButton
+              onClick={createVolume}
+              disabled={busy !== null || dirty || !merged.configured || !connection || Boolean(volumeKnown)}
+            >
+              <HardDrive size={11} /> {volumeKnown ? volumeKnown.status : 'Create volume'}
+            </ActionButton>
+          </div>
+        </div>
+        <div className="text-[9px] leading-relaxed text-text-muted">
+          The volume keeps weights, LoRAs and the Python environment between runs (billed storage, about $0.07/GB/month). It pins the worker to its region.
+        </div>
+
+        <button
+          type="button"
+          onClick={() => setShowAdvanced(value => !value)}
+          className="flex items-center gap-1 text-[10px] text-text-secondary hover:text-text-primary"
+        >
+          {showAdvanced ? <ChevronDown size={11} /> : <ChevronRight size={11} />} Advanced
+        </button>
+        {showAdvanced && (
+          <div className="space-y-2">
+            <Field label="Repository" value={merged.repo_url} onChange={value => update('repo_url', value)} />
+            <Field label="Branch or tag" value={merged.repo_ref} onChange={value => update('repo_ref', value)} />
+            <Field label="Run name" value={merged.run_name} onChange={value => update('run_name', value)} />
+            <Field label="Container image" value={merged.image} onChange={value => update('image', value)} />
+            <Field label="PyTorch wheel index" value={merged.torch_index} onChange={value => update('torch_index', value)} />
+            <Field label="Spot policy" value={merged.spot_policy} onChange={value => update('spot_policy', value)} placeholder="on-demand | spot | auto" />
+            <Field
+              label="Backends"
+              value={merged.backends.join(', ')}
+              onChange={value => update('backends', value.split(',').map(part => part.trim()).filter(Boolean))}
+            />
+          </div>
+        )}
+      </section>
+
+      <div className="flex items-center gap-2">
+        <ActionButton onClick={save} disabled={!dirty || busy !== null} tone="primary">
+          <Save size={11} /> {busy === 'save' ? 'Saving…' : 'Save settings'}
+        </ActionButton>
+        {dirty && (
+          <button type="button" onClick={() => setDraft({})} className="text-[10px] text-text-muted hover:text-text-primary">
+            Discard
+          </button>
+        )}
+      </div>
+
+    </div>
+  )
+}

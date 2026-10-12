@@ -1274,7 +1274,77 @@ export interface MultiClip {
   durationFrames?: number
 }
 
-export type SettingsTab = 'performance' | 'integrations' | 'notifications'
+export type SettingsTab = 'performance' | 'integrations' | 'notifications' | 'remote'
+
+export interface RemoteWorkerSettings {
+  server_url: string
+  project: string
+  /** Masked by the server; send it back unchanged to keep the stored token. */
+  token: string
+  token_set: boolean
+  configured: boolean
+  run_name: string
+  repo_url: string
+  repo_ref: string
+  image: string
+  torch_index: string
+  default_model_type: string
+  backends: string[]
+  fleet: string
+  gpu: string
+  disk: string
+  spot_policy: string
+  max_price: number
+  max_duration: string
+  volume_name: string
+  volume_path: string
+  volume_region: string
+  volume_size: string
+  idle_ttl_minutes: number
+  route_generations: boolean
+  auto_start: boolean
+}
+
+export type RemoteWorkerState =
+  | 'not_configured'
+  | 'unknown'
+  | 'stopped'
+  | 'starting'
+  | 'booting'
+  | 'ready'
+  | 'stopping'
+
+export interface RemoteWorkerStatus {
+  state: RemoteWorkerState
+  run_name: string
+  idle_ttl_minutes: number
+  route_generations: boolean
+  model_type: string | null
+  active_jobs: number
+  message?: string
+  run_status?: string
+  job_status?: string
+  submitted_at?: string
+  cost?: number
+  price_per_hour?: number
+  gpu_region?: string
+  image_pull_percent?: number
+  service_url?: string
+  idle_seconds?: number
+  idle_stop_in_seconds?: number | null
+}
+
+export interface RemoteWorkerConnectionTest {
+  server_version: string
+  fleets: string[]
+  volumes: { name: string; status: string; region: string | null }[]
+}
+
+export interface RemoteWorkerLogLine {
+  timestamp: string
+  source: string
+  message: string
+}
 
 export interface ServicesConfig {
   llm_model_id: string

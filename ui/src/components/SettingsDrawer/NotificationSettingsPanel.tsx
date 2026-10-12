@@ -41,7 +41,7 @@ interface ToggleProps {
   disabled?: boolean
 }
 
-function Toggle({ checked, onChange, label, description, disabled = false }: ToggleProps) {
+export function Toggle({ checked, onChange, label, description, disabled = false }: ToggleProps) {
   return (
     <div className={`flex items-start justify-between gap-3 ${disabled ? 'opacity-50' : ''}`}>
       <div className="min-w-0 flex-1">

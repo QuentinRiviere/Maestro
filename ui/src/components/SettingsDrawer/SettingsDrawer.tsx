@@ -3,6 +3,7 @@ import { useStore } from '../../stores/useStore'
 import { SystemSettingsPanel } from './SystemSettingsPanel'
 import { ServicesSettingsPanel } from './ServicesSettingsPanel'
 import { NotificationSettingsPanel } from './NotificationSettingsPanel'
+import { RemoteWorkerPanel } from './RemoteWorkerPanel'
 
 /**
  * Settings drawer — global panel for hardware/perf, external-service, and
@@ -13,6 +14,7 @@ import { NotificationSettingsPanel } from './NotificationSettingsPanel'
  *   Integrations   — LLM provider, API keys, NSFW master gate, etc.
  *                    (mounts <ServicesSettingsPanel />)
  *   Notifications  — browser alerts, device chime, host-computer sound.
+ *   Remote GPU     — dstack access and the remote Maestro worker.
  *
  * Director-mode-specific controls used to live in a third "Parameters"
  * tab here, but everything in that tab was either:
@@ -36,6 +38,7 @@ export function SettingsDrawer() {
     { id: 'performance' as const, label: 'Performance' },
     { id: 'integrations' as const, label: 'Integrations' },
     { id: 'notifications' as const, label: 'Notifications' },
+    { id: 'remote' as const, label: 'Remote GPU' },
   ]
 
   return (
@@ -94,6 +97,10 @@ export function SettingsDrawer() {
 
           {settingsTab === 'notifications' && (
             <NotificationSettingsPanel />
+          )}
+
+          {settingsTab === 'remote' && (
+            <RemoteWorkerPanel />
           )}
         </div>
       </div>
