@@ -5552,7 +5552,7 @@ def _run_pipeline(pid: str, resume: bool = False):
                     should_polish_director_video_prompts,
                 )
                 provider = services.get("llm_provider", "local")
-                nsfw = services.get("nsfw_mode", False) and provider not in {"openai", "anthropic"}
+                nsfw = services.get("nsfw_mode", False) and provider not in {"openai", "openrouter", "anthropic"}
                 video_model = params.get("video_model", "")
                 image_model = params.get("image_model", "")
                 polish_video_prompts = should_polish_director_video_prompts(

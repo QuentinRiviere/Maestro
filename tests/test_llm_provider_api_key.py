@@ -44,6 +44,24 @@ class TestProviderApiKey(unittest.TestCase):
                 )
         self.assertEqual(llm_service.provider_api_key("remote", {}), "")
 
+    def test_openrouter_key_falls_back_to_environment(self):
+        from unittest import mock
+
+        with mock.patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-or-env"}, clear=False):
+            self.assertEqual(llm_service.provider_api_key("openrouter", {}), "sk-or-env")
+            self.assertEqual(
+                llm_service.provider_api_key("openrouter", {"openrouter_api_key": "sk-or-saved"}),
+                "sk-or-saved",
+            )
+            # The environment key never leaks to another provider.
+            self.assertEqual(llm_service.provider_api_key("openai", {}), "")
+
+    def test_hosted_providers_have_default_base_urls(self):
+        self.assertEqual(llm_service.provider_base_url("openrouter"), "https://openrouter.ai/api")
+        self.assertEqual(llm_service.provider_base_url("openai"), "https://api.openai.com")
+        self.assertEqual(llm_service.provider_base_url("openrouter", "http://proxy:8080"), "http://proxy:8080")
+        self.assertEqual(llm_service.provider_base_url("remote"), "")
+
     def test_every_credential_setting_is_persistable(self):
         launch_path = os.path.join(_APP, "launch.py")
         with open(launch_path, "r", encoding="utf-8") as handle:

@@ -56,9 +56,16 @@ def _is_benign_gemma_template_warning(line: str) -> bool:
 
     return _GEMMA_TEMPLATE_COMPAT_MARKER in str(line or "").lower()
 
-# Provider state: "local" | "remote" | "openai" | "anthropic"
+# Provider state: "local" | "remote" | "openai" | "openrouter" | "anthropic"
 _provider: str = "local"
 _remote_url: str = ""       # Base URL for remote/OpenAI-compatible servers
+OPENAI_COMPATIBLE_PROVIDERS = ("remote", "openai", "openrouter")
+API_PROVIDERS = (*OPENAI_COMPATIBLE_PROVIDERS, "anthropic")
+PROVIDER_DEFAULT_URLS = {
+    "openai": "https://api.openai.com",
+    "openrouter": "https://openrouter.ai/api",
+}
+_PROVIDER_LABELS = {"remote": "Remote", "openai": "OpenAI", "openrouter": "OpenRouter"}
 _api_key: str = ""           # API key for OpenAI/Anthropic
 
 # Auto-unload idle timer
@@ -634,7 +641,8 @@ def get_available_models(provider: str = "local", remote_url: str = "", api_key:
     remote_models: list[dict] = []
 
     # Query remote OpenAI-compatible server (LM Studio, etc.)
-    if provider in ("remote", "openai") and remote_url:
+    remote_url = provider_base_url(provider, remote_url)
+    if provider in OPENAI_COMPATIBLE_PROVIDERS and remote_url:
         try:
             headers = {}
             if api_key:
@@ -648,7 +656,7 @@ def get_available_models(provider: str = "local", remote_url: str = "", api_key:
                     if mid:
                         remote_models.append({
                             "id": mid,
-                            "label": f"{mid} (Remote)" if provider == "remote" else f"{mid} (OpenAI)",
+                            "label": f"{mid} ({_PROVIDER_LABELS.get(provider, provider)})",
                             "size_hint": provider,
                             "provider": provider,
                         })
@@ -681,17 +689,37 @@ def get_model_dir() -> str:
 PROVIDER_API_KEY_SETTING = {
     "remote": "llm_remote_api_key",
     "openai": "openai_api_key",
+    "openrouter": "openrouter_api_key",
     "anthropic": "anthropic_api_key",
+}
+
+# Environment fallbacks, read at request time and never persisted, so a
+# containerised controller can receive its key from the compose env file.
+PROVIDER_API_KEY_ENV = {
+    "openrouter": ("MAESTRO_OPENROUTER_API_KEY", "OPENROUTER_API_KEY"),
 }
 
 
 def provider_api_key(provider: str, services: dict) -> str:
     """Return only the credential owned by the selected LLM provider."""
 
-    setting = PROVIDER_API_KEY_SETTING.get(str(provider or "").lower())
+    provider = str(provider or "").lower()
+    setting = PROVIDER_API_KEY_SETTING.get(provider)
     if not setting or not isinstance(services, dict):
         return ""
-    return str(services.get(setting, "") or "")
+    stored = str(services.get(setting, "") or "")
+    if stored:
+        return stored
+    for name in PROVIDER_API_KEY_ENV.get(provider, ()):
+        if os.environ.get(name):
+            return os.environ[name]
+    return ""
+
+
+def provider_base_url(provider: str, remote_url: str = "") -> str:
+    """Base URL (without /v1) of an OpenAI-compatible provider."""
+
+    return (remote_url or "").strip() or PROVIDER_DEFAULT_URLS.get(str(provider or "").lower(), "")
 
 
 _OPENAI_CHAT_FIELDS = frozenset({
@@ -728,7 +756,7 @@ def _finalize_payload(payload: dict) -> dict:
     llama.cpp-only fields such as ``cache_prompt`` and ``min_p``.
     """
 
-    if _provider not in ("remote", "openai"):
+    if _provider not in OPENAI_COMPATIBLE_PROVIDERS:
         return record_payload(payload, model_id=_model_id, command=getattr(_process, "args", None))
     prepared = {
         key: value
@@ -746,7 +774,7 @@ def _finalize_payload(payload: dict) -> dict:
 
 
 def _server_url() -> str:
-    if _provider in ("remote", "openai") and _remote_url:
+    if _provider in OPENAI_COMPATIBLE_PROVIDERS and _remote_url:
         return _remote_url.rstrip("/")
     return f"http://127.0.0.1:{_server_port}"
 
@@ -754,12 +782,15 @@ def _server_url() -> str:
 def _api_headers() -> dict:
     """Build headers for API calls (adds auth for remote providers)."""
     headers = {"Content-Type": "application/json"}
-    if _provider in ("remote", "openai", "anthropic") and _api_key:
+    if _provider in API_PROVIDERS and _api_key:
         if _provider == "anthropic":
             headers["x-api-key"] = _api_key
             headers["anthropic-version"] = "2023-06-01"
         else:
             headers["Authorization"] = f"Bearer {_api_key}"
+    if _provider == "openrouter":
+        # Optional OpenRouter attribution headers.
+        headers["X-Title"] = "Maestro"
     return headers
 
 
@@ -1159,7 +1190,7 @@ def _log_generation_metrics(metrics: dict) -> None:
 
 
 def is_loaded() -> bool:
-    if _provider in ("remote", "openai", "anthropic"):
+    if _provider in API_PROVIDERS:
         return bool(_model_id)
     return _process is not None and _process.poll() is None
 
@@ -1759,7 +1790,7 @@ def load_model(
         model_id: Model ID (HF repo for local, model name for remote/API)
         device: "cpu" or "cuda" (local only)
         force_reload: If True, restart even if already running
-        provider: "local" | "remote" | "openai" | "anthropic"
+        provider: "local" | "remote" | "openai" | "openrouter" | "anthropic"
         remote_url: Base URL for remote/openai servers (e.g. http://192.168.1.100:1234)
         api_key: API key for openai/anthropic providers
     """
@@ -1767,7 +1798,8 @@ def load_model(
     global _provider, _remote_url, _api_key
 
     # Handle remote/API providers — no subprocess needed
-    if provider in ("remote", "openai", "anthropic"):
+    if provider in API_PROVIDERS:
+        remote_url = provider_base_url(provider, remote_url)
         with _lock:
             if (
                 is_loaded()
@@ -2284,14 +2316,14 @@ def _user_message(prompt: str, image_paths: Optional[list]) -> dict:
         try:
             data_url = _image_to_data_url(image_path)
         except Exception as exc:
-            if _provider in ("remote", "openai", "anthropic"):
+            if _provider in API_PROVIDERS:
                 raise RuntimeError(
                     "Could not attach an image to the remote LLM request. "
                     "Check that each selected image is valid and can be read."
                 ) from exc
             raise
         if not data_url:
-            if _provider in ("remote", "openai", "anthropic"):
+            if _provider in API_PROVIDERS:
                 raise RuntimeError(
                     "Could not attach an image to the remote LLM request. "
                     "Check that each selected image exists and can be read."
@@ -2700,7 +2732,7 @@ def generate_streaming(
         "stream": True,
         "cache_prompt": False,  # Disable prompt caching — system prompt changes between calls
     }
-    if _provider in ("local", "openai"):
+    if _provider in ("local", "openai", "openrouter"):
         payload["stream_options"] = {"include_usage": True}
     # Apply caller's penalty values FIRST so they're in the payload
     # before _apply_model_defaults runs. The registry-defaults pass below

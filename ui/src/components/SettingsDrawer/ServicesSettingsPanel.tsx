@@ -4,7 +4,7 @@ import { useStore } from '../../stores/useStore'
 import { ApiKeyField } from '../shared/ApiKeyField'
 import { RemoteModelMemoryControls } from './RemoteModelMemoryControls'
 
-const PUBLIC_PROVIDERS = new Set(['openai', 'anthropic'])
+const PUBLIC_PROVIDERS = new Set(['openai', 'openrouter', 'anthropic'])
 
 function NsfwDisclaimerModal({
   onAccept,
@@ -224,6 +224,7 @@ export function ServicesSettingsPanel() {
   const provider = servicesConfig.llm_provider || 'local'
   const isRemote = provider === 'remote'
   const isOpenAI = provider === 'openai'
+  const isOpenRouter = provider === 'openrouter'
   const isLocal = provider === 'local'
 
   const handleRefreshModels = async () => {
@@ -286,6 +287,7 @@ export function ServicesSettingsPanel() {
             <option value="local">Local (llama-server)</option>
             <option value="remote">Remote OpenAI-Compatible (LM Studio, etc.)</option>
             <option value="openai">OpenAI API</option>
+            <option value="openrouter">OpenRouter</option>
             <option value="anthropic">Anthropic API</option>
           </select>
         </div>
@@ -327,6 +329,25 @@ export function ServicesSettingsPanel() {
                 </p>
               </div>
             )}
+          </div>
+        )}
+
+        {isOpenRouter && (
+          <div>
+            <ApiKeyField
+              label="OpenRouter API Key"
+              maskedValue={servicesConfig.openrouter_api_key}
+              isSet={servicesConfig.openrouter_api_key_set}
+              onSave={async value => {
+                await updateConfig({ openrouter_api_key: value }, { throwOnError: true })
+                void loadLlmModels()
+              }}
+            />
+            <p className="text-[10px] text-text-muted mt-1">
+              {servicesConfig.openrouter_api_key_env
+                ? 'Using the key from the OPENROUTER_API_KEY environment variable. A key saved here takes precedence.'
+                : 'Requests go to openrouter.ai. Pick any model ID it serves, e.g. google/gemini-2.5-flash.'}
+            </p>
           </div>
         )}
 

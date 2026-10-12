@@ -1369,6 +1369,9 @@ export interface ServicesConfig {
   google_api_key_set: boolean
   openai_api_key: string
   openai_api_key_set: boolean
+  openrouter_api_key: string
+  openrouter_api_key_set: boolean
+  openrouter_api_key_env?: boolean
   anthropic_api_key: string
   anthropic_api_key_set: boolean
   use_director_v2: boolean

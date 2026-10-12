@@ -197,6 +197,18 @@ _remote_job_forwarder = RemoteJobForwarder(_remote_worker)
 if not _is_remote_worker_process:
     _remote_worker.start_watchdog()
 
+# Deployment defaults for the prompt LLM (e.g. a Docker controller that has no
+# GPU for llama-server). They only fill unset services settings, so a choice
+# made later in Settings → Services still wins. API keys stay in the
+# environment (see llm_service.PROVIDER_API_KEY_ENV) and are never persisted.
+for _llm_env, _llm_setting in (
+    ("MAESTRO_LLM_PROVIDER", "llm_provider"),
+    ("MAESTRO_LLM_MODEL_ID", "llm_model_id"),
+    ("MAESTRO_LLM_REMOTE_URL", "llm_remote_url"),
+):
+    if os.environ.get(_llm_env):
+        wgp.server_config.setdefault("services", {}).setdefault(_llm_setting, os.environ[_llm_env])
+
 # WanGP's legacy notifier fires at low-level output boundaries, which means a
 # multi-window generation or Director project can chime once per internal
 # clip. Maestro owns the top-level Studio/Director lifecycle instead. Migrate
@@ -7649,7 +7661,7 @@ def _mask_key(key: str) -> str:
     return key[:4] + "..." + key[-4:]
 
 
-_PUBLIC_LLM_PROVIDERS = {"openai", "anthropic"}
+_PUBLIC_LLM_PROVIDERS = {"openai", "openrouter", "anthropic"}
 
 
 def _llm_api_key_for_provider(services: dict, provider: str) -> str:
@@ -7663,6 +7675,7 @@ def _llm_api_key_for_provider(services: dict, provider: str) -> str:
     key_name = {
         "remote": "llm_remote_api_key",
         "openai": "openai_api_key",
+        "openrouter": "openrouter_api_key",
         "anthropic": "anthropic_api_key",
     }.get(str(provider or "").lower())
     return str(services.get(key_name, "") or "") if key_name else ""
@@ -7703,6 +7716,7 @@ def _enhancement_settings_snapshot() -> dict:
 @api.get("/api/v1/services-config")
 def get_services_config():
     """Return services settings with API keys masked."""
+    from services import llm_service
     services = wgp.server_config.get("services", {})
     provider = services.get("llm_provider", "local")
     # Enforce: NSFW must be off when using a public provider
@@ -7722,6 +7736,11 @@ def get_services_config():
         "google_api_key_set": bool(services.get("google_api_key", "")),
         "openai_api_key": _mask_key(services.get("openai_api_key", "")),
         "openai_api_key_set": bool(services.get("openai_api_key", "")),
+        "openrouter_api_key": _mask_key(services.get("openrouter_api_key", "")),
+        "openrouter_api_key_set": bool(llm_service.provider_api_key("openrouter", services)),
+        "openrouter_api_key_env": not services.get("openrouter_api_key") and bool(
+            llm_service.provider_api_key("openrouter", services)
+        ),
         "anthropic_api_key": _mask_key(services.get("anthropic_api_key", "")),
         "anthropic_api_key_set": bool(services.get("anthropic_api_key", "")),
         # Director v2 (layered architecture: structured shot planning,
@@ -7805,7 +7824,8 @@ async def update_services_config(request: Request):
         "llm_model_id", "llm_device", "llm_provider", "llm_remote_url",
         "enhance_llm_model_id", "enhance_llm_device",
         "enhance_fidelity_retries", "enhance_fidelity_auto_continue",
-        "google_api_key", "llm_remote_api_key", "openai_api_key", "anthropic_api_key",
+        "google_api_key", "llm_remote_api_key", "openai_api_key", "openrouter_api_key",
+        "anthropic_api_key",
         "use_director_v2", "nsfw_mode", "nsfw_accepted_at", "director_prompt_polish",
         "civitai_api_key", "voice_reference_enabled", "ltx_progressive_pipeline",
         "show_experimental", "auto_performance", "storage_allow_linked_removal",

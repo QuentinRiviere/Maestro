@@ -29,7 +29,7 @@ from .guide_loader import load_guide
 
 
 # ── Public provider list (NSFW not allowed with these) ───────────────
-PUBLIC_PROVIDERS = {"openai", "anthropic"}
+PUBLIC_PROVIDERS = {"openai", "openrouter", "anthropic"}
 
 
 # ── Guidance text loaders ────────────────────────────────────────────
