@@ -921,6 +921,7 @@ export interface PipelineStatus {
 export interface VideoReviewIssue {
   at_sec: number | null
   severity: 'minor' | 'major' | 'critical'
+  category?: string
   fixable_by: 'retake_segment' | 'new_seed' | 'prompt_revision' | 'new_start_image' | 'none_model_limit'
   description: string
 }
@@ -939,8 +940,27 @@ export interface VideoReviewShot {
   error?: string
 }
 
+export interface VideoReviewTake {
+  index: number
+  takes: string[]
+  kept: string | null
+  comparisons: Array<{ incumbent: string; challenger: string; winner: 'A' | 'B' | 'tie'; confidence: number; reasons: string[] }>
+  error?: string
+}
+
+export interface StyleContract {
+  medium: string
+  visual_language?: string
+  motion_language?: string
+  allowed_stylization?: string[]
+  must_avoid?: string[]
+}
+
 export interface VideoReview {
   status: 'running' | 'completed' | 'failed'
+  phase?: 'takes'
+  style_contract?: StyleContract | null
+  takes?: VideoReviewTake[]
   model?: string
   score?: number | null
   cost_usd?: number

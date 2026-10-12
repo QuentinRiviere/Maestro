@@ -758,6 +758,21 @@ export function ServicesSettingsPanel() {
             </span>
           </label>
           {servicesConfig.director_video_review && (
+            <label className="mt-2 flex items-center gap-2 text-[10px] text-text-muted">
+              Takes per shot
+              <select
+                value={servicesConfig.director_takes_per_shot ?? 2}
+                onChange={e => updateConfig({ director_takes_per_shot: Number(e.target.value) })}
+                className="bg-bg-tertiary border border-border rounded px-2 py-1 text-xs text-text-primary"
+              >
+                <option value={1}>1 (review only)</option>
+                <option value={2}>2 (keep the better)</option>
+                <option value={3}>3 (best of three)</option>
+              </select>
+              <span>Per-shot projects only; each extra take re-renders the shot on the GPU.</span>
+            </label>
+          )}
+          {servicesConfig.director_video_review && (
             <input
               type="text"
               defaultValue={servicesConfig.director_video_review_model || ''}

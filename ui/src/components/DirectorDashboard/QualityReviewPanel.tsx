@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Loader2, ScanEye } from 'lucide-react'
-import { fetchPipelineStatus, requestPipelineReview, type VideoReview, type VideoReviewShot } from '../../api/client'
+import { fetchPipelineStatus, requestPipelineReview, type VideoReview, type VideoReviewShot, type VideoReviewTake } from '../../api/client'
 
 const SEVERITY_CLASS: Record<string, string> = {
   critical: 'text-chip-red',
@@ -34,7 +34,19 @@ function formatTime(seconds: number | null | undefined) {
   return seconds == null ? '' : `${seconds.toFixed(1)}s`
 }
 
-function ShotRow({ shot }: { shot: VideoReviewShot }) {
+function TakeLine({ take }: { take?: VideoReviewTake }) {
+  if (!take || take.takes.length < 2) return null
+  const keptIndex = take.kept ? take.takes.indexOf(take.kept) : -1
+  const decisive = take.comparisons.find(c => c.winner !== 'tie')
+  return (
+    <p className="text-[10px] text-text-muted mt-1">
+      Kept take {keptIndex + 1} of {take.takes.length}
+      {decisive?.reasons?.[0] ? ` — ${decisive.reasons[0]}` : take.comparisons.length ? ' — no clear winner, original kept' : ''}
+    </p>
+  )
+}
+
+function ShotRow({ shot, take }: { shot: VideoReviewShot; take?: VideoReviewTake }) {
   return (
     <div className="border-t border-border/60 pt-2 first:border-t-0 first:pt-0">
       <div className="flex items-center gap-2 text-[11px]">
@@ -47,6 +59,7 @@ function ShotRow({ shot }: { shot: VideoReviewShot }) {
         )}
         {shot.action && <span className="ml-auto text-text-secondary">{ACTION_LABEL[shot.action] ?? shot.action}</span>}
       </div>
+      <TakeLine take={take} />
       {shot.error && <p className="text-[10px] text-chip-red mt-1">Review failed: {shot.error}</p>}
       {shot.summary && <p className="text-[11px] text-text-secondary mt-1">{shot.summary}</p>}
       {!!shot.issues?.length && (
@@ -141,9 +154,23 @@ export function QualityReviewPanel({ pipelineId, canReview }: { pipelineId: stri
           No review yet. Advisory only: the review never changes the project.
         </p>
       )}
+      {review?.style_contract?.medium && review.style_contract.medium !== 'unspecified' && (
+        <p className="text-[10px] text-text-muted mb-2">
+          Judged as <span className="text-text-secondary">{review.style_contract.medium}</span>
+          {review.style_contract.allowed_stylization?.length
+            ? ` (intended: ${review.style_contract.allowed_stylization.join(', ')})` : ''}
+        </p>
+      )}
+      {review?.status === 'running' && review.phase === 'takes' && (
+        <p className="text-[10px] text-text-muted mb-2">
+          Rendering extra takes and keeping the best ({review.takes?.length ?? 0} shot(s) done)…
+        </p>
+      )}
       {!!review?.shots?.length && (
         <div className="space-y-2">
-          {review.shots.map(shot => <ShotRow key={shot.index} shot={shot} />)}
+          {review.shots.map(shot => (
+            <ShotRow key={shot.index} shot={shot} take={review.takes?.find(t => t.index === shot.index)} />
+          ))}
         </div>
       )}
     </div>

@@ -475,6 +475,15 @@ def _director_review_settings() -> tuple[bool, str]:
             str(services.get("director_video_review_model") or DEFAULT_MODEL))
 
 
+def _director_takes_per_shot() -> int:
+    """Takes rendered per shot (1 = no extra take), used with auto review."""
+    try:
+        value = int(wgp.server_config.get("services", {}).get("director_takes_per_shot", 2))
+    except (TypeError, ValueError):
+        value = 2
+    return max(1, min(3, value))
+
+
 def _director_state_dir(pid: str, base: str) -> str | None:
     from services.director_pipeline import _find_pipeline_state_file
 
@@ -482,23 +491,29 @@ def _director_state_dir(pid: str, base: str) -> str | None:
     return os.path.dirname(path) if path else None
 
 
-def _start_director_review(pid: str, base: str, *, wait_for_save: bool = False) -> bool:
-    """Review a finished Director project in the background (read-only)."""
+def _start_director_review(pid: str, base: str, *, wait_for_save: bool = False, takes: int = 1) -> bool:
+    """Review a finished Director project in the background.
+
+    With ``takes`` > 1, per-shot projects first get extra takes and keep the
+    one the judge prefers; the review itself never edits anything.
+    """
     with _director_reviews_lock:
         if pid in _director_reviews_running:
             return False
         _director_reviews_running.add(pid)
-    threading.Thread(target=_run_director_review, args=(pid, base, wait_for_save),
+    threading.Thread(target=_run_director_review, args=(pid, base, wait_for_save, takes),
                      name=f"director-review-{pid}", daemon=True).start()
     return True
 
 
-def _run_director_review(pid: str, base: str, wait_for_save: bool) -> None:
+def _run_director_review(pid: str, base: str, wait_for_save: bool, takes: int = 1) -> None:
     import base64
 
     from services import cloud_image
-    from services.director.video_judge import review_clips, save_review
-    from services.director_pipeline import load_pipeline_state
+    from services.director.video_judge import compare_takes, review_clips, save_review, select_takes
+    from services.director_pipeline import (
+        _update_saved_pipeline, load_pipeline_state, rejoin_clips, rerun_clip_video,
+    )
     from services.remote_worker.job_forwarder import _sha256
 
     state_dir, uploaded, store = None, [], None
@@ -528,10 +543,43 @@ def _run_director_review(pid: str, base: str, wait_for_save: bool) -> None:
             uploaded.append(key)
             return store.presigned_url(key, expires_seconds=3600)
 
+        contract = (state.get("_params_snapshot") or {}).get("_director_style_contract")
+        take_results: list = []
+        if takes > 1 and not state.get("seamless", True) and state.get("clips"):
+            # Joined (seamless) renders cannot swap one shot without breaking
+            # their continuity; only per-shot projects get extra takes.
+            print(f"[Director review] {pid}: rendering {takes - 1} extra take(s) per shot")
+            save_review(state_dir, pid, {"status": "running", "phase": "takes", "model": model,
+                                         "style_contract": contract, "shots": []})
+
+            def restore(index: int, filename: str) -> None:
+                def keep(saved):
+                    saved["clips"][index]["video_filename"] = filename
+                _update_saved_pipeline(base, pid, keep)
+
+            take_results = select_takes(
+                state["clips"], state_dir, extra_takes=takes - 1,
+                rerun=lambda index: rerun_clip_video(base, pid, index)["filename"],
+                restore=restore, publish=publish,
+                compare=lambda url_a, url_b, brief: compare_takes(
+                    url_a, url_b, brief, fal_key=fal_key, model=model, style_contract=contract),
+                on_progress=lambda partial: save_review(state_dir, pid, {
+                    "status": "running", "phase": "takes", "model": model,
+                    "style_contract": contract, "takes": partial, "shots": []}),
+            )
+            if any(len(result.get("takes") or []) > 1 for result in take_results):
+                rejoin_clips(base, pid)
+            state = load_pipeline_state(base, pid) or state
+
         print(f"[Director review] {pid}: judging {len(state.get('clips') or [])} shot(s) with {model}")
         review = review_clips(state.get("clips") or [], state.get("output_files") or [], state_dir,
-                              fal_key=fal_key, publish=publish, model=model,
-                              on_progress=lambda partial: save_review(state_dir, pid, partial))
+                              fal_key=fal_key, publish=publish, model=model, style_contract=contract,
+                              on_progress=lambda partial: save_review(
+                                  state_dir, pid, {**partial, "takes": take_results}))
+        if take_results:
+            review["takes"] = take_results
+            compare_cost = sum(float(c.get("cost_usd") or 0) for r in take_results for c in r.get("comparisons") or [])
+            review["cost_usd"] = round(float(review.get("cost_usd") or 0) + compare_cost, 4)
         save_review(state_dir, pid, review)
         print(f"[Director review] {pid}: {review.get('status')} score={review.get('score')} "
               f"cost=${review.get('cost_usd')}")
@@ -552,7 +600,8 @@ def _run_director_review(pid: str, base: str, wait_for_save: bool) -> None:
 def _on_director_pipeline_terminal(pipeline: dict, status: str) -> None:
     pipeline_id = str(pipeline.get("id") or "director")
     if status == "completed" and _director_review_settings()[0]:
-        _start_director_review(pipeline_id, pipeline.get("out_dir") or wgp.save_path, wait_for_save=True)
+        _start_director_review(pipeline_id, pipeline.get("out_dir") or wgp.save_path, wait_for_save=True,
+                               takes=_director_takes_per_shot())
     if status == "completed":
         _play_host_completion_sound()
         _web_push.dispatch(
@@ -7948,6 +7997,7 @@ def get_services_config():
         "lora_download_storage": services.get("lora_download_storage", "local"),
         "director_video_review": bool(services.get("director_video_review", False)),
         "director_video_review_model": services.get("director_video_review_model") or "",
+        "director_takes_per_shot": _director_takes_per_shot(),
         "r2_configured": _lora_r2_store() is not None,
         # Director v2 (layered architecture: structured shot planning,
         # mode-specific renderers, prompt validation) is now the default
@@ -8032,7 +8082,7 @@ async def update_services_config(request: Request):
         "enhance_fidelity_retries", "enhance_fidelity_auto_continue",
         "google_api_key", "llm_remote_api_key", "openai_api_key", "openrouter_api_key",
         "anthropic_api_key", "fal_api_key", "replicate_api_key", "lora_download_storage",
-        "director_video_review", "director_video_review_model",
+        "director_video_review", "director_video_review_model", "director_takes_per_shot",
         "use_director_v2", "nsfw_mode", "nsfw_accepted_at", "director_prompt_polish",
         "civitai_api_key", "voice_reference_enabled", "ltx_progressive_pipeline",
         "show_experimental", "auto_performance", "storage_allow_linked_removal",
@@ -8050,6 +8100,8 @@ async def update_services_config(request: Request):
             continue
         if key == "enhance_fidelity_retries" and (type(value) is not int or not 0 <= value <= 5):
             raise HTTPException(status_code=400, detail="Fidelity retries must be a whole number from 0 to 5.")
+        if key == "director_takes_per_shot" and (type(value) is not int or not 1 <= value <= 3):
+            raise HTTPException(status_code=400, detail="director_takes_per_shot must be 1, 2 or 3.")
         if key == "director_video_review" and type(value) is not bool:
             raise HTTPException(status_code=400, detail="director_video_review must be true or false.")
         if key == "director_video_review_model" and (not isinstance(value, str) or len(value) > 200):
@@ -10695,8 +10747,12 @@ def director_pipeline_status(pid: str):
 
 
 @api.post("/api/v1/director/pipeline/{pid}/review")
-def director_pipeline_review(pid: str):
-    """Run the read-only AI quality review on a finished Director project."""
+def director_pipeline_review(pid: str, takes: int = 1):
+    """Run the AI quality review on a finished Director project.
+
+    ``takes`` > 1 first renders extra takes per shot (per-shot projects only)
+    and keeps the one the judge prefers; this uses the GPU.
+    """
     from services import cloud_image
 
     base = wgp.server_config.get("save_path", "outputs")
@@ -10705,7 +10761,9 @@ def director_pipeline_review(pid: str):
         raise HTTPException(status_code=404, detail="Saved Director project not found")
     if not cloud_image.provider_api_key("fal", wgp.server_config.get("services", {})):
         raise HTTPException(status_code=400, detail="The video judge needs a fal.ai API key (Settings → Services)")
-    if not _start_director_review(pid, base):
+    if not 1 <= takes <= 3:
+        raise HTTPException(status_code=400, detail="takes must be 1, 2 or 3")
+    if not _start_director_review(pid, base, takes=takes):
         raise HTTPException(status_code=409, detail="A review of this project is already running")
     return {"status": "running", "pipeline_id": pid}
 

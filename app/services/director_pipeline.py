@@ -6405,6 +6405,25 @@ def _run_planning_v2(pid: str, params: dict, pipeline_type: str):
     ]))
     params["_director_writing_version"] = DIRECTOR_WRITING_VERSION
 
+    # Style contract: the medium this project aims for (any style, not only
+    # realism). The planner writes for it and quality review judges against it.
+    from services.director.style_contract import contract_block, derive_style_contract
+    style_contract = params.get("_director_style_contract")
+    if not isinstance(style_contract, dict):
+        style_brief = "\n".join(filter(None, [
+            scene_description,
+            f"Visual style: {params['visual_style']}" if params.get("visual_style") else "",
+            f"Style: {params['style']}" if params.get("style") else "",
+            f"Platform: {params['platform']}" if params.get("platform") else "",
+        ]))
+        style_contract = derive_style_contract(style_brief, _logged_generate)
+        params["_director_style_contract"] = style_contract
+        print(f"[Pipeline {pid}] Style contract: {style_contract.get('medium')}")
+    block = contract_block(style_contract)
+    if block:
+        planner_kwargs["polish_block"] = "\n\n".join(filter(None, [planner_kwargs.get("polish_block", ""), block]))
+    _update_pipeline(pid, style_contract=style_contract)
+
     # Also pass character/location ref labels and paths for image prompt rules
     planner_kwargs.update(visual_inputs)
 

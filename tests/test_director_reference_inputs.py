@@ -99,10 +99,12 @@ class TestDirectorReferenceInputs(unittest.TestCase):
             for name in ("generate", "generate_streaming"):
                 stack.enter_context(mock.patch.object(llm_service, name, side_effect=generate))
             plans, _ = pipeline._run_planning_v2("reference-fixture", params, "music_video")
-        self.assertTrue(calls)
-        self.assertEqual(calls[0]["image_paths"], [self.paths[0]])
-        self.assertIn("VISUAL REFERENCE IDENTITY", calls[0]["system_prompt"])
-        self.assertIn("group photo", calls[0]["system_prompt"])
+        # The style-contract call comes first; the writer is the call with images.
+        writer_calls = [call for call in calls if call.get("image_paths")]
+        self.assertTrue(writer_calls)
+        self.assertEqual(writer_calls[0]["image_paths"], [self.paths[0]])
+        self.assertIn("VISUAL REFERENCE IDENTITY", writer_calls[0]["system_prompt"])
+        self.assertIn("group photo", writer_calls[0]["system_prompt"])
         self.assertIn("long-haired drummer", plans[0]["video_prompt"])
         self.assertEqual(params["minimax_h3_references"][0]["path"], self.paths[0])
 

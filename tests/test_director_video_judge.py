@@ -50,18 +50,19 @@ class SegmentTests(unittest.TestCase):
 class VerdictTests(unittest.TestCase):
     def test_fenced_json_is_normalised(self):
         text = """```json
-{"score": 6.6, "scores": {"plan_adherence": 12, "anatomy_faces_hands": "4"},
- "issues": [{"at_sec": 9, "severity": "huge", "fixable_by": "magic", "description": "mouth warps"},
+{"score": 6.6, "scores": {"plan_adherence": 12, "temporal_stability": "4"},
+ "issues": [{"at_sec": 9, "severity": "huge", "category": "morphing", "fixable_by": "magic",
+             "description": "mouth warps"},
             {"description": ""}],
  "action": "retake_segment", "retake_range_sec": [1, 30], "summary": "ok"}
 ```"""
         verdict = video_judge.parse_verdict(text, duration=4)
         self.assertEqual(verdict["score"], 7)
         self.assertEqual(verdict["scores"]["plan_adherence"], 10)
-        self.assertEqual(verdict["scores"]["anatomy_faces_hands"], 4)
-        self.assertIsNone(verdict["scores"]["continuity"])
-        self.assertEqual(verdict["issues"], [{"at_sec": 4.0, "severity": "minor", "fixable_by": "none_model_limit",
-                                              "description": "mouth warps"}])
+        self.assertEqual(verdict["scores"]["temporal_stability"], 4)
+        self.assertIsNone(verdict["scores"]["audio_fit"])
+        self.assertEqual(verdict["issues"], [{"at_sec": 4.0, "severity": "minor", "category": "morphing",
+                                              "fixable_by": "none_model_limit", "description": "mouth warps"}])
         self.assertEqual(verdict["retake_range_sec"], [1.0, 4.0])
 
     def test_unusable_answers_raise(self):
@@ -121,6 +122,90 @@ class ReviewLoopTests(unittest.TestCase):
         self.assertEqual(review["score"], 7)
         self.assertEqual(review["shots"][1]["error"], "timeout")
         self.assertIsNone(calls[0][2])
+
+
+def fake_fal(outputs):
+    """MockTransport answering the fal queue with scripted outputs."""
+    answers = iter(outputs)
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        if request.method == "POST":
+            return httpx.Response(200, json={"status_url": "https://q/s", "response_url": "https://q/r"})
+        if str(request.url).endswith("/s"):
+            return httpx.Response(200, json={"status": "COMPLETED"})
+        return httpx.Response(200, json={"output": next(answers), "usage": {"cost": 0.002}})
+    return handler, requests
+
+
+class CompareTakesTests(unittest.TestCase):
+    def run_compare(self, first, second):
+        handler, requests = fake_fal([first, second])
+        with httpx.Client(transport=httpx.MockTransport(handler)) as http:
+            result = video_judge.compare_takes("https://a", "https://b", {"label": "hook"}, fal_key="k",
+                                               style_contract={"medium": "2D anime"}, http=http,
+                                               sleep=lambda _: None)
+        return result, requests
+
+    def test_consistent_preference_across_orders_wins(self):
+        result, requests = self.run_compare('{"winner": "B", "confidence": 0.8}', '{"winner": "A", "confidence": 0.6}')
+        self.assertEqual((result["winner"], result["confidence"]), ("B", 0.7))
+        bodies = [json.loads(r.content) for r in requests if r.method == "POST"]
+        self.assertEqual([b["video_urls"] for b in bodies], [["https://a", "https://b"], ["https://b", "https://a"]])
+        self.assertIn("2D anime", bodies[0]["prompt"])
+        self.assertEqual(result["cost_usd"], 0.004)
+
+    def test_position_bias_gives_a_tie(self):
+        result, _ = self.run_compare('{"winner": "A", "confidence": 0.9}', '{"winner": "A", "confidence": 0.9}')
+        self.assertEqual((result["winner"], result["confidence"]), ("tie", 0.0))
+
+
+class SelectTakesTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir)
+        self.original_cut = video_judge.cut_segment
+        video_judge.cut_segment = lambda src, start, end, dest: src
+        self.addCleanup(setattr, video_judge, "cut_segment", self.original_cut)
+
+    def test_challenger_must_win_confidently_and_loser_is_restored(self):
+        clips = [clip(0, 4, video_filename="a1.mp4"), clip(4, 8, video_filename="b1.mp4"), clip(8, 9)]
+        renders = iter(["a2.mp4", "b2.mp4"])
+        verdicts = iter([{"winner": "B", "confidence": 0.8}, {"winner": "B", "confidence": 0.3}])
+        restored = []
+        results = video_judge.select_takes(
+            clips, self.dir, extra_takes=1, rerun=lambda i: next(renders),
+            restore=lambda i, name: restored.append((i, name)), publish=lambda p: p,
+            compare=lambda a, b, brief: next(verdicts))
+        self.assertEqual([r["kept"] for r in results], ["a2.mp4", "b1.mp4", None])
+        self.assertEqual(restored, [(1, "b1.mp4")])  # low-confidence win keeps the incumbent
+        self.assertIn("no video of its own", results[2]["error"])
+
+    def test_render_failure_keeps_the_original(self):
+        def boom(index):
+            raise RuntimeError("worker down")
+        results = video_judge.select_takes(
+            [clip(0, 4, video_filename="a1.mp4")], self.dir, extra_takes=2, rerun=boom,
+            restore=lambda i, n: None, publish=lambda p: p, compare=lambda *a: {})
+        self.assertEqual((results[0]["kept"], results[0]["error"]), ("a1.mp4", "worker down"))
+
+
+class StyleContractTests(unittest.TestCase):
+    def test_contract_parsing_and_planner_block(self):
+        from services.director.style_contract import contract_block, derive_style_contract, parse_contract
+
+        contract = parse_contract('{"medium": "3D animated feature", "allowed_stylization": ["squash and stretch"],'
+                                  ' "must_avoid": ["melting faces"], "finishing": {"film_grain": false}}')
+        self.assertEqual(contract["medium"], "3D animated feature")
+        block = contract_block(contract)
+        self.assertIn("Intended stylisation: squash and stretch", block)
+        self.assertIn("melting faces", block)
+        self.assertEqual(contract_block({"medium": "unspecified"}), "")
+
+        def broken(**kwargs):
+            raise RuntimeError("llm offline")
+        self.assertEqual(derive_style_contract("A cat", broken)["medium"], "unspecified")
 
 
 if __name__ == "__main__":
