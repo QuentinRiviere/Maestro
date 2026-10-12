@@ -12,6 +12,32 @@ import { SidebarDialog } from './SidebarPanels'
 import { isLongCatAvatarModel } from '../../lib/avatarWorkflow'
 
 type Placement = 'above' | 'below' | 'footer'
+type SourceFilter = 'all' | 'local' | 'fal' | 'replicate'
+
+const SOURCE_FILTERS: Array<{ id: SourceFilter; label: string; title: string }> = [
+  { id: 'all', label: 'All', title: 'Every model' },
+  { id: 'local', label: 'Open weights', title: 'Models that run on your GPU or the remote GPU worker' },
+  { id: 'fal', label: 'fal.ai', title: 'Hosted models billed by fal.ai' },
+  { id: 'replicate', label: 'Replicate', title: 'Hosted models billed by Replicate' },
+]
+const CLOUD_LABELS: Record<string, string> = { fal: 'fal.ai', replicate: 'Replicate' }
+const FILTER_STORAGE_KEY = 'maestro_model_selector_filters'
+
+function readStoredFilters(): { source: SourceFilter; loraOnly: boolean } {
+  try {
+    const stored = JSON.parse(localStorage.getItem(FILTER_STORAGE_KEY) || '{}')
+    const source = SOURCE_FILTERS.some(f => f.id === stored.source) ? stored.source : 'all'
+    return { source, loraOnly: stored.loraOnly === true }
+  } catch {
+    return { source: 'all', loraOnly: false }
+  }
+}
+
+function matchesSource(model: { cloud_provider?: string | null }, source: SourceFilter) {
+  if (source === 'all') return true
+  if (source === 'local') return !model.cloud_provider
+  return model.cloud_provider === source
+}
 
 function ModelChoicesPanel({open, placement, onClose, children}: {open: boolean; placement: Placement; onClose: () => void; children: ReactNode}) {
   if (placement === 'footer') return <SidebarDialog open={open} title="Choose a model" variant="settings" onClose={onClose}>{open && children}</SidebarDialog>
@@ -62,6 +88,13 @@ export function ModelSelector({ placement = 'above' }: { placement?: Placement }
   const nsfwMode = useStore(s => s.servicesConfig?.nsfw_mode ?? false)
 
   const [open, setOpen] = useState(false)
+  const [sourceFilter, setSourceFilter] = useState<SourceFilter>(() => readStoredFilters().source)
+  const [loraOnly, setLoraOnly] = useState(() => readStoredFilters().loraOnly)
+  useEffect(() => {
+    try {
+      localStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify({ source: sourceFilter, loraOnly }))
+    } catch { /* storage unavailable: filters reset next session */ }
+  }, [sourceFilter, loraOnly])
   const containerRef = useRef<HTMLDivElement>(null)
 
   // Close on click outside
@@ -132,13 +165,27 @@ export function ModelSelector({ placement = 'above' }: { placement?: Placement }
       || modelSupportsStudioVideoMediaIntent(model, studioMediaIntent)
     )
   )
-  const groups = modeFamilies.map(family => ({
+  const visibleGroups = modeFamilies.map(family => ({
     family,
     models: getModelsForFamily(family.id, models, generationMode, effectiveSubMode)
       .filter(workflowFilter)
       .filter(m => enabledModels.has(m.model_type))
       .filter(m => !m.nsfw_only || nsfwMode),
   })).filter(g => g.models.length > 0)
+  const visibleModels = visibleGroups.flatMap(g => g.models)
+  // Filters only appear when they can split the list in this mode.
+  const availableSources = SOURCE_FILTERS.filter(f => f.id === 'all' || visibleModels.some(m => matchesSource(m, f.id)))
+  const showSourceFilter = availableSources.length > 2
+  const showLoraFilter = visibleModels.some(m => !m.loras_disabled) && visibleModels.some(m => m.loras_disabled)
+  const activeSource = showSourceFilter ? sourceFilter : 'all'
+  const activeLoraOnly = showLoraFilter && loraOnly
+  const groups = visibleGroups.map(g => ({
+    family: g.family,
+    models: g.models
+      .filter(m => matchesSource(m, activeSource))
+      .filter(m => !activeLoraOnly || !m.loras_disabled),
+  })).filter(g => g.models.length > 0)
+  const filtersHideEverything = groups.length === 0 && visibleGroups.length > 0
 
   // How many models are available for this mode but NOT enabled — powers the
   // "+N" hint that nudges users toward Settings → Enabled Models.
@@ -183,8 +230,31 @@ export function ModelSelector({ placement = 'above' }: { placement?: Placement }
               <span className="text-[10px] text-text-muted shrink-0">{disabledCount} available</span>
             </button>
           )}
+          {(showSourceFilter || showLoraFilter) && (
+            <div className="flex flex-wrap items-center gap-1 px-3 py-2 border-b border-border" role="group" aria-label="Filter models">
+              {showSourceFilter && availableSources.map(f => (
+                <FilterChip key={f.id} active={activeSource === f.id} title={f.title} onClick={() => setSourceFilter(f.id)}>
+                  {f.label}
+                </FilterChip>
+              ))}
+              {showLoraFilter && (
+                <FilterChip active={activeLoraOnly} title="Only models that accept LoRAs" onClick={() => setLoraOnly(!loraOnly)}>
+                  LoRA
+                </FilterChip>
+              )}
+            </div>
+          )}
           <div className={placement === 'footer' ? 'py-1' : 'max-h-[360px] overflow-y-auto py-1'}>
-            {groups.length === 0 && (
+            {filtersHideEverything && (
+              <p className="px-3 py-3 text-[10px] leading-relaxed text-text-muted">
+                No enabled model matches these filters.{' '}
+                <button type="button" className="text-accent-blue hover:underline"
+                  onClick={() => { setSourceFilter('all'); setLoraOnly(false) }}>
+                  Clear filters
+                </button>
+              </p>
+            )}
+            {groups.length === 0 && !filtersHideEverything && (
               <p className="px-3 py-3 text-[10px] leading-relaxed text-text-muted">
                 {compatibilityDescription}
               </p>
@@ -243,9 +313,33 @@ export function ModelSelector({ placement = 'above' }: { placement?: Placement }
   )
 }
 
+function FilterChip({ active, title, onClick, children }: {
+  active: boolean
+  title: string
+  onClick: () => void
+  children: ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={active}
+      title={title}
+      onClick={onClick}
+      className={`min-h-6 rounded-full border px-2 text-[10px] leading-none transition-colors ${
+        active
+          ? 'border-accent-blue bg-accent-blue/15 text-text-primary'
+          : 'border-border text-text-muted hover:border-border-light hover:text-text-secondary'
+      }`}
+    >
+      {children}
+    </button>
+  )
+}
+
 function ModelBadges({ model }: {
   model: {
     model_type: string
+    cloud_provider?: string | null
     is_i2v: boolean
     is_t2v: boolean
     supports_end_frame?: boolean
@@ -256,6 +350,10 @@ function ModelBadges({ model }: {
   }
 }) {
   const badges: Array<{ label: string; title: string }> = []
+  if (model.cloud_provider) {
+    const provider = CLOUD_LABELS[model.cloud_provider] ?? model.cloud_provider
+    badges.push({ label: provider, title: `Runs on ${provider}; billed per image by the provider` })
+  }
   const workflowIsAlreadyInName = model.model_type.startsWith('minimax_h3')
   if (!workflowIsAlreadyInName && model.is_i2v && model.supports_end_frame) {
     badges.push({ label: 'First / Last', title: 'Accepts a first frame, a last frame, or both' })
