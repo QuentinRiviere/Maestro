@@ -57,6 +57,9 @@ class FakeWorker:
         self.final = {"status": "completed", "output_files": ["clip.mp4"], "files": ["clip.mp4"],
                       "sidecars": ["clip.json"], "clip_output_files": {}, "join_output_file": None}
         self.contents = {"clip.mp4": b"video", "clip.json": b"{}"}
+        self.submit_body = None
+        self.previews = {}  # url -> (bytes, content type)
+        self.preview_fetches = []
 
     # WorkerClient surface
     def get_json(self, path, *, timeout=30.0, params=None):
@@ -79,6 +82,7 @@ class FakeWorker:
             self.download_status[model] = {"status": "completed"}
             return {"status": "downloading"}
         if path == "api/v1/worker/jobs":
+            self.submit_body = body
             self.submitted = body["params"]
             return {"job_id": "r1"}
         if path.startswith("api/v1/cancel/"):
@@ -91,6 +95,10 @@ class FakeWorker:
         self.uploads.append((kind, os.path.basename(local_path), model_type))
         self.files[remote] = sha256
         return remote
+
+    def get_bytes(self, path, *, timeout=30.0):
+        self.preview_fetches.append(path)
+        return self.previews.get(path)
 
     def download(self, path, dest):
         name = path.rsplit("/", 1)[1]
@@ -128,6 +136,49 @@ class ForwarderTests(unittest.TestCase):
             update=lambda **u: self.updates.append(u),
             is_cancelled=lambda: self.cancel,
         )
+
+    def test_previews_are_relayed_once_per_revision(self):
+        def preview(revision, notice=None):
+            return {"status": "running", "step": revision, "total_steps": 3,
+                    "preview": {"url": f"/api/v1/jobs/r1/preview/{revision}", "kind": "video",
+                                "revision": revision, "mode": "tiny_vae_video", "window": 1, "total_windows": 1},
+                    "preview_notice": notice}
+        self.worker.previews = {"/api/v1/jobs/r1/preview/1": (b"v1", "video/mp4"),
+                                "/api/v1/jobs/r1/preview/2": (b"v2", "video/mp4")}
+        self.worker.timeline = [preview(1), preview(1), preview(2), preview(2, "Previews paused")]
+        relayed, notices = [], []
+        self.forwarder.run(
+            {"model_type": "ltx2_22B_distilled_1_1", "prompt": "a cat"},
+            out_dir=self.out_dir,
+            resolve_lora=lambda m, n: None,
+            update=lambda **u: None,
+            is_cancelled=lambda: False,
+            preview_mode="tiny_vae_video",
+            on_preview=lambda data, ctype, info: relayed.append((data, ctype, info["revision"])),
+            on_preview_notice=notices.append,
+        )
+        self.assertEqual(self.worker.submit_body["preview_mode"], "tiny_vae_video")
+        self.assertEqual(relayed, [(b"v1", "video/mp4", 1), (b"v2", "video/mp4", 2)])
+        self.assertEqual(len(self.worker.preview_fetches), 2)
+        self.assertEqual(notices, ["Previews paused"])
+
+    def test_preview_failures_do_not_fail_the_job(self):
+        self.worker.timeline = [{"status": "running", "preview": {"url": "/p/1", "revision": 1}}]
+
+        def boom(path, *, timeout=30.0):
+            raise RuntimeError("proxy hiccup")
+        self.worker.get_bytes = boom
+        result = self.forwarder.run(
+            {"model_type": "ltx2_22B_distilled_1_1", "prompt": "a cat"},
+            out_dir=self.out_dir, resolve_lora=lambda m, n: None,
+            update=lambda **u: None, is_cancelled=lambda: False,
+            on_preview=lambda *a: None,
+        )
+        self.assertEqual(len(result.output_files), 1)
+
+    def test_no_preview_mode_keeps_the_worker_default(self):
+        self._run({"model_type": "ltx2_22B_distilled_1_1", "prompt": "a cat"})
+        self.assertNotIn("preview_mode", self.worker.submit_body)
 
     def test_full_round_trip(self):
         image = self._file("start.png")

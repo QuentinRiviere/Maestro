@@ -384,7 +384,7 @@ from services.studio_enhancement import (
     new_enhancement, prepare_enhanced_job, public_enhancement,
 )
 from services.generation_preview import (
-    GenerationPreviewCache, PREVIEW_MODES, configured_preview_mode, preview_response,
+    GenerationPreviewCache, PREVIEW_MODES, configured_preview_mode, preview_mode, preview_response,
 )
 
 _generation_previews = GenerationPreviewCache()
@@ -25619,14 +25619,25 @@ def _run_remote_generation(job: dict, raw_params: dict, *, finalize: bool) -> bo
     """Run a prepared job on the remote worker and publish its outputs here."""
     defer_output_publication = bool(raw_params.get("_defer_output_publication"))
     out_dir = job.get("out_dir") or wgp.save_path
+    job_id = str(job.get("id") or "")
+    # The worker renders previews in this controller's mode; they are relayed
+    # into the local preview cache so the UI shows them as for a local job.
+    remote_preview_mode = configured_preview_mode(wgp.server_config.get("generation_preview"))
+    if remote_preview_mode != "off":
+        _generation_previews.begin(job_id)
     try:
         result = _remote_job_forwarder.run(
             raw_params,
-            job_id=str(job.get("id") or ""),
+            job_id=job_id,
             out_dir=out_dir,
             resolve_lora=wgp.resolve_lora_path,
             update=lambda **updates: update_job(job, **updates),
             is_cancelled=lambda: is_cancel_requested(job),
+            preview_mode=remote_preview_mode,
+            on_preview=lambda data, content_type, info: _generation_previews.relay(
+                job_id, data, content_type, info,
+            ),
+            on_preview_notice=lambda notice: _generation_previews.set_notice(job_id, notice),
         )
     except RemoteJobCancelled:
         return False
@@ -25764,6 +25775,7 @@ async def worker_submit_job(request: Request):
     params = body.get("params") if isinstance(body, dict) else None
     if not isinstance(params, dict):
         raise HTTPException(status_code=400, detail="params must be an object")
+    requested_preview = body.get("preview_mode")
     if not params.get("sfx_mode") and wgp.get_model_def(params.get("model_type")) is None:
         raise HTTPException(status_code=400, detail=f"Unknown model: {params.get('model_type')}")
     job_id = uuid.uuid4().hex[:8]
@@ -25784,6 +25796,9 @@ async def worker_submit_job(request: Request):
         "workspace": None,
         "out_dir": out_dir,
     }
+    if requested_preview is not None:
+        # The controller's Generation Preview preference, not this worker's.
+        _jobs[job_id]["preview_mode"] = preview_mode(requested_preview)
     threading.Thread(target=_run_generation, args=(job_id,), daemon=False).start()
     return {"job_id": job_id}
 
@@ -25817,6 +25832,7 @@ def worker_job_status(job_id: str):
     snapshot.pop("params", None)
     snapshot["files"] = files
     snapshot["sidecars"] = sidecars
+    snapshot.update(_generation_previews.fields(job))
     return JSONResponse(json.loads(json.dumps(snapshot, default=str)))
 
 
@@ -26024,8 +26040,9 @@ def _run_generation(job_id: str, *, finalize: bool = True, _slot_owned: bool = F
                     "process_status": "process:main",
                 },
                 "loras": [],
-                "_generation_preview_mode": configured_preview_mode(
-                    wgp.server_config.get("generation_preview")
+                "_generation_preview_mode": (
+                    preview_mode(job["preview_mode"]) if "preview_mode" in job
+                    else configured_preview_mode(wgp.server_config.get("generation_preview"))
                 ),
             }
             if state["_generation_preview_mode"] != "off":

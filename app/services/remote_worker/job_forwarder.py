@@ -118,6 +118,15 @@ class WorkerClient:
             raise RemoteJobError(f"Worker R2 fetch of {name} failed: HTTP {response.status_code} {response.text[:300]}")
         return str(response.json()["path"])
 
+    def get_bytes(self, path: str, *, timeout: float = 30.0) -> tuple[bytes, str] | None:
+        """Small in-memory GET (previews); None when the worker no longer has it."""
+        response = self._session.get(self._url(path), headers=self._headers, timeout=timeout)
+        if response.status_code == 404:
+            return None
+        if not response.ok:
+            raise RemoteJobError(f"Worker GET {path} failed: HTTP {response.status_code}")
+        return response.content, response.headers.get("Content-Type", "").split(";")[0].strip()
+
     def download(self, path: str, dest: str) -> None:
         part = dest + ".part"
         with self._session.get(self._url(path), headers=self._headers, timeout=600, stream=True) as response:
@@ -172,7 +181,16 @@ class RemoteJobForwarder:
         resolve_lora: Callable[[str, str], str | None],
         update: Callable[..., Any],
         is_cancelled: Callable[[], bool],
+        preview_mode: str | None = None,
+        on_preview: Callable[[bytes, str, Mapping[str, Any]], Any] | None = None,
+        on_preview_notice: Callable[[str | None], Any] | None = None,
     ) -> RemoteJobResult:
+        """Run one prepared job remotely.
+
+        ``preview_mode`` is the controller's Generation Preview preference;
+        the worker renders previews in that mode and ``on_preview`` receives
+        each new one (bytes, content type, the worker's preview descriptor).
+        """
         model_type = str(params.get("model_type") or "")
         self._manager.job_started()
         try:
@@ -195,8 +213,14 @@ class RemoteJobForwarder:
                 client, store, params, model_type, resolve_lora=resolve_lora, update=update,
             )
             update(phase="Remote worker", message="Submitting to the remote worker…")
-            remote_id = str(client.post_json("api/v1/worker/jobs", {"params": remote_params})["job_id"])
-            remote = self._follow(client, remote_id, update=update, is_cancelled=is_cancelled)
+            body: dict[str, Any] = {"params": remote_params}
+            if preview_mode is not None:
+                body["preview_mode"] = preview_mode
+            remote_id = str(client.post_json("api/v1/worker/jobs", body)["job_id"])
+            remote = self._follow(
+                client, remote_id, update=update, is_cancelled=is_cancelled,
+                on_preview=on_preview, on_preview_notice=on_preview_notice,
+            )
             return self._fetch_outputs(
                 client, store, remote_id, remote, job_id=job_id or remote_id, out_dir=out_dir, update=update,
             )
@@ -274,9 +298,12 @@ class RemoteJobForwarder:
                 self._send_file(client, store, local, kind="lora", model_type=model_type, update=update)
         return remote_params
 
-    def _follow(self, client, remote_id: str, *, update, is_cancelled) -> Mapping[str, Any]:
+    def _follow(self, client, remote_id: str, *, update, is_cancelled,
+                on_preview=None, on_preview_notice=None) -> Mapping[str, Any]:
         cancel_sent_at: float | None = None
         missing = 0
+        relayed_revision: Any = None
+        relayed_notice: Any = None
         while True:
             if is_cancelled() and cancel_sent_at is None:
                 try:
@@ -306,7 +333,29 @@ class RemoteJobForwarder:
                 raise RemoteJobCancelled()
             if cancel_sent_at is None:
                 update(**{k: remote[k] for k in _MIRRORED_FIELDS if k in remote})
+                relayed_revision = self._relay_preview(client, remote, relayed_revision, on_preview)
+                notice = remote.get("preview_notice")
+                if on_preview_notice is not None and notice != relayed_notice:
+                    on_preview_notice(notice)
+                    relayed_notice = notice
             self._sleep(self._poll_interval)
+
+    @staticmethod
+    def _relay_preview(client, remote: Mapping[str, Any], last_revision: Any, on_preview) -> Any:
+        """Forward the worker's newest preview once; preview failures never fail the job."""
+        preview = remote.get("preview")
+        if on_preview is None or not isinstance(preview, Mapping) or not preview.get("url"):
+            return last_revision
+        revision = preview.get("revision")
+        if revision == last_revision:
+            return last_revision
+        try:
+            fetched = client.get_bytes(str(preview["url"]))
+            if fetched is not None:
+                on_preview(fetched[0], fetched[1], preview)
+        except Exception as exc:
+            log.warning("remote preview relay failed: %s", exc)
+        return revision
 
     def _fetch_outputs(self, client, store, remote_id, remote, *, job_id, out_dir, update) -> RemoteJobResult:
         os.makedirs(out_dir, exist_ok=True)

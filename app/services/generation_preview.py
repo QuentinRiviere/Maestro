@@ -105,6 +105,28 @@ class GenerationPreviewCache:
                 != {key: value for key, value in context.items() if key != "mode"}
             ):
                 return None
+            return self._store(job_id, entry, data, content_type, kind, context)
+
+    def relay(self, job_id: str, data: bytes, content_type: str, info: dict[str, Any]) -> dict[str, Any] | None:
+        """Publish an already-encoded preview produced elsewhere (remote worker).
+
+        ``info`` is the producer's ``preview`` descriptor; the producer already
+        enforced window contexts, so the latest relayed revision always wins.
+        """
+        kind = "video" if content_type == "video/mp4" else "image" if content_type == "image/jpeg" else None
+        if kind is None or not data or len(data) > min(self.max_media_bytes, self.max_bytes):
+            return None
+        context = {key: info[key] for key in ("mode", "window", "total_windows", "clip", "total_clips") if key in info}
+        with self._lock:
+            entry = self._jobs.get(job_id)
+            if entry is None:
+                return None
+            entry.context = context
+            return self._store(job_id, entry, data, content_type, kind, context)
+
+    def _store(self, job_id: str, entry: _Entry, data: bytes, content_type: str, kind: str,
+               context: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
             self._revision += 1
             revision = self._revision
             item = PreviewMedia(data, content_type, revision)
