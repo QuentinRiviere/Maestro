@@ -29345,6 +29345,37 @@ def cancel_job(job_id: str):
     return {"status": job["status"], "was_running": result.was_running}
 
 
+@api.get("/api/v1/jobs/{job_id}")
+def get_studio_job(job_id: str):
+    """One job, including finished ones that /api/v1/jobs no longer lists."""
+    job = _jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Unknown job")
+    j = snapshot_job(job)
+    workspace = str(j.get("workspace") or _get_active_workspace())
+    outputs = []
+    for name in j.get("output_files") or []:
+        base = os.path.basename(str(name))
+        outputs.append({
+            "name": base,
+            "url": f"/api/v1/file/{quote(base)}?workspace={quote(workspace)}",
+        })
+    return {
+        "job_id": j["id"],
+        "status": j.get("status"),
+        "kind": j.get("kind", "generation"),
+        "progress": j.get("progress"),
+        "step": j.get("step"),
+        "total_steps": j.get("total_steps"),
+        "phase": j.get("phase"),
+        "message": j.get("message"),
+        "error": j.get("error"),
+        "created_at": j.get("created_at"),
+        "outputs": outputs,
+        **_generation_previews.fields(j),
+    }
+
+
 @api.delete("/api/v1/jobs/{job_id}")
 def dismiss_studio_job(job_id: str):
     job = _jobs.get(job_id)
@@ -30705,6 +30736,12 @@ if os.environ.get("MAESTRO_PROMPT_BENCH") == "1" or os.path.isfile(
         prepare=_prepare_generation_submission, app_root=_app_dir,
     )
 
+# MCP endpoint for AI agents (controller only; registered before the UI's
+# catch-all static mount). Tools call this server's REST API over loopback.
+if not _is_remote_worker_process:
+    from services.mcp_server import mount_mcp
+    mount_mcp(api, port=lambda: _maestro_server_port, version=api.version)
+
 _ui_dist = os.path.normpath(os.path.join(_app_dir, "..", "ui", "dist"))
 if os.path.isdir(_ui_dist):
     api.mount("/", StaticFiles(directory=_ui_dist, html=True))
@@ -30793,6 +30830,7 @@ if __name__ == "__main__":
     # background. Local startup never waits on or requires Tailscale.
     _tailscale = TailscaleManager(_maestro_settings_dir, port)
     _tailscale.refresh_if_enabled()
+    _maestro_server_port = port  # the MCP endpoint calls back on this port
 
     # Browsers can't navigate to 0.0.0.0 (it's a non-routable bind
     # address), so when binding wider we still SURFACE the loopback
