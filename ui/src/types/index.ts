@@ -1294,6 +1294,7 @@ export interface RemoteWorkerSettings {
   default_model_type: string
   backends: string[]
   fleet: string
+  manage_fleet: boolean
   gpu: string
   disk: string
   spot_policy: string

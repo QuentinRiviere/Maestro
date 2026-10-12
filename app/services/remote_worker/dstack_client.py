@@ -74,6 +74,13 @@ class DstackClient:
     def list_fleets(self) -> list[Mapping[str, Any]]:
         return self._post(self._project_path("fleets/list")) or []
 
+    def apply_fleet(self, fleet_spec: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Create or update a fleet (forced: Maestro owns the fleet it names)."""
+        return self._post(self._project_path("fleets/apply"), {
+            "plan": {"spec": fleet_spec},
+            "force": True,
+        })
+
     def set_secret(self, name: str, value: str) -> None:
         """Create or update a project secret, referenced as ``${{ secrets.NAME }}``."""
         self._post(self._project_path("secrets/create_or_update"), {"name": name, "value": value})

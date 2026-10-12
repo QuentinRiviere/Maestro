@@ -49,6 +49,7 @@ class FakeDstack:
         self.run = None
         self.token = "tok-123456789abc"
         self.secrets = {}
+        self.fleets = {}
 
     def post(self, url, json=None, headers=None, timeout=None):
         path = url.split("127.0.0.1:3000", 1)[1]
@@ -59,6 +60,10 @@ class FakeDstack:
             return FakeResponse(body={"server_version": "0.20.29"})
         if path.endswith("/fleets/list"):
             return FakeResponse(body=[{"name": "studio-comfy-fleet"}])
+        if path.endswith("/fleets/apply"):
+            conf = json["plan"]["spec"]["configuration"]
+            self.fleets[conf["name"]] = conf
+            return FakeResponse(body={"name": conf["name"]})
         if path.endswith("/secrets/create_or_update"):
             self.secrets[json["name"]] = json["value"]
             return FakeResponse(body={"name": json["name"]})
@@ -313,6 +318,26 @@ class ManagerTests(unittest.TestCase):
         self.assertEqual(self.manager.stop()["state"], "stopping")
         self.fake.finish()
         self.assertEqual(self.manager.status()["message"], "Stopped by user")
+
+    def test_start_applies_the_dedicated_fleet_before_the_run(self):
+        self.manager.update_settings({"max_price": 1.5, "gpu": "80GB.."})
+        self.manager.start()
+        paths = [c[0] for c in self.fake.calls]
+        self.assertLess(
+            next(i for i, p in enumerate(paths) if p.endswith("/fleets/apply")),
+            next(i for i, p in enumerate(paths) if p.endswith("/runs/apply")),
+        )
+        fleet = self.fake.fleets["maestro"]
+        self.assertEqual(fleet["max_price"], 1.5)
+        self.assertEqual(fleet["resources"]["gpu"], "80GB..")
+        self.assertEqual(fleet["nodes"], {"min": 0, "max": 1})
+        self.assertEqual(self.fake.run["run_spec"]["configuration"]["fleets"], ["maestro"])
+
+    def test_unmanaged_fleet_is_left_alone(self):
+        self.manager.update_settings({"fleet": "studio-comfy-fleet", "manage_fleet": False})
+        self.manager.start()
+        self.assertEqual(self.fake.fleets, {})
+        self.assertEqual(self.fake.run["run_spec"]["configuration"]["fleets"], ["studio-comfy-fleet"])
 
     def test_ready_waits_for_the_proxy_route(self):
         self.manager.start()

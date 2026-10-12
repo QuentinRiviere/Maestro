@@ -90,3 +90,23 @@ def build_run_spec(settings: RemoteWorkerSettings) -> dict[str, Any]:
     if settings.fleet:
         configuration["fleets"] = [settings.fleet]
     return {"run_name": settings.run_name, "configuration": configuration}
+
+
+# Seconds an instance stays in the fleet after the worker run ends. Maestro
+# owns the idle TTL, so the instance should go away right after the run.
+FLEET_IDLE_SECONDS = 60
+
+
+def build_fleet_spec(settings: RemoteWorkerSettings) -> dict[str, Any]:
+    """dstack fleet that bounds the worker: one node, Maestro's GPU and price."""
+    configuration: dict[str, Any] = {
+        "type": "fleet",
+        "name": settings.fleet,
+        "nodes": {"min": 0, "max": 1},
+        "resources": {"gpu": settings.gpu, "disk": settings.disk},
+        "backends": list(settings.backends),
+        "spot_policy": settings.spot_policy,
+        "max_price": settings.max_price,
+        "idle_duration": FLEET_IDLE_SECONDS,
+    }
+    return {"configuration": configuration, "profile": {"name": "default"}, "autocreated": False}

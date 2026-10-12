@@ -421,7 +421,16 @@ export function RemoteWorkerPanel() {
           <HardDrive size={14} className="text-accent-blue" />
           <div className="text-xs font-medium text-text-primary">GPU and limits</div>
         </div>
-        {connection?.fleets.length ? (
+        <Toggle
+          checked={merged.manage_fleet}
+          onChange={checked => update('manage_fleet', checked)}
+          label="Dedicated Maestro fleet"
+          description={isLocked('manage_fleet') ? 'Set by environment.' : 'Maestro creates and updates this dstack fleet with the GPU and price limits below. Other fleets keep their own caps.'}
+          disabled={isLocked('manage_fleet')}
+        />
+        {merged.manage_fleet ? (
+          <Field locked={isLocked('fleet')} label="Fleet name" value={merged.fleet} onChange={value => update('fleet', value)} placeholder="maestro" />
+        ) : connection?.fleets.length ? (
           <label className="block space-y-1">
             <span className="text-[10px] text-text-secondary">Fleet</span>
             <select

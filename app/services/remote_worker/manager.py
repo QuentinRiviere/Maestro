@@ -31,7 +31,7 @@ from services.remote_worker.settings import (
     is_masked,
     read_local_dstack_config,
 )
-from services.remote_worker.worker_spec import build_run_spec, dstack_secrets
+from services.remote_worker.worker_spec import build_fleet_spec, build_run_spec, dstack_secrets
 
 
 log = logging.getLogger("maestro.remote_worker")
@@ -262,6 +262,8 @@ class RemoteWorkerManager:
                 return self.status()
             for name, value in dstack_secrets(settings).items():
                 client.set_secret(name, value)
+            if settings.manage_fleet and settings.fleet:
+                client.apply_fleet(build_fleet_spec(settings))
             self._stop_reason = None
             self._last_activity = self._clock()
             client.apply(build_run_spec(settings))

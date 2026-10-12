@@ -38,7 +38,11 @@ class RemoteWorkerSettings:
     default_model_type: str = ""
     # where and how much
     backends: list[str] = field(default_factory=lambda: ["runpod"])
-    fleet: str = ""
+    # dstack 0.20 provisions inside fleets only, so a run without its own
+    # fleet inherits the price/GPU caps of whatever fleet the project has.
+    # Maestro therefore keeps a dedicated fleet mirroring the limits below.
+    fleet: str = "maestro"
+    manage_fleet: bool = True
     gpu: str = "48GB.."
     disk: str = "200GB.."
     spot_policy: str = "on-demand"
