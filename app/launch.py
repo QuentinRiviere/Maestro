@@ -163,6 +163,13 @@ from models.minimax_h3.turbo import (
 )
 print(f"[Maestro] WanGP loaded: {len(wgp.displayed_model_types)} models available")
 
+from inference import BackendRegistry, LocalWgpBackend, TaskRequest
+
+# Where each validated task runs. Routing is read from
+# wgp.server_config["inference"]; see inference/registry.py.
+_inference_backends = BackendRegistry()
+_inference_backends.register("local", lambda: LocalWgpBackend(wgp))
+
 # Optional private HTTPS + closed-app notification services. Their state is
 # stored under app/settings (already gitignored), never in a Maestro cloud
 # account. Creating them is cheap and does not require Tailscale or Web Push to
@@ -25444,7 +25451,6 @@ def _prepare_viggle_character_frame(job: dict) -> bool:
 def _run_generation(job_id: str, *, finalize: bool = True, _slot_owned: bool = False) -> bool:
     """Build and run a job, optionally deferring success finalization."""
     from shared.utils.thread_utils import AsyncStream, async_run
-    import inspect
     from contextlib import ExitStack, nullcontext
 
     job = _jobs[job_id]
@@ -26644,10 +26650,14 @@ def _run_generation(job_id: str, *, finalize: bool = True, _slot_owned: bool = F
                 def make_error_handler(task, params, send_cmd):
                     def error_handler():
                         try:
-                            expected_args = set(inspect.signature(wgp.generate_video).parameters.keys())
-                            filtered_params = {k: v for k, v in params.items() if k in expected_args}
-                            plugin_data = task.get('plugin_data', {})
-                            wgp.generate_video(task, send_cmd, plugin_data=plugin_data, **filtered_params)
+                            backend = _inference_backends.for_model(
+                                params.get("model_type") or "",
+                                wgp.server_config,
+                            )
+                            backend.run_task(
+                                TaskRequest(task=task, params=params),
+                                send_cmd,
+                            )
                         except Exception as e:
                             print(f"\n  [ERROR] {e}")
                             traceback.print_exc()
