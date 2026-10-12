@@ -738,6 +738,26 @@ export function ServicesSettingsPanel() {
         <p className="text-[10px] text-text-muted -mt-2">
           Optional. Increases rate limits and enables access to restricted models.
         </p>
+
+        {servicesConfig.r2_configured && (
+          <div>
+            <label className="text-[11px] text-text-muted uppercase tracking-wider mb-1.5 block">
+              Default LoRA download storage
+            </label>
+            <select
+              value={servicesConfig.lora_download_storage ?? 'local'}
+              onChange={e => updateConfig({ lora_download_storage: e.target.value as 'local' | 'r2' | 'both' })}
+              className="w-full bg-bg-tertiary border border-border rounded-lg px-3 py-2 text-sm text-text-primary focus:outline-none focus:border-accent-blue"
+            >
+              <option value="local">This computer</option>
+              <option value="r2">R2 bucket only</option>
+              <option value="both">Both</option>
+            </select>
+            <p className="text-[10px] text-text-muted mt-1">
+              Pre-selected in each LoRA download; you can still change it per download.
+            </p>
+          </div>
+        )}
       </div>
 
       {/* ───────────────────────────── BETA FEATURES ─────────────────────────

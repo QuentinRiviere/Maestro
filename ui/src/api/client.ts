@@ -2753,6 +2753,8 @@ export async function startCivitAIDownload(params: {
   // auto_quantize=true sets the finetune to load-time int8 (mmgp).
   kind?: string; target_architecture?: string; auto_quantize?: boolean
   file_id?: number; h3_sampling_profile?: string; h3_native_workflow?: string; h3_qkv_layout?: string
+  // LoRAs only: keep on this computer, in the R2 bucket, or both.
+  storage?: 'local' | 'r2' | 'both'
 }): Promise<{ download_id: string }> {
   const res = await fetch(`${BASE}/api/v1/civitai/download`, {
     method: 'POST',
@@ -2808,17 +2810,17 @@ export async function fetchLoraGuide(modelType: string, filename: string): Promi
   return res.json()
 }
 
-export async function importHuggingFaceLora(url: string, targetDir?: string, filename?: string): Promise<{
+export async function importHuggingFaceLora(url: string, targetDir?: string, filename?: string, storage?: 'local' | 'r2' | 'both'): Promise<{
   status: string; download_id: string; filename: string; target_dir: string; repo_id?: string; base_model: string
 }> {
   const res = await fetch(`${BASE}/api/v1/huggingface/import-lora`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url, target_dir: targetDir || '', filename: filename || '' }),
+    body: JSON.stringify({ url, target_dir: targetDir || '', filename: filename || '', storage: storage || 'local' }),
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: 'Import failed' }))
-    throw new Error(err.error || 'Import failed')
+    throw new Error(err.error || err.detail || 'Import failed')
   }
   return res.json()
 }
@@ -2863,6 +2865,9 @@ export interface InstalledLora {
   /** File lives in a linked install's loras folder (read-only), not
    *  Maestro's own. Sidecars/guides for it live in Maestro's mirror. */
   linked?: boolean
+  /** local, r2 (bucket only, a pointer here) or both. */
+  storage?: 'local' | 'r2' | 'both'
+  r2_size_bytes?: number | null
   trained_words: string[]
   preview_url: string | null
   civitai_model_id: number | null

@@ -87,6 +87,7 @@ class CloudLora:
     scale: float = 1.0
     civitai_model_id: int | None = None
     civitai_version_id: int | None = None
+    r2_key: str | None = None  # set when the LoRA is kept only in R2
 
     @property
     def name(self) -> str:
@@ -441,7 +442,9 @@ def generate(
     if loras and len(loras) > int(lora_spec.get("max") or 1):
         raise CloudImageError(f"This cloud model accepts at most {lora_spec.get('max')} LoRAs")
     for lora in loras:
-        if not os.path.isfile(lora.path):
+        if lora.r2_key and lora_url is None:
+            raise CloudImageError(f"LoRA {lora.name} is stored in R2, which is not configured")
+        if not lora.r2_key and not os.path.isfile(lora.path):
             raise CloudImageError(f"LoRA not found: {lora.name}")
     owns_http = http is None
     http = http or httpx.Client(timeout=httpx.Timeout(120.0, connect=15.0), follow_redirects=True)

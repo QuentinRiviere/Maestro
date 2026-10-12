@@ -1,6 +1,7 @@
 """RemoteJobForwarder tests with an in-memory fake worker (no network, no GPU)."""
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sys
@@ -136,6 +137,19 @@ class ForwarderTests(unittest.TestCase):
             update=lambda **u: self.updates.append(u),
             is_cancelled=lambda: self.cancel,
         )
+
+    def test_r2_only_lora_is_fetched_by_the_worker(self):
+        weights = os.path.join(self.tmp, "remote_style.safetensors")
+        with open(os.path.join(self.tmp, "remote_style.r2.json"), "w") as handle:
+            json.dump({"filename": "remote_style.safetensors", "key": "maestro/assets/abc/remote_style.safetensors",
+                       "sha256": "a" * 64}, handle)
+        fetched = []
+        self.worker.fetch_from_r2 = lambda **kw: fetched.append(kw) or "/workspace/data/lora/remote_style.safetensors"
+        self._run({"model_type": "flux", "prompt": "x", "activated_loras": ["remote_style.safetensors"]},
+                  resolve_lora=lambda m, n: weights)
+        self.assertEqual(fetched, [{"kind": "lora", "name": "remote_style.safetensors",
+                                    "sha256": "a" * 64, "model_type": "flux"}])
+        self.assertFalse([u for u in self.worker.uploads if u[0] == "lora"])
 
     def test_previews_are_relayed_once_per_revision(self):
         def preview(revision, notice=None):

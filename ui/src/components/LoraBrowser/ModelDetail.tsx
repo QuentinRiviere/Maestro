@@ -6,6 +6,8 @@ import { fetchLoraDirectories, fetchCheckpointArchitectures, inspectH3Checkpoint
 import type { CheckpointArchitecture, H3CheckpointInspection } from '../../api/client'
 import type { CivitAIModel, CivitAIModelVersion, CivitAIFile, CivitAIDownload } from '../../types'
 import { formatBytes } from '../../lib/format'
+import { LoraStorageSelect } from './LoraStorageSelect'
+import { useLoraStorage } from '../../lib/loraStorage'
 
 interface Props {
   model: CivitAIModel
@@ -56,6 +58,7 @@ export function ModelDetail({ model, onBack, kind = 'lora' }: Props) {
   // The selected version's architecture takes priority over the search filter.
   // Only an explicit folder selection should override known model metadata.
   const autoTargetDir = localArch ? '' : browserDefaultDir || ''
+  const { storage, setStorage, r2Configured } = useLoraStorage()
   useEffect(() => {
     fetchLoraDirectories().then(r => setLoraDirs(r.directories)).catch(() => {})
   }, [])
@@ -204,7 +207,7 @@ export function ModelDetail({ model, onBack, kind = 'lora' }: Props) {
         await startDownload({ ...common, target_arch: '', kind: 'checkpoint', target_architecture: targetArchitecture,
           auto_quantize: autoQuantize, ...(isH3Checkpoint ? { h3_sampling_profile: h3SamplingProfile, h3_native_workflow: h3NativeWorkflow, h3_qkv_layout: h3QkvLayout } : {}) })
       } else {
-        await startDownload({ ...common, target_arch: localArch || '', target_dir_name: targetDirOverride || autoTargetDir || undefined })
+        await startDownload({ ...common, target_arch: localArch || '', target_dir_name: targetDirOverride || autoTargetDir || undefined, storage })
       }
     } catch (error) {
       setDownloadError(error instanceof Error ? error.message : 'Could not start the download.')
@@ -456,6 +459,7 @@ export function ModelDetail({ model, onBack, kind = 'lora' }: Props) {
               </div>
             )
           )}
+          {!isCheckpoint && r2Configured && <LoraStorageSelect value={storage} onChange={setStorage} />}
 
           {/* Ask-per-download int8 (checkpoint only) */}
           {isCheckpoint && architectures.length > 0 && (!isH3Checkpoint || ['bf16', 'fp16'].includes(file?.metadata?.fp?.toLowerCase() || '')) && (

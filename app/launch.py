@@ -2083,7 +2083,10 @@ def list_all_installed_loras():
     _seen_keys = set()
     for walk_root, is_linked in walk_roots:
       for dirpath, _dirnames, filenames in os.walk(walk_root):
-        for f in filenames:
+        from services.lora_r2 import pointer_weight_names, read_pointer, storage_of
+        # Pointer-only LoRAs (kept in R2) are listed like local ones.
+        r2_only = set() if is_linked else set(pointer_weight_names(dirpath))
+        for f in sorted(set(filenames) | r2_only):
             if not f.endswith((".safetensors", ".sft")):
                 continue
             rel_dir = os.path.relpath(dirpath, walk_root)
@@ -2097,7 +2100,7 @@ def list_all_installed_loras():
             full_path = os.path.join(dirpath, f)
             own_base = os.path.splitext(full_path)[0]
             from services.refmod import is_refmod_file
-            if is_refmod_file(full_path):
+            if f not in r2_only and is_refmod_file(full_path):
                 continue
             # Sidecars/guides for linked files live at the primary-mirror
             # base (scan write target); check it first, then beside the file.
@@ -2109,11 +2112,13 @@ def list_all_installed_loras():
             try:
                 _size_bytes = os.path.getsize(full_path)
             except OSError:
-                _size_bytes = None
+                _size_bytes = None  # R2 only: no local disk usage
             info = {
                 "filename": f,
                 "directory": rel_dir,
                 "linked": is_linked,
+                "storage": storage_of(full_path),
+                "r2_size_bytes": (read_pointer(full_path) or {}).get("size"),
                 "size_bytes": _size_bytes,
                 "trained_words": [],
                 "preview_url": None,
@@ -2270,7 +2275,9 @@ def delete_lora_file(directory: str, filename: str):
     target = _safe_join(os.path.abspath(lora_root), rel_dir, filename) if rel_dir else _safe_join(os.path.abspath(lora_root), filename)
     if target is None:
         raise HTTPException(status_code=400, detail="Invalid path.")
-    if not os.path.isfile(target):
+    from services.lora_r2 import pointer_path, read_pointer
+    pointer = read_pointer(target)
+    if not os.path.isfile(target) and pointer is None:
         # The same relative key existing only under a linked root means the
         # user clicked delete on a read-only linked copy.
         for _linked_loras in _linked_lora_roots():
@@ -2284,17 +2291,29 @@ def delete_lora_file(directory: str, filename: str):
         raise HTTPException(status_code=409, detail="This LoRA is bundled with a model (a distill/accelerator) and would just re-download on next use. Delete the model instead.")
 
     from services.win_safe_files import safe_delete
-    result = safe_delete(target)
-    if not result.get("deleted"):
-        raise HTTPException(status_code=423, detail="The file is locked by another process. Try again in a moment.")
+    result = {"deleted": True}
+    if os.path.isfile(target):
+        result = safe_delete(target)
+        if not result.get("deleted"):
+            raise HTTPException(status_code=423, detail="The file is locked by another process. Try again in a moment.")
+    if pointer is not None:
+        # The R2 copy goes too; a missing bucket must not block the local cleanup.
+        store = _lora_r2_store()
+        try:
+            if store is None:
+                raise RuntimeError("R2 is not configured")
+            store.delete(pointer["key"])
+        except Exception as error:
+            print(f"[LoRA R2] Could not delete {pointer['key']}: {error}")
     base = os.path.splitext(target)[0]
     extras_removed = []
     extras = [
         base + ".civitai.json",
         base + ".guide.md",
         target + ".maestro-managed.json",
+        pointer_path(target),
     ]
-    extras += [base + f"_preview1{ext}" for ext in (".mp4", ".png", ".jpg", ".webp")]
+    extras += [base + f"_preview{index}{ext}" for index in range(1, 5) for ext in (".mp4", ".png", ".jpg", ".webp")]
     for extra in extras:
         try:
             if os.path.isfile(extra):
@@ -2455,6 +2474,9 @@ def list_loras(model_type: str):
                 if not _lora_is_compatible_with_model(md, f):
                     continue
                 names.add(os.path.basename(f))
+        # LoRAs kept only in R2 are listed from their local pointer.
+        from services.lora_r2 import pointer_weight_names
+        names.update(pointer_weight_names(lora_dir))
     # Managed choices are virtual until first use. Keeping the pinned Turbo
     # filename in the catalog makes it discoverable on a fresh install; the
     # generation preflight below performs the verified one-time download.
@@ -2508,6 +2530,9 @@ def list_loras_details(model_type: str):
                     continue
                 _seen_names.add(_b)
                 files.append(f)
+        from services.lora_r2 import pointer_weight_names
+        files.extend(os.path.join(lora_dir, name) for name in pointer_weight_names(lora_dir)
+                     if name not in _seen_names)
     files.sort(key=lambda p: os.path.basename(p))
 
     # Read the cached update manifest once per request so each row can
@@ -2523,8 +2548,10 @@ def list_loras_details(model_type: str):
     loras = []
     for f in files:
         basename = os.path.basename(f)
+        from services.lora_r2 import storage_of
         info = {
             "filename": basename,
+            "storage": storage_of(f),
             "trained_words": [],
             "preview_url": None,
             "civitai_model_id": None,
@@ -3697,6 +3724,60 @@ def _serialize_download_record(record, fallback_id: str = "") -> dict:
     }
 
 
+def _lora_r2_store():
+    """The controller's R2 bucket, or None when it is not configured."""
+    from services.remote_worker.r2_store import R2Store
+
+    return R2Store.from_settings(_remote_worker.settings)
+
+
+def _requested_lora_storage(value) -> str:
+    """Validate a download's storage choice (local, r2 or both)."""
+    from services.lora_r2 import normalize_storage
+
+    if value in (None, ""):
+        # Requests without a choice (recipes, older clients) use the default.
+        value = wgp.server_config.get("services", {}).get("lora_download_storage", "local")
+        if value != "local" and _lora_r2_store() is None:
+            value = "local"
+    try:
+        storage = normalize_storage(value)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    if storage != "local" and _lora_r2_store() is None:
+        raise HTTPException(status_code=400, detail="R2 is not configured (Settings → Remote GPU)")
+    return storage
+
+
+def _apply_lora_storage(download_id: str, storage, paths) -> None:
+    """Move or copy finished LoRA downloads to R2 as requested.
+
+    A failed upload keeps the local file and surfaces a warning, so the
+    download is never lost.
+    """
+    from services.lora_r2 import WEIGHT_EXTENSIONS, store_in_r2
+    from services.remote_worker.job_forwarder import _sha256
+
+    if (storage or "local") == "local":
+        return
+    store = _lora_r2_store()
+    for path in paths:
+        if not str(path).endswith(WEIGHT_EXTENSIONS) or not os.path.isfile(path):
+            continue
+        try:
+            store_in_r2(
+                store, path, keep_local=storage == "both", sha256=_sha256,
+                update=lambda message: _update_download_record(download_id, message=message),
+            )
+        except Exception as error:
+            warning = f"Kept {os.path.basename(path)} locally: R2 upload failed ({error})"
+            print(f"[LoRA R2] {warning}")
+            with _civitai_download_lock:
+                record = _civitai_downloads.get(download_id)
+                if record is not None:
+                    record.setdefault("warnings", []).append(warning)
+
+
 def _update_download_record(download_id: str, **changes):
     """Mutate a download record under the registry lock."""
     with _civitai_download_lock:
@@ -4477,6 +4558,8 @@ async def civitai_download(request: Request):
 
     target_dir_name = body.get("target_dir_name", "")  # Direct dir name override (e.g., "flux2_klein_9b")
     kind = (body.get("kind") or "lora").lower()  # "lora" (default) | "checkpoint"
+    # Checkpoints always stay local; LoRAs may go to the R2 bucket.
+    storage = _requested_lora_storage(body.get("storage")) if kind == "lora" else "local"
     target_architecture = body.get("target_architecture", "")  # required for checkpoint imports
     auto_quantize = bool(body.get("auto_quantize", False))  # checkpoint: load-time int8
     h3_import = None
@@ -4601,6 +4684,7 @@ async def civitai_download(request: Request):
         "_target_architecture": target_architecture,
         "_auto_quantize": auto_quantize,
         "_h3_import": h3_import,
+        "_storage": storage,
     })
     with _civitai_download_lock:
         _civitai_downloads[download_id] = dl
@@ -4959,6 +5043,7 @@ def _run_civitai_download(download_id: str):
                     _generate_and_save_lora_guide(file_path, sidecar_data, fname, source_only=True)
                 except Exception as e:
                     print(f"[CivitAI] Guide auto-generation failed for {fname} (non-fatal): {e}")
+            _apply_lora_storage(download_id, dl.get("_storage"), files_to_process)
 
         _complete_download_record(download_id)
         print(f"[CivitAI] Download complete: {filename} ({downloaded / 1024 / 1024:.1f}MB)"
@@ -4991,7 +5076,7 @@ def civitai_downloads_status():
 
 # ── HuggingFace / CivitAI LoRA Import ────────────────────────────────────────
 
-def _import_civitai_lora_by_url(url: str, target_dir_override: str = "") -> JSONResponse:
+def _import_civitai_lora_by_url(url: str, target_dir_override: str = "", storage: str = "local") -> JSONResponse:
     """Resolve a CivitAI URL to a download record and start the download.
 
     Mirrors the surface area of the existing /api/v1/civitai/download POST
@@ -5147,6 +5232,7 @@ def _import_civitai_lora_by_url(url: str, target_dir_override: str = "") -> JSON
             "_example_prompts": [],
             "_tags": model_data.get("tags", []) or [],
             "_nsfw": bool(model_data.get("nsfw", False)),
+            "_storage": storage,
         })
         with _civitai_download_lock:
             _civitai_downloads[download_id] = dl
@@ -5193,6 +5279,7 @@ async def hf_import_lora(request: Request):
     # the repo (useful when a repo hosts multiple LoRAs). If empty or not
     # found in the repo siblings, falls back to the heuristic pick below.
     desired_filename = (body.get("filename", "") or "").strip()
+    storage = _requested_lora_storage(body.get("storage"))
 
     import re as _re
     from urllib.parse import quote as _quote, unquote as _unquote, urlparse as _urlparse
@@ -5203,7 +5290,7 @@ async def hf_import_lora(request: Request):
     # Detect CivitAI URL FIRST so an HF-looking URL hidden inside a
     # CivitAI redirect doesn't accidentally fall through.
     if "civitai.com" in url.lower():
-        return _import_civitai_lora_by_url(url, target_dir_override)
+        return _import_civitai_lora_by_url(url, target_dir_override, storage)
 
     # Parse repo ID from URL
     # Supports: https://huggingface.co/user/repo, https://huggingface.co/user/repo/tree/main, etc.
@@ -5501,6 +5588,7 @@ async def hf_import_lora(request: Request):
                 except Exception as e:
                     print(f"[HF Import] Guide generation failed: {e}")
 
+                _apply_lora_storage(dl_id, storage, [save_path])
                 _complete_download_record(dl_id)
 
             except Exception as e:
@@ -7769,6 +7857,8 @@ def get_services_config():
         "anthropic_api_key": _mask_key(services.get("anthropic_api_key", "")),
         "anthropic_api_key_set": bool(services.get("anthropic_api_key", "")),
         **_cloud_image_key_fields(services),
+        "lora_download_storage": services.get("lora_download_storage", "local"),
+        "r2_configured": _lora_r2_store() is not None,
         # Director v2 (layered architecture: structured shot planning,
         # mode-specific renderers, prompt validation) is now the default
         # as of 2026-05-03 after weeks of real-world validation. v1 had
@@ -7851,7 +7941,7 @@ async def update_services_config(request: Request):
         "enhance_llm_model_id", "enhance_llm_device",
         "enhance_fidelity_retries", "enhance_fidelity_auto_continue",
         "google_api_key", "llm_remote_api_key", "openai_api_key", "openrouter_api_key",
-        "anthropic_api_key", "fal_api_key", "replicate_api_key",
+        "anthropic_api_key", "fal_api_key", "replicate_api_key", "lora_download_storage",
         "use_director_v2", "nsfw_mode", "nsfw_accepted_at", "director_prompt_polish",
         "civitai_api_key", "voice_reference_enabled", "ltx_progressive_pipeline",
         "show_experimental", "auto_performance", "storage_allow_linked_removal",
@@ -7869,6 +7959,10 @@ async def update_services_config(request: Request):
             continue
         if key == "enhance_fidelity_retries" and (type(value) is not int or not 0 <= value <= 5):
             raise HTTPException(status_code=400, detail="Fidelity retries must be a whole number from 0 to 5.")
+        if key == "lora_download_storage":
+            from services.lora_r2 import STORAGE_CHOICES
+            if value not in STORAGE_CHOICES:
+                raise HTTPException(status_code=400, detail="LoRA download storage must be local, r2 or both.")
         if key == "enhance_fidelity_auto_continue" and type(value) is not bool:
             raise HTTPException(status_code=400, detail="Continue after fidelity warnings must be true or false.")
         if key.endswith("_api_key"):
@@ -25645,6 +25739,7 @@ _CLOUD_UPLOAD_CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__
 def _cloud_loras(raw_params: dict) -> list:
     """Resolve a job's activated LoRAs to local files and CivitAI identity."""
     from services.cloud_image import CloudLora, parse_lora_scales
+    from services.lora_r2 import read_pointer
 
     names = [name for name in raw_params.get("activated_loras") or [] if isinstance(name, str) and name]
     scales = parse_lora_scales(raw_params.get("loras_multipliers"), len(names))
@@ -25663,10 +25758,30 @@ def _cloud_loras(raw_params: dict) -> list:
                 return int(value)
             except (TypeError, ValueError):
                 return None
+        pointer = None if os.path.isfile(path) else read_pointer(path)
         loras.append(CloudLora(path=path, scale=scale,
                                civitai_model_id=as_int(meta.get("modelId")),
-                               civitai_version_id=as_int(meta.get("versionId"))))
+                               civitai_version_id=as_int(meta.get("versionId")),
+                               r2_key=(pointer or {}).get("key")))
     return loras
+
+
+def _materialize_r2_loras(job: dict, raw_params: dict) -> None:
+    """Download LoRAs kept only in R2 before a local generation loads them."""
+    from services.lora_r2 import materialize, read_pointer
+
+    store = None
+    for name in raw_params.get("activated_loras") or []:
+        if not isinstance(name, str) or name.startswith(("http://", "https://")):
+            continue
+        path = wgp.resolve_lora_path(raw_params.get("model_type"), name)
+        if os.path.isfile(path) or read_pointer(path) is None:
+            continue
+        store = store or _lora_r2_store()
+        if store is None:
+            raise RuntimeError(f"LoRA {name} is stored in R2, which is not configured")
+        update_job(job, phase="Preparing LoRAs", message=f"Downloading {name} from R2…")
+        materialize(store, path)
 
 
 def _cloud_lora_r2_url():
@@ -25684,6 +25799,8 @@ def _cloud_lora_r2_url():
         return None
 
     def url_for(lora):
+        if lora.r2_key:
+            return store.presigned_url(lora.r2_key)
         key = store.asset_key(_sha256(lora.path), lora.name)
         store.upload(lora.path, key)
         return store.presigned_url(key)
@@ -26151,6 +26268,12 @@ def _run_generation(job_id: str, *, finalize: bool = True, _slot_owned: bool = F
             # worker through this same function there.
             if _remote_generation_enabled():
                 return _run_remote_generation(job, raw_params, finalize=finalize)
+
+            try:
+                _materialize_r2_loras(job, raw_params)
+            except Exception as error:
+                finish_job(job, "failed", error=str(error), message=f"Error: {error}")
+                return False
 
             # Per-job VRAM coefficient adjustment — accounts for active
             # LoRAs and pipeline stage count beyond what the auto-tuned

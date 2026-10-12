@@ -1384,6 +1384,8 @@ export interface ServicesConfig {
   replicate_api_key: string
   replicate_api_key_set: boolean
   replicate_api_key_env?: boolean
+  lora_download_storage?: 'local' | 'r2' | 'both'
+  r2_configured?: boolean
   use_director_v2: boolean
   nsfw_mode: boolean
   nsfw_accepted_at: string | null

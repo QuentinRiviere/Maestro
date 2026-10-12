@@ -28,6 +28,7 @@ from urllib.parse import quote
 import requests
 
 from services.remote_worker.manager import RemoteWorkerManager
+from services.lora_r2 import read_pointer
 from services.remote_worker.r2_store import R2Store
 
 
@@ -296,6 +297,14 @@ class RemoteJobForwarder:
             local = resolve_lora(model_type, name)
             if local and os.path.isfile(local):
                 self._send_file(client, store, local, kind="lora", model_type=model_type, update=update)
+                continue
+            pointer = read_pointer(local) if local else None
+            if pointer is not None:
+                # Kept only in R2: the worker pulls the same content-addressed asset.
+                update(phase="Remote worker", message=f"Worker fetching {name} from R2…")
+                if client.fetch_from_r2(kind="lora", name=os.path.basename(local),
+                                        sha256=pointer["sha256"], model_type=model_type) is None:
+                    raise RemoteJobError(f"LoRA {name} is stored in R2 but the worker has no R2 access")
         return remote_params
 
     def _follow(self, client, remote_id: str, *, update, is_cancelled,

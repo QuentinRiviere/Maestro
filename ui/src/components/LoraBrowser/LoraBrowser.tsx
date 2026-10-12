@@ -11,6 +11,8 @@ import { LoraDisplayNameEditor } from '../SettingsDrawer/LoraDisplayNameEditor'
 import { ModelCard } from './ModelCard'
 import { ModelDetail } from './ModelDetail'
 import { DownloadBar } from './DownloadBar'
+import { LoraStorageSelect, StorageBadge } from './LoraStorageSelect'
+import { useLoraStorage } from '../../lib/loraStorage'
 import { InstalledCheckpoints } from './InstalledCheckpoints'
 import { CharacterBrowser } from '../Characters/CharacterBrowser'
 
@@ -102,6 +104,7 @@ export function LoraBrowser() {
   const [showUrlImport, setShowUrlImport] = useState(false)
   const [importUrl, setImportUrl] = useState('')
   const [importTargetDir, setImportTargetDir] = useState('')
+  const { storage: importStorage, setStorage: setImportStorage, r2Configured } = useLoraStorage()
   const [importDirectories, setImportDirectories] = useState<string[]>([])
   const [importDirectoriesError, setImportDirectoriesError] = useState('')
   const [importDirectoriesLoading, setImportDirectoriesLoading] = useState(false)
@@ -305,7 +308,7 @@ export function LoraBrowser() {
       // Backend endpoint dispatches by URL type — both HuggingFace and
       // CivitAI URLs route through the same /huggingface/import-lora
       // endpoint (historical name; now handles both).
-      const result = await importHuggingFaceLora(trimmed, resolveLoraImportDirectory(trimmed, importTargetDir))
+      const result = await importHuggingFaceLora(trimmed, resolveLoraImportDirectory(trimmed, importTargetDir), undefined, importStorage)
       setImportStatus(`Downloading ${result.filename} → ${result.target_dir}/ (base: ${result.base_model || 'auto-detected'})`)
       setImportUrl('')
       setImportTargetDir('')
@@ -318,7 +321,7 @@ export function LoraBrowser() {
     } finally {
       setImporting(false)
     }
-  }, [importUrl, importTargetDir, importing, pollDownloads])
+  }, [importUrl, importTargetDir, importStorage, importing, pollDownloads])
 
   if (!open) return null
 
@@ -502,6 +505,7 @@ export function LoraBrowser() {
                   <button onClick={loadImportDirectories} className="underline">Retry</button>
                 </p>
               )}
+              {r2Configured && <LoraStorageSelect value={importStorage} onChange={setImportStorage} />}
             </div>
             <p className="text-[9px] text-text-muted">
               Paste a HuggingFace or CivitAI model URL. Downloads the LoRA, saves metadata, example media, and generates a usage guide.
@@ -881,8 +885,9 @@ export function LoraBrowser() {
                         )}
                         {lora.has_guide && <BookOpen size={9} className="text-accent-green" />}
                         {lora.base_model && <span className="text-[9px] text-white/50">{lora.base_model}</span>}
-                        {typeof lora.size_bytes === 'number' && (
-                          <span className="text-[9px] text-white/50 ml-auto shrink-0">{formatBytes(lora.size_bytes)}</span>
+                        <StorageBadge storage={lora.storage} />
+                        {typeof (lora.size_bytes ?? lora.r2_size_bytes) === 'number' && (
+                          <span className="text-[9px] text-white/50 ml-auto shrink-0">{formatBytes((lora.size_bytes ?? lora.r2_size_bytes) as number)}</span>
                         )}
                       </div>
                       {getLoraSecondaryLabel(installedLoraKey(lora), installedDisplayNames)

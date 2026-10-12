@@ -128,6 +128,12 @@ class R2Store:
             raise R2StoreError(f"R2 upload of {os.path.basename(local_path)} failed: {exc}") from exc
         return key
 
+    def delete(self, key: str) -> None:
+        try:
+            self._client.delete_object(Bucket=self.bucket, Key=key)
+        except Exception as exc:
+            raise R2StoreError(f"R2 delete of {key} failed: {exc}") from exc
+
     def presigned_url(self, key: str, *, expires_seconds: int = 6 * 3600) -> str:
         """Time-limited GET URL; lets a third party read one object only."""
         try:
