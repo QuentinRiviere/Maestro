@@ -11,8 +11,6 @@
 services:
   maestro:
     image: ghcr.io/quentinriviere/maestro-controller:${MAESTRO_TAG:-latest}
-    # decord has no linux/arm64 build; Rosetta runs the amd64 image.
-    platform: linux/amd64
     ports:
       - "127.0.0.1:${MAESTRO_PORT:-7860}:7860"
     volumes:

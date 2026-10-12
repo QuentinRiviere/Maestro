@@ -12,7 +12,6 @@ import pandas as pd
 from PIL import Image
 from einops import rearrange
 from torch.utils.data import Dataset
-from decord import VideoReader, cpu
 from transformers import CLIPImageProcessor
 import torchvision.transforms as transforms
 from torchvision.transforms import ToPILImage

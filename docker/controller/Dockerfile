@@ -4,9 +4,9 @@
 #   docker compose -f docker/controller/compose.yaml up -d   (published image)
 #   add -f docker/controller/compose.build.yaml --build to build locally
 #
-# Build context is the repository root. The image targets linux/amd64 (run
-# through Rosetta on Apple Silicon) because decord, imported by the engine at
-# startup, has no linux/aarch64 wheels; the controller does no heavy compute.
+# Build context is the repository root. Multi-arch: on arm64 (Apple Silicon,
+# no Rosetta) decord and torchcodec have no wheels, so an OpenCV-backed decord
+# shim (docker/controller/decord_shim) replaces decord.
 
 # ── UI ─────────────────────────────────────────────────────────────────────
 FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS ui
@@ -37,12 +37,19 @@ RUN python -m venv "$VIRTUAL_ENV" \
  && uv pip install torch==2.10.0 torchvision==0.25.0 torchaudio==2.10.0 \
       --index-url https://download.pytorch.org/whl/cpu
 
+ARG TARGETARCH
 COPY app/requirements.txt /tmp/requirements.txt
 COPY docker/controller/controller_requirements.py /tmp/controller_requirements.py
-RUN python /tmp/controller_requirements.py /tmp/requirements.txt > /tmp/requirements-controller.txt \
- && uv pip install -r /tmp/requirements-controller.txt --index-strategy unsafe-best-match
+COPY docker/controller/decord_shim /tmp/decord_shim
+RUN python /tmp/controller_requirements.py /tmp/requirements.txt --arch "${TARGETARCH:-amd64}" > /tmp/requirements-controller.txt \
+ && uv pip install -r /tmp/requirements-controller.txt --index-strategy unsafe-best-match \
+ && (python -c "import decord" 2>/dev/null \
+     || cp -r /tmp/decord_shim/decord "$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')/") \
+ && python -c "import decord; print('decord', decord.__version__)"
 
 COPY app/ /opt/maestro/app/
+# Precompile so the first start does not pay for bytecode generation.
+RUN python -m compileall -q -j 0 /opt/maestro/app >/dev/null || true
 COPY --from=ui /src/ui/dist /opt/maestro/ui/dist
 COPY docker/controller/entrypoint.sh /usr/local/bin/maestro-controller
 

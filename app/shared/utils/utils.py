@@ -8,7 +8,6 @@ import cv2
 import tempfile
 import imageio
 import torch
-import decord
 from PIL import Image
 import numpy as np
 from rembg import remove, new_session
