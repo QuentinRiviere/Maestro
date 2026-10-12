@@ -1112,7 +1112,9 @@ def _model_visibility_response():
 
 def _persist_server_config():
     """Atomically persist Maestro UI preferences across changing ports."""
-    config_path = os.path.abspath(wgp.server_config_filename)
+    # Resolve symlinks: Docker links wgp_config.json into the data volume, and
+    # replacing the link itself would keep later saves inside the container.
+    config_path = os.path.realpath(wgp.server_config_filename)
     temp_path = (
         f"{config_path}.{os.getpid()}.{threading.get_ident()}.tmp"
     )
