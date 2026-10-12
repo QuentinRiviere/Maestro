@@ -1114,16 +1114,31 @@ const ENABLED_MODELS_KEY = 'maestro_enabled_models'
 
 /** Planner selection for the short-film workflows: Viral Video swaps the
  *  planner and adds its platform/style; Short Film keeps its own. */
-function _viralPlanFields(state: Pick<AppState, 'directorSkill' | 'viralPlatform' | 'viralStyle'>) {
-  return state.directorSkill === 'viral_video'
-    ? { skill_type: 'viral_video', platform: state.viralPlatform, style: state.viralStyle }
-    : { skill_type: 'short_film' }
+type _SkillState = Pick<AppState, 'directorSkill' | 'viralPlatform' | 'viralStyle' | 'directorSkillOptions'>
+
+/** Skills that run on the short-film workflows with their own planner. */
+export function isPlannerSkill(skill: DirectorSkill | null | undefined): boolean {
+  return skill === 'viral_video' || String(skill || '').startsWith('custom:')
 }
 
-function _viralPipelineFields(state: Pick<AppState, 'directorSkill' | 'viralPlatform' | 'viralStyle'>) {
-  return state.directorSkill === 'viral_video'
-    ? { director_skill: 'viral_video', platform: state.viralPlatform, style: state.viralStyle }
-    : {}
+function _viralPlanFields(state: _SkillState): { skill_type: string; [key: string]: unknown } {
+  if (state.directorSkill === 'viral_video') {
+    return { skill_type: 'viral_video', platform: state.viralPlatform, style: state.viralStyle }
+  }
+  if (isPlannerSkill(state.directorSkill)) {
+    return { skill_type: String(state.directorSkill), skill_options: state.directorSkillOptions }
+  }
+  return { skill_type: 'short_film' }
+}
+
+function _viralPipelineFields(state: _SkillState) {
+  if (state.directorSkill === 'viral_video') {
+    return { director_skill: 'viral_video', platform: state.viralPlatform, style: state.viralStyle }
+  }
+  if (isPlannerSkill(state.directorSkill)) {
+    return { director_skill: state.directorSkill, skill_options: state.directorSkillOptions }
+  }
+  return {}
 }
 let _initializedMatureModels = new Set<string>()
 let _modelVisibilityHydrated = false
@@ -2238,6 +2253,11 @@ interface AppState {
   viralStyle: ViralStyle
   setViralPlatform: (platform: ViralPlatform) => void
   setViralStyle: (style: ViralStyle) => void
+  // Skill catalog (built-in + custom skills from the Skill Creator).
+  directorSkills: import('../api/directorSkills').DirectorSkillEntry[]
+  loadDirectorSkills: () => Promise<void>
+  directorSkillOptions: Record<string, string>
+  setDirectorSkillOption: (key: string, value: string) => void
   shortFilmSetCharacters: (characters: ShortFilmCharacter[]) => void
   shortFilmSetPath: (path: ShortFilmPath) => void
   shortFilmSetTargetDuration: (duration: number) => void
@@ -2494,7 +2514,8 @@ async function _buildDirectorRestorePatch(
   }
   const pipelineType = String(params.pipeline_type || pipeline.pipeline_type || 'music_video')
   const skill: DirectorSkill = params.director_skill === 'viral_video'
-    ? 'viral_video'
+    || String(params.director_skill || '').startsWith('custom:')
+    ? params.director_skill as DirectorSkill
     : pipelineType.startsWith('short_film')
     ? 'short_film'
     : (ui.directorSkill as DirectorSkill) || 'music_video'
@@ -2585,6 +2606,7 @@ async function _buildDirectorRestorePatch(
       ? Boolean(params.narrative_mode) : Boolean(ui.shortFilmNarrative),
     viralPlatform: (params.platform as ViralPlatform) || 'general',
     viralStyle: (params.style as ViralStyle) || 'cinematic',
+    directorSkillOptions: (params.skill_options as Record<string, string>) || {},
     directorLoading: false,
     directorLoadingMessage: null,
     directorError: null,
@@ -10350,6 +10372,8 @@ export const useStore = create<AppState>((set, get) => ({
   shortFilmNarrative: false,
   viralPlatform: 'general',
   viralStyle: 'cinematic',
+  directorSkills: [],
+  directorSkillOptions: {},
   llmStreamText: '',
   llmStreamDone: true,
   pipelineId: null,
@@ -11468,6 +11492,7 @@ export const useStore = create<AppState>((set, get) => ({
       shortFilmNarrative: false,
       viralPlatform: 'general',
       viralStyle: 'cinematic',
+      directorSkillOptions: {},
       directorSourcePipelineId: null,
       directorProjectId: null,
       directorQueueEditingEntryId: null,
@@ -11484,6 +11509,13 @@ export const useStore = create<AppState>((set, get) => ({
   shortFilmSetNarrative: (v) => set({ shortFilmNarrative: v }),
   setViralPlatform: (platform) => set({ viralPlatform: platform }),
   setViralStyle: (style) => set({ viralStyle: style }),
+  loadDirectorSkills: async () => {
+    try {
+      const { fetchDirectorSkills } = await import('../api/directorSkills')
+      set({ directorSkills: await fetchDirectorSkills() })
+    } catch { /* the selector keeps the previous list */ }
+  },
+  setDirectorSkillOption: (key, value) => set(s => ({ directorSkillOptions: { ...s.directorSkillOptions, [key]: value } })),
 
   shortFilmUploadAndAnalyze: async (file) => {
     set({
@@ -11619,7 +11651,7 @@ export const useStore = create<AppState>((set, get) => ({
       // (legacy v1 path); only fall back to true when servicesConfig
       // hasn't loaded yet or the field is undefined.
       // Viral Video has no legacy (v1) planner.
-      const useV2 = get().directorSkill === 'viral_video' || (get().servicesConfig?.use_director_v2 ?? true)
+      const useV2 = isPlannerSkill(get().directorSkill) || (get().servicesConfig?.use_director_v2 ?? true)
       let plans: Array<{ video_prompt: string; image_prompt: string }>
 
       if (useV2) {
@@ -11742,7 +11774,7 @@ export const useStore = create<AppState>((set, get) => ({
       // (legacy v1 path); only fall back to true when servicesConfig
       // hasn't loaded yet or the field is undefined.
       // Viral Video has no legacy (v1) planner.
-      const useV2 = get().directorSkill === 'viral_video' || (get().servicesConfig?.use_director_v2 ?? true)
+      const useV2 = isPlannerSkill(get().directorSkill) || (get().servicesConfig?.use_director_v2 ?? true)
       let plans: Array<{ video_prompt: string; image_prompt: string }>
       let storyClips: PlannedClip[] | undefined
 

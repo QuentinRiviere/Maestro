@@ -1,8 +1,10 @@
 import { DirectorMusicClipLength } from './DirectorMusicClipLength'
 import { DirectorGpuClipLimit } from './DirectorGpuClipLimit'
 import { useState, useCallback, useRef, useMemo, useEffect } from 'react'
-import { Upload, Loader2, Music, RotateCcw, Check, X, ChevronRight, ChevronDown, ImageIcon, Play, Film, Mic, Sparkles, Send, Users, FileText, ListVideo } from 'lucide-react'
-import { useStore, directorModelUsesFixedMediaStrength, getFamiliesForMode, getModelsForFamily, resolveResolution } from '../../stores/useStore'
+import { Upload, Loader2, Music, RotateCcw, Check, X, ChevronRight, ChevronDown, ImageIcon, Play, Film, Mic, Send, Users, FileText, ListVideo } from 'lucide-react'
+import { useStore, isPlannerSkill, directorModelUsesFixedMediaStrength, getFamiliesForMode, getModelsForFamily, resolveResolution } from '../../stores/useStore'
+import { DirectorSkillPicker } from './DirectorSkillPicker'
+import { skillIcon } from '../../lib/skillIcons'
 import { fetchModelOptions, getFileUrl } from '../../api/client'
 import { DirectorLoraSelector } from '../SettingsDrawer/DirectorLoraSelector'
 import { DirectorSongSetup } from './DirectorSongSetup'
@@ -518,7 +520,24 @@ export function DirectorChat() {
   const insertSpeakerMention = useStore(s => s.directorInsertSpeakerMention)
   const autoMode = useStore(s => s.directorAutoMode)
   const skill = useStore(s => s.directorSkill)
-  const setSkill = useStore(s => s.setDirectorSkill)
+  const setDirectorSkill = useStore(s => s.setDirectorSkill)
+  const directorSkills = useStore(s => s.directorSkills)
+  const setSkill = (id: DirectorSkill) => {
+    setDirectorSkill(id)
+    const entry = useStore.getState().directorSkills.find(item => item.id === id)
+    if (!entry || !isPlannerSkill(id)) return
+    useStore.setState({
+      directorSkillOptions: Object.fromEntries((entry.options || []).map(option => [option.key, option.default])),
+    })
+    if (entry.default_duration) useStore.getState().shortFilmSetTargetDuration(entry.default_duration)
+    // Single-workflow skills skip the path chooser.
+    if (entry.workflow === 'story') {
+      useStore.getState().shortFilmSetPath('story')
+      useStore.setState({ directorStep: 'style' })
+    } else if (entry.workflow === 'audio') {
+      useStore.getState().shortFilmSetPath('audio')
+    }
+  }
   const musicSource = useStore(s => s.directorMusicSource)
   const setMusicSource = useStore(s => s.setDirectorMusicSource)
   const songDescription = useStore(s => s.directorSongDescription)
@@ -557,7 +576,11 @@ export function DirectorChat() {
   // Viral Video runs the short-film workflows (story or uploaded audio)
   // with its own planner, so it shares every short-film step.
   const isViral = skill === 'viral_video'
-  const isShortFilm = skill === 'short_film' || isViral
+  // Viral and custom skills run the short-film workflows with their own planner.
+  const isPlanner = isPlannerSkill(skill)
+  const isShortFilm = skill === 'short_film' || isPlanner
+  const skillEntry = directorSkills.find(entry => entry.id === skill)
+  const SkillIcon = skillIcon(skillEntry?.icon)
   const isStoryPath = isShortFilm && shortFilmPath === 'story'
   const isMusicVideo = !!skill && !isShortFilm
   // Music Video "Generate a track" setup: the bottom chat IS the song
@@ -805,12 +828,12 @@ export function DirectorChat() {
 
         {/* Skill selector */}
         {!skill ? (
-          <SkillSelector onSelect={setSkill} />
+          <DirectorSkillPicker onSelect={setSkill} />
         ) : (
           <UserBubble>
             <div className="flex items-center gap-1.5 text-xs text-text-primary">
-              {isViral ? <Sparkles size={12} className="text-accent-blue" /> : isShortFilm ? <Film size={12} className="text-accent-blue" /> : <Music size={12} className="text-accent-blue" />}
-              <span>{isViral ? 'Viral Video' : isShortFilm ? 'Short Film' : 'Music Video'}</span>
+              <SkillIcon size={12} className="text-accent-blue" />
+              <span>{skillEntry?.name ?? (isShortFilm ? 'Short Film' : 'Music Video')}</span>
             </div>
           </UserBubble>
         )}
@@ -1084,7 +1107,7 @@ export function DirectorChat() {
                       setCharacters={shortFilmSetCharacters}
                     />
                   )}
-                  {isViral && <ViralOptions />}
+                  {isPlanner && <SkillOptions skill={skill} />}
                   <DirectorTargetDurationControl />
                   {!isViral && <label className="flex items-center gap-2 cursor-pointer group">
                     <input
@@ -1112,7 +1135,7 @@ export function DirectorChat() {
               </UserBubble>
             )}
             <SystemBubble>
-              {isViral && !isStoryPath && <div className="mb-3"><ViralOptions /></div>}
+              {isPlanner && !isStoryPath && <div className="mb-3"><SkillOptions skill={skill} /></div>}
               <StyleForm
                 speakers={speakers}
                 speakerMappings={speakerMappings}
@@ -1607,36 +1630,22 @@ function ViralOptions() {
   )
 }
 
-function SkillSelector({ onSelect }: { onSelect: (skill: DirectorSkill) => void }) {
-  const skills = [
-    { id: 'music_video' as DirectorSkill, label: 'Music Video', desc: 'Automated music video from audio', icon: Music, active: true },
-    { id: 'short_film' as DirectorSkill, label: 'Short Film', desc: 'Dialogue-driven scenes from audio', icon: Film, active: true },
-    { id: 'music_video' as DirectorSkill, label: 'Video Podcast', desc: 'Coming Soon', icon: Mic, active: false },
-    { id: 'viral_video' as DirectorSkill, label: 'Viral Video', desc: 'Hook-first shorts for TikTok, Reels, Shorts', icon: Sparkles, active: true },
-  ]
-
+function SkillOptions({ skill }: { skill: DirectorSkill | null }) {
+  const entry = useStore(s => s.directorSkills.find(item => item.id === skill))
+  const values = useStore(s => s.directorSkillOptions)
+  const setOption = useStore(s => s.setDirectorSkillOption)
+  if (skill === 'viral_video') return <ViralOptions />
+  if (!entry?.options?.length) return null
   return (
     <div className="grid grid-cols-2 gap-2">
-      {skills.map((s) => (
-        <button
-          key={s.label}
-          onClick={() => s.active && onSelect(s.id)}
-          disabled={!s.active}
-          className={`relative p-3 rounded-lg border text-left transition-all ${
-            s.active
-              ? 'border-accent-blue/30 bg-bg-tertiary/50 hover:border-accent-blue hover:bg-accent-blue/5 cursor-pointer'
-              : 'border-border/30 bg-bg-tertiary/20 opacity-50 cursor-not-allowed'
-          }`}
-        >
-          <s.icon size={16} className={s.active ? 'text-accent-blue mb-1.5' : 'text-text-muted mb-1.5'} />
-          <div className="text-xs font-medium text-text-primary">{s.label}</div>
-          <div className="text-[10px] text-text-muted mt-0.5">{s.desc}</div>
-          {!s.active && (
-            <span className="absolute top-1.5 right-1.5 text-[8px] bg-bg-hover text-text-muted px-1.5 py-0.5 rounded-full">
-              Soon
-            </span>
-          )}
-        </button>
+      {entry.options.map(option => (
+        <label key={option.key} className="block">
+          <span className="text-[10px] text-text-muted uppercase tracking-wider block mb-1">{option.label}</span>
+          <select value={values[option.key] ?? option.default} onChange={e => setOption(option.key, e.target.value)}
+            className="w-full bg-bg-tertiary border border-border rounded-lg px-2 py-1.5 text-xs text-text-primary focus:outline-none focus:border-accent-blue">
+            {option.values.map(value => <option key={value} value={value}>{value}</option>)}
+          </select>
+        </label>
       ))}
     </div>
   )

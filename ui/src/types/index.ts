@@ -1774,7 +1774,7 @@ export interface DirectorImageGenProgress {
   status: 'generating' | 'polling' | 'downloading' | 'done' | 'error'
 }
 
-export type DirectorSkill = 'music_video' | 'short_film' | 'podcast' | 'viral_video'
+export type DirectorSkill = 'music_video' | 'short_film' | 'podcast' | 'viral_video' | `custom:${string}`
 export type ShortFilmPath = 'audio' | 'story'
 export type ViralPlatform = 'general' | 'tiktok' | 'reels' | 'shorts'
 export type ViralStyle = 'cinematic' | 'meme' | 'ugc' | 'direct_address' | 'reaction' | 'tutorial'
