@@ -141,14 +141,25 @@ class DirectorOrchestrator:
         Returns:
             ProductionPlan with normalized ShotPlan objects.
         """
-        planner_cls = _PLANNER_MAP.get(skill_type)
-        if not planner_cls:
-            raise ValueError(f"Unknown skill type: {skill_type}. Available: {list(_PLANNER_MAP.keys())}")
+        if str(skill_type).startswith("custom:"):
+            # Declarative skills: a validated definition run by the generic planner.
+            from .custom_skills import get_custom
+            from .planners.custom import CustomSkillPlanner
 
-        planner = planner_cls(
-            llm_generate=self._generate,
-            llm_generate_streaming=self._generate_streaming,
-        )
+            spec = get_custom(skill_type)
+            if spec is None:
+                raise ValueError(f"Unknown custom skill: {skill_type}")
+            planner = CustomSkillPlanner(spec, llm_generate=self._generate,
+                                         llm_generate_streaming=self._generate_streaming)
+            planner_cls = CustomSkillPlanner
+        else:
+            planner_cls = _PLANNER_MAP.get(skill_type)
+            if not planner_cls:
+                raise ValueError(f"Unknown skill type: {skill_type}. Available: {list(_PLANNER_MAP.keys())}")
+            planner = planner_cls(
+                llm_generate=self._generate,
+                llm_generate_streaming=self._generate_streaming,
+            )
 
         print(f"[Director] Planning with {planner_cls.__name__}...")
         production_plan = planner.plan(**kwargs)

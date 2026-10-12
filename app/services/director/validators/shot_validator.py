@@ -48,7 +48,7 @@ def validate_shot_plan(shot: ShotPlan, plan: Optional[ProductionPlan] = None) ->
         warnings.append(f"Very long shot: {shot.duration_sec}s — consider splitting")
 
     # ── Enum validation ──────────────────────────────────────────
-    if shot.skill_type not in VALID_SKILL_TYPES:
+    if shot.skill_type not in VALID_SKILL_TYPES and not str(shot.skill_type).startswith("custom:"):
         warnings.append(f"Unknown skill_type: {shot.skill_type}")
 
     if shot.source_mode_preference and shot.source_mode_preference not in VALID_SOURCE_MODES:

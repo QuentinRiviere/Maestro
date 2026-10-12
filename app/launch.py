@@ -506,17 +506,43 @@ def _start_director_review(pid: str, base: str, *, wait_for_save: bool = False, 
     return True
 
 
-def _run_director_review(pid: str, base: str, wait_for_save: bool, takes: int = 1) -> None:
+def _judge_publisher(label: str):
+    """(publish, cleanup): R2 presigned URLs when configured, else data URIs."""
     import base64
 
+    from services.remote_worker.job_forwarder import _sha256
+
+    store = _lora_r2_store()
+    uploaded: list[str] = []
+
+    def publish(path: str) -> str:
+        if store is None:
+            with open(path, "rb") as handle:
+                return "data:video/mp4;base64," + base64.b64encode(handle.read()).decode()
+        key = store.asset_key(_sha256(path), f"{label}_{os.path.basename(path)}")
+        store.upload(path, key)
+        uploaded.append(key)
+        return store.presigned_url(key, expires_seconds=3600)
+
+    def cleanup() -> None:
+        for key in uploaded:
+            try:
+                store.delete(key)
+            except Exception:
+                pass
+
+    return publish, cleanup
+
+
+def _run_director_review(pid: str, base: str, wait_for_save: bool, takes: int = 1) -> None:
     from services import cloud_image
     from services.director.video_judge import compare_takes, review_clips, save_review, select_takes
     from services.director_pipeline import (
         _update_saved_pipeline, load_pipeline_state, rejoin_clips, rerun_clip_video,
     )
-    from services.remote_worker.job_forwarder import _sha256
 
-    state_dir, uploaded, store = None, [], None
+    state_dir = None
+    publish, cleanup_uploads = _judge_publisher(f"review_{pid}")
     try:
         state = None
         # The terminal callback fires just before the project is saved.
@@ -532,17 +558,6 @@ def _run_director_review(pid: str, base: str, wait_for_save: bool, takes: int = 
         fal_key = cloud_image.provider_api_key("fal", wgp.server_config.get("services", {}))
         if not fal_key:
             raise RuntimeError("The video judge needs a fal.ai API key (Settings → Services)")
-        store = _lora_r2_store()
-
-        def publish(path: str) -> str:
-            if store is None:
-                with open(path, "rb") as handle:
-                    return "data:video/mp4;base64," + base64.b64encode(handle.read()).decode()
-            key = store.asset_key(_sha256(path), f"review_{pid}_{os.path.basename(path)}")
-            store.upload(path, key)
-            uploaded.append(key)
-            return store.presigned_url(key, expires_seconds=3600)
-
         contract = (state.get("_params_snapshot") or {}).get("_director_style_contract")
         take_results: list = []
         if takes > 1 and not state.get("seamless", True) and state.get("clips"):
@@ -588,11 +603,7 @@ def _run_director_review(pid: str, base: str, wait_for_save: bool, takes: int = 
         if state_dir:
             save_review(state_dir, pid, {"status": "failed", "error": str(error), "shots": []})
     finally:
-        for key in uploaded:
-            try:
-                store.delete(key)
-            except Exception:
-                pass
+        cleanup_uploads()
         with _director_reviews_lock:
             _director_reviews_running.discard(pid)
 
@@ -10746,6 +10757,117 @@ def director_pipeline_status(pid: str):
     return p
 
 
+# ── Director skills (declarative custom skills + Skill Creator) ──────────
+
+
+@api.get("/api/v1/director/skills")
+def director_skills_list():
+    from services.director.custom_skills import catalog
+    return {"skills": catalog()}
+
+
+@api.get("/api/v1/director/skills/{skill_id}")
+def director_skill_get(skill_id: str):
+    from services.director.custom_skills import inspiration
+    spec = inspiration(skill_id.removeprefix("custom:"))
+    if spec is None:
+        raise HTTPException(status_code=404, detail="Skill not found")
+    return spec
+
+
+@api.post("/api/v1/director/skills/draft")
+async def director_skill_draft(request: Request):
+    """Analyse references and draft a skill definition (not saved)."""
+    from services import cloud_image, llm_service
+    from services.director.custom_skills import get_custom, inspiration
+    from services.director.skill_creator import SkillCreatorError, analyze_references, draft_skill
+
+    body = await request.json()
+    description = str(body.get("description") or "")
+    edit_id = str(body.get("edit_skill_id") or "").removeprefix("custom:")
+    base_id = str(body.get("base_skill_id") or "").removeprefix("custom:")
+    base = get_custom(edit_id) if edit_id else (inspiration(base_id) if base_id else None)
+    if (edit_id or base_id) and base is None:
+        raise HTTPException(status_code=404, detail="Skill not found")
+    paths = [str(p) for p in body.get("reference_paths") or [] if isinstance(p, str)]
+    analyses = []
+    if paths:
+        fal_key = cloud_image.provider_api_key("fal", wgp.server_config.get("services", {}))
+        if not fal_key:
+            raise HTTPException(status_code=400, detail="Analysing references needs a fal.ai API key")
+        _, model = _director_review_settings()
+        publish, cleanup = _judge_publisher("skillref")
+        try:
+            analyses = await asyncio.to_thread(analyze_references, paths, fal_key=fal_key, publish=publish,
+                                               model=model)
+        finally:
+            await asyncio.to_thread(cleanup)
+    _ensure_llm_loaded()
+    try:
+        spec = await asyncio.to_thread(draft_skill, description, generate=llm_service.generate, base=base,
+                                       analyses=analyses, editing=bool(edit_id))
+    except SkillCreatorError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    return {"spec": spec, "analyses": analyses}
+
+
+@api.post("/api/v1/director/skills")
+async def director_skill_save(request: Request):
+    """Create a skill, or overwrite one when ``id`` names an existing custom skill."""
+    from services.director.custom_skills import SkillError, get_custom, save_custom
+
+    body = await request.json()
+    spec = body.get("spec") if isinstance(body.get("spec"), dict) else body
+    skill_id = str(spec.get("id") or "").removeprefix("custom:") if body.get("overwrite") else None
+    if skill_id and get_custom(skill_id) is None:
+        raise HTTPException(status_code=404, detail="Skill to overwrite not found")
+    try:
+        return save_custom(spec, skill_id=skill_id or None)
+    except SkillError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@api.delete("/api/v1/director/skills/{skill_id}")
+def director_skill_delete(skill_id: str):
+    from services.director.custom_skills import SkillError, delete_custom
+    try:
+        if not delete_custom(skill_id.removeprefix("custom:")):
+            raise HTTPException(status_code=404, detail="Skill not found")
+    except SkillError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return {"status": "deleted"}
+
+
+@api.post("/api/v1/director/skills/test")
+async def director_skill_test(request: Request):
+    """Plan a sample brief with an unsaved definition; nothing is rendered."""
+    from services import llm_service
+    from services.director.custom_skills import SkillError, validate_spec
+    from services.director.planners.custom import CustomSkillPlanner
+
+    body = await request.json()
+    try:
+        spec = validate_spec(body.get("spec"), skill_id="draft")
+    except SkillError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    brief = str(body.get("brief") or "").strip()
+    if not brief:
+        raise HTTPException(status_code=400, detail="A sample brief is required")
+    _ensure_llm_loaded()
+    planner = CustomSkillPlanner(spec, llm_generate=llm_service.generate,
+                                 llm_generate_streaming=llm_service.generate_streaming)
+    try:
+        plan = await asyncio.to_thread(planner.plan, concept=brief, skill_options=body.get("options") or {},
+                                       target_duration=body.get("target_duration"))
+    except Exception as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    return {"shots": [{"duration_sec": shot.duration_sec, "goal": shot.scene_goal, "type": shot.scene_type,
+                       "actions": shot.action_beats, "camera": shot.camera_plan.to_dict(),
+                       "dialogue": [d.to_dict() for d in shot.dialogue_beats or []]}
+                      for shot in plan.shots],
+            "total_duration_sec": plan.total_duration_sec}
+
+
 @api.post("/api/v1/director/pipeline/{pid}/review")
 def director_pipeline_review(pid: str, takes: int = 1):
     """Run the AI quality review on a finished Director project.
@@ -11088,7 +11210,7 @@ async def director_v2_plan(request: Request):
                      "reference_image_path", "speaker_mappings", "characters",
                      "audio_path", "target_duration", "target_scenes", "narrative_mode",
                      "fps", "frames_steps", "frames_minimum",
-                     "concept", "visual_style", "platform", "style", "transcript",
+                     "concept", "visual_style", "platform", "style", "transcript", "skill_options",
                      "video_model", "image_model", "character_ref_paths", "character_ref_labels",
                      "location_ref_paths", "location_ref_labels"]:
             if key in body:

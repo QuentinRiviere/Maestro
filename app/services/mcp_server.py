@@ -328,6 +328,9 @@ class MaestroMcp:
                      "platform": {"type": "string", "enum": list(VIRAL_PLATFORMS),
                                   "description": "viral_video only"},
                      "style": {"type": "string", "enum": list(VIRAL_STYLES), "description": "viral_video only"},
+                     "skill_id": {"type": "string", "description": "A custom skill id from list_director_skills "
+                                                                  "(custom:...); overrides pipeline_type"},
+                     "skill_options": {"type": "object", "description": "Values for the custom skill's options"},
                      "aspect_ratio": {"type": "string", "description": "e.g. 16:9, 9:16, 1:1"},
                      "resolution_preset": {"type": "string", "description": "e.g. 720p, 1080p"},
                      "audio_path": _STR,
@@ -351,6 +354,9 @@ class MaestroMcp:
                  _schema({"pipeline_id": _STR, "clip_plans": {"type": "array", "items": {"type": "object"}}},
                          ["pipeline_id"]),
                  self._director_continue),
+            Tool("list_director_skills",
+                 "Director skills: built-in ones and custom skills made with the Skill Creator, with their options.",
+                 _schema({}), self._list_director_skills, read_only=True),
             Tool("director_review",
                  "Run the read-only AI quality review (video LLM through fal.ai) on a finished Director "
                  "project: a score, issues and a suggested fix per shot. Costs about one cent per shot. "
@@ -490,11 +496,21 @@ class MaestroMcp:
 
     async def _director_start(self, args: dict[str, Any]) -> dict[str, Any]:
         pipeline_type = str(args.get("pipeline_type") or "short_film_story")
+        skill_id = str(args.get("skill_id") or "").strip()
+        if skill_id:
+            if not skill_id.startswith("custom:"):
+                raise ToolError("skill_id must be a custom skill id (custom:...); use pipeline_type for built-ins.")
+            pipeline_type = "short_film_audio" if args.get("audio_path") else "short_film_story"
         if pipeline_type not in DIRECTOR_PIPELINE_TYPES:
             raise ToolError(f"pipeline_type must be one of {', '.join(DIRECTOR_PIPELINE_TYPES)}.")
         if pipeline_type in ("music_video", "short_film_audio") and not args.get("audio_path"):
             raise ToolError(f"{pipeline_type} needs audio_path (upload the track with upload_media).")
         skill_fields: dict[str, Any] = {}
+        if skill_id:
+            if pipeline_type == "short_film_audio" and not (args.get("params") or {}).get("planned_clips"):
+                raise ToolError("Audio-driven custom skills need the Director UI's audio analysis; "
+                                "omit audio_path to write from the brief.")
+            skill_fields = {"director_skill": skill_id, "skill_options": args.get("skill_options") or {}}
         if pipeline_type == "viral_video":
             if args.get("audio_path"):
                 raise ToolError("viral_video from MCP is written from the brief; audio-driven viral videos "
@@ -579,6 +595,9 @@ class MaestroMcp:
         body = {"clip_plans": args["clip_plans"]} if args.get("clip_plans") else None
         kwargs: dict[str, Any] = {"json": body} if body else {}
         return await self._api("POST", f"/api/v1/director/pipeline/{quote(pid, safe='')}/continue", **kwargs)
+
+    async def _list_director_skills(self, args: dict[str, Any]) -> Any:
+        return await self._api("GET", "/api/v1/director/skills")
 
     async def _director_review(self, args: dict[str, Any]) -> dict[str, Any]:
         pid = _required(args, "pipeline_id")

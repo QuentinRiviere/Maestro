@@ -6079,9 +6079,22 @@ DIRECTOR_SKILL_OVERRIDES = frozenset({"viral_video"})
 def director_skill(params: dict, pipeline_type: str) -> str | None:
     """The planner override requested for this run, if valid."""
     skill = str(params.get("director_skill") or "").strip()
-    if skill in DIRECTOR_SKILL_OVERRIDES and pipeline_type in ("short_film_story", "short_film_audio"):
+    if pipeline_type not in ("short_film_story", "short_film_audio"):
+        return None
+    if skill in DIRECTOR_SKILL_OVERRIDES:
         return skill
+    if skill.startswith("custom:"):
+        from services.director.custom_skills import get_custom
+        return skill if get_custom(skill) is not None else None
     return None
+
+
+def _custom_skill_style_hint(skill_type: str) -> str:
+    if not str(skill_type).startswith("custom:"):
+        return ""
+    from services.director.custom_skills import get_custom
+    spec = get_custom(skill_type) or {}
+    return f"Skill style: {spec['style_hint']}" if spec.get("style_hint") else ""
 
 
 def _run_planning(pid: str, params: dict, pipeline_type: str):
@@ -6303,7 +6316,15 @@ def _run_planning_v2(pid: str, params: dict, pipeline_type: str):
         "_planning_checkpoint": planning_checkpoint,
     }
 
-    if skill_type == "viral_video":
+    if skill_type.startswith("custom:"):
+        planner_kwargs.update({
+            "concept": scene_description,
+            "target_duration": params.get("target_duration"),
+            "skill_options": params.get("skill_options") or {},
+            "audio_path": params.get("audio_path") if pipeline_type == "short_film_audio" else None,
+            "clips": planned_clips if pipeline_type == "short_film_audio" else None,
+        })
+    elif skill_type == "viral_video":
         planner_kwargs.update({
             "concept": scene_description,
             "target_duration": params.get("target_duration", 30),
@@ -6415,6 +6436,7 @@ def _run_planning_v2(pid: str, params: dict, pipeline_type: str):
             f"Visual style: {params['visual_style']}" if params.get("visual_style") else "",
             f"Style: {params['style']}" if params.get("style") else "",
             f"Platform: {params['platform']}" if params.get("platform") else "",
+            _custom_skill_style_hint(skill_type),
         ]))
         style_contract = derive_style_contract(style_brief, _logged_generate)
         params["_director_style_contract"] = style_contract
