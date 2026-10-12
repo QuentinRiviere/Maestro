@@ -181,10 +181,96 @@ class ReplicateTests(unittest.TestCase):
             run(spec, {"prompt": "x"}, Recorder(lambda r: httpx.Response(500)))
 
 
+def lora_file(directory, name="style.safetensors", size=32):
+    path = os.path.join(directory, name)
+    with open(path, "wb") as handle:
+        handle.write(b"x" * size)
+    return path
+
+
+class LoraTests(unittest.TestCase):
+    def test_scales_take_the_first_phase_value(self):
+        self.assertEqual(cloud_image.parse_lora_scales("0.8 1.2;0.5", 3), [0.8, 1.2, 1.0])
+        self.assertEqual(cloud_image.parse_lora_scales(None, 2), [1.0, 1.0])
+
+    def test_fal_uploads_once_then_reuses_the_cached_url(self):
+        def handler(request):
+            url = str(request.url)
+            if url.startswith(cloud_image.FAL_STORAGE_URL.split("?")[0]):
+                return httpx.Response(200, json={"upload_url": "https://storage.example/put",
+                                                 "file_url": "https://v3.fal.media/style.safetensors"})
+            if url == "https://storage.example/put":
+                return httpx.Response(200)
+            if url == "https://queue.fal.run/fal-ai/flux-lora":
+                return httpx.Response(200, json={"status_url": "https://q/s", "response_url": "https://q/r"})
+            if url == "https://q/s":
+                return httpx.Response(200, json={"status": "COMPLETED"})
+            if url == "https://q/r":
+                return httpx.Response(200, json={"images": [{"url": "https://cdn/o.png"}]})
+            return httpx.Response(200, content=PNG, headers={"content-type": "image/png"})
+
+        spec = load_spec("cloud_fal_flux_dev_lora")
+        params = {"prompt": "x", "resolution": "1024x1024", "num_inference_steps": 20, "guidance_scale": 4}
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = cloud_image.UploadCache(os.path.join(tmp, "uploads.json"))
+            lora = cloud_image.CloudLora(lora_file(tmp), scale=0.7)
+            for _ in range(2):
+                recorder = Recorder(handler)
+                run(spec, params, recorder, loras=[lora], upload_cache=cache, wall_clock=lambda: 1000.0)
+                submit = next(r for r in recorder.requests if str(r.url).endswith("/flux-lora"))
+                body = json.loads(submit.content)
+                self.assertEqual(body["loras"], [{"path": "https://v3.fal.media/style.safetensors", "scale": 0.7}])
+                self.assertEqual((body["num_inference_steps"], body["guidance_scale"]), (20, 4.0))
+                uploads = [r for r in recorder.requests if r.method == "PUT"]
+            self.assertEqual(uploads, [])  # second run reused the cached URL
+
+    def test_replicate_uses_civitai_ids_and_token(self):
+        def handler(request):
+            if str(request.url).endswith("/predictions"):
+                return httpx.Response(201, json={"urls": {"get": "https://api.replicate.com/v1/predictions/p"}})
+            if str(request.url).endswith("/p"):
+                return httpx.Response(200, json={"status": "succeeded", "output": ["https://r/o.png"]})
+            return httpx.Response(200, content=PNG, headers={"content-type": "image/png"})
+
+        recorder = Recorder(handler)
+        with tempfile.TemporaryDirectory() as tmp:
+            loras = [cloud_image.CloudLora(lora_file(tmp, "a.safetensors"), 0.9, civitai_model_id=123),
+                     cloud_image.CloudLora(lora_file(tmp, "b.safetensors"), 0.5, civitai_model_id=456)]
+            run(load_spec("cloud_replicate_flux_dev_lora"), {"prompt": "x", "guidance_scale": 3},
+                recorder, loras=loras, civitai_token="civ-tok")
+        body = json.loads(recorder.requests[0].content)["input"]
+        self.assertEqual(body["lora_weights"], "https://civitai.com/models/123")
+        self.assertEqual((body["extra_lora"], body["extra_lora_scale"]), ("https://civitai.com/models/456", 0.5))
+        self.assertEqual(body["civitai_api_token"], "civ-tok")
+        self.assertEqual(body["guidance"], 3.0)
+
+    def test_replicate_refuses_large_files_without_civitai_source(self):
+        spec = load_spec("cloud_replicate_flux_dev_lora")
+        with tempfile.TemporaryDirectory() as tmp:
+            lora = cloud_image.CloudLora(lora_file(tmp))
+            original = cloud_image.REPLICATE_FILE_LIMIT
+            cloud_image.REPLICATE_FILE_LIMIT = 10
+            try:
+                with self.assertRaisesRegex(cloud_image.CloudImageError, "100 MB"):
+                    run(spec, {"prompt": "x"}, Recorder(lambda r: httpx.Response(500)), loras=[lora])
+            finally:
+                cloud_image.REPLICATE_FILE_LIMIT = original
+
+    def test_lora_limits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            lora = cloud_image.CloudLora(lora_file(tmp))
+            with self.assertRaisesRegex(cloud_image.CloudImageError, "does not accept LoRAs"):
+                run(load_spec("cloud_fal_nano_banana"), {"prompt": "x"}, Recorder(lambda r: httpx.Response(500)),
+                    loras=[lora])
+            with self.assertRaisesRegex(cloud_image.CloudImageError, "at most 2"):
+                run(load_spec("cloud_replicate_flux_dev_lora"), {"prompt": "x"},
+                    Recorder(lambda r: httpx.Response(500)), loras=[lora] * 3)
+
+
 class ModelDefinitionTests(unittest.TestCase):
     def test_every_cloud_definition_is_valid(self):
         names = [n for n in os.listdir(os.path.join(_APP_DIR, "defaults")) if n.startswith("cloud_")]
-        self.assertEqual(len(names), 8)
+        self.assertEqual(len(names), 10)
         for name in names:
             spec = load_spec(name[:-5])
             self.assertIsNotNone(cloud_image.cloud_spec({"cloud": spec}), name)

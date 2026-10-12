@@ -25637,6 +25637,36 @@ def _is_cloud_model(model_type) -> bool:
     return bool((wgp.get_model_def(model_type) or {}).get("cloud"))
 
 
+_CLOUD_UPLOAD_CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings", "cloud_lora_uploads.json")
+
+
+def _cloud_loras(raw_params: dict) -> list:
+    """Resolve a job's activated LoRAs to local files and CivitAI identity."""
+    from services.cloud_image import CloudLora, parse_lora_scales
+
+    names = [name for name in raw_params.get("activated_loras") or [] if isinstance(name, str) and name]
+    scales = parse_lora_scales(raw_params.get("loras_multipliers"), len(names))
+    loras = []
+    for name, scale in zip(names, scales):
+        path = wgp.resolve_lora_path(raw_params.get("model_type"), name)
+        meta = {}
+        try:
+            with open(os.path.splitext(path)[0] + ".civitai.json", encoding="utf-8") as handle:
+                meta = json.load(handle)
+        except (OSError, ValueError):
+            pass
+
+        def as_int(value):
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return None
+        loras.append(CloudLora(path=path, scale=scale,
+                               civitai_model_id=as_int(meta.get("modelId")),
+                               civitai_version_id=as_int(meta.get("versionId"))))
+    return loras
+
+
 def _run_cloud_generation(job: dict, raw_params: dict, *, finalize: bool) -> bool:
     """Generate images through a hosted provider API and save them here."""
     from datetime import datetime
@@ -25658,6 +25688,9 @@ def _run_cloud_generation(job: dict, raw_params: dict, *, finalize: bool) -> boo
             api_key=cloud_image.provider_api_key(spec["provider"], services),
             update=lambda **updates: update_job(job, **updates),
             is_cancelled=lambda: is_cancel_requested(job),
+            loras=_cloud_loras(raw_params),
+            civitai_token=str(services.get("civitai_api_key") or ""),
+            upload_cache=cloud_image.UploadCache(_CLOUD_UPLOAD_CACHE_PATH),
         )
     except cloud_image.CloudImageCancelled:
         return False

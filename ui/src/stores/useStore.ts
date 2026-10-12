@@ -1040,6 +1040,8 @@ const DEFAULT_ENABLED_MODELS = new Set([
   'cloud_replicate_flux_pro_ultra',
   'cloud_replicate_seedream_4',
   'cloud_replicate_flux_kontext_pro',
+  'cloud_fal_flux_dev_lora',
+  'cloud_replicate_flux_dev_lora',
 ])
 
 /* Version of the curated defaults list above. enabledModels is a stored
@@ -1051,7 +1053,7 @@ const DEFAULT_ENABLED_MODELS = new Set([
  * a user who then disables them stays disabled forever. (This is
  * deliberately narrower than auto-enabling every unknown model — only
  * the curated list's own additions are pushed.) */
-const DEFAULTS_VERSION = 20
+const DEFAULTS_VERSION = 21
 const DEFAULTS_ADDED_IN: Record<number, string[]> = {
   // v1.2.0: the ACE-Step XL SFT pair; LM_4B becomes the music default.
   2: ['ace_step_v1_5_xl_sft', 'ace_step_v1_5_xl_sft_lm_4b'],
@@ -1095,6 +1097,8 @@ const DEFAULTS_ADDED_IN: Record<number, string[]> = {
     'cloud_replicate_seedream_4',
     'cloud_replicate_flux_kontext_pro',
   ],
+  // FLUX.1 dev with LoRAs on fal.ai and Replicate.
+  21: ['cloud_fal_flux_dev_lora', 'cloud_replicate_flux_dev_lora'],
 }
 const DEFAULTS_VERSION_KEY = 'maestro_defaults_version'
 

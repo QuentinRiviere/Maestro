@@ -2,6 +2,8 @@
 
 These models have no local weights: the controller sends the prompt to the
 provider API (services.cloud_image) instead of loading a pipeline.
+cloud_flux_lora models accept FLUX.1 dev LoRAs and share the local flux LoRA
+folder, so CivitAI downloads for Flux.1 D show up for them too.
 """
 import os
 
@@ -12,8 +14,8 @@ class family_handler:
         cloud = model_def.get("cloud") or {}
         extra_model_def = {
             "image_outputs": True,
-            "guidance_max_phases": 0,
-            "loras_disabled": True,
+            "guidance_max_phases": 1 if cloud.get("guidance_field") else 0,
+            "loras_disabled": not cloud.get("lora"),
             "profiles_dir": [],
             "no_background_removal": True,
             "URLs": [],
@@ -29,7 +31,7 @@ class family_handler:
 
     @staticmethod
     def query_supported_types():
-        return ["cloud_image"]
+        return ["cloud_image", "cloud_flux_lora"]
 
     @staticmethod
     def query_family_maps():
@@ -45,6 +47,8 @@ class family_handler:
 
     @staticmethod
     def get_lora_dir(base_model_type, args, lora_root):
+        if base_model_type == "cloud_flux_lora":
+            return getattr(args, "lora_dir_flux", None) or os.path.join(lora_root, "flux")
         return os.path.join(lora_root, "cloud")
 
     @staticmethod
@@ -61,4 +65,5 @@ class family_handler:
             "num_inference_steps": 1,
             "guidance_scale": 0,
             "batch_size": 1,
+            **((model_def.get("cloud") or {}).get("defaults") or {}),
         })

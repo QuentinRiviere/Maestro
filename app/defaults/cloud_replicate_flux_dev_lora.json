@@ -1,0 +1,46 @@
+{
+    "model": {
+        "name": "FLUX.1 Dev + LoRA (Replicate)",
+        "architecture": "cloud_flux_lora",
+        "description": "FLUX.1 [dev] on Replicate with up to two Flux.1 D LoRAs. CivitAI LoRAs are fetched by Replicate (latest version, using your CivitAI key); others are uploaded (100 MB max). About $0.032 per image.",
+        "cloud": {
+            "provider": "replicate",
+            "endpoint": "black-forest-labs/flux-dev-lora",
+            "size": "aspect_ratio",
+            "aspect_ratios": [
+                "1:1",
+                "16:9",
+                "21:9",
+                "3:2",
+                "2:3",
+                "4:5",
+                "5:4",
+                "3:4",
+                "4:3",
+                "9:16",
+                "9:21"
+            ],
+            "count_field": "num_outputs",
+            "max_count": 4,
+            "seed_field": "seed",
+            "steps_field": "num_inference_steps",
+            "guidance_field": "guidance",
+            "lora": {
+                "style": "replicate",
+                "max": 2
+            },
+            "defaults": {
+                "num_inference_steps": 28,
+                "guidance_scale": 3
+            },
+            "input": {
+                "output_format": "png",
+                "megapixels": "1",
+                "go_fast": false,
+                "disable_safety_checker": true
+            }
+        }
+    },
+    "resolution": "1024x1024",
+    "batch_size": 1
+}

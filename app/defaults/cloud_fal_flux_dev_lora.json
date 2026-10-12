@@ -1,0 +1,31 @@
+{
+    "model": {
+        "name": "FLUX.1 Dev + LoRA (fal.ai)",
+        "architecture": "cloud_flux_lora",
+        "description": "FLUX.1 [dev] on fal.ai with your Flux.1 D LoRAs (any number). Local LoRA files are uploaded to fal storage once and reused. About $0.035 per megapixel.",
+        "cloud": {
+            "provider": "fal",
+            "endpoint": "fal-ai/flux-lora",
+            "size": "image_size",
+            "count_field": "num_images",
+            "max_count": 4,
+            "seed_field": "seed",
+            "steps_field": "num_inference_steps",
+            "guidance_field": "guidance_scale",
+            "lora": {
+                "style": "fal",
+                "max": 5
+            },
+            "defaults": {
+                "num_inference_steps": 28,
+                "guidance_scale": 3.5
+            },
+            "input": {
+                "output_format": "png",
+                "enable_safety_checker": false
+            }
+        }
+    },
+    "resolution": "1024x1024",
+    "batch_size": 1
+}

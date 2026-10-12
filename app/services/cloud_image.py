@@ -17,14 +17,23 @@ provider endpoint, so a new hosted model needs only a JSON file:
         "count_field": "num_images",               # optional
         "max_count": 4,
         "seed_field": "seed",                      # optional
+        "steps_field": "num_inference_steps",      # optional
+        "guidance_field": "guidance_scale",        # optional
+        "lora": {"style": "fal" | "replicate", "max": 2},  # optional
+        "defaults": {"num_inference_steps": 28},   # Studio defaults
         "input": {"output_format": "png"}          # static extra input
     }
+
+LoRAs are local files: fal receives them through its storage upload (cached),
+Replicate through the CivitAI model ID when known, else its Files API.
 """
 from __future__ import annotations
 
 import base64
+import json
 import mimetypes
 import os
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
@@ -39,9 +48,13 @@ PROVIDER_API_KEY_ENV = {
     "replicate": ("MAESTRO_REPLICATE_API_TOKEN", "REPLICATE_API_TOKEN"),
 }
 FAL_QUEUE_URL = "https://queue.fal.run"
+FAL_STORAGE_URL = "https://rest.fal.ai/storage/upload/initiate?storage_type=gcs"
 REPLICATE_API_URL = "https://api.replicate.com/v1"
 POLL_SECONDS = 1.5
 TIMEOUT_SECONDS = 15 * 60
+REPLICATE_FILE_LIMIT = 100 * 1024 * 1024
+# Uploaded LoRAs are reused while the provider keeps the file around.
+UPLOAD_TTL_SECONDS = {"fal": 7 * 24 * 3600, "replicate": 20 * 3600}
 _CONTENT_EXTENSIONS = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}
 
 
@@ -61,6 +74,71 @@ class CloudImage:
     @property
     def extension(self) -> str:
         return _CONTENT_EXTENSIONS.get(self.content_type, ".png")
+
+
+@dataclass
+class CloudLora:
+    path: str
+    scale: float = 1.0
+    civitai_model_id: int | None = None
+    civitai_version_id: int | None = None
+
+    @property
+    def name(self) -> str:
+        return os.path.basename(self.path)
+
+
+class UploadCache:
+    """Provider URLs of uploaded LoRAs, keyed by file identity."""
+
+    def __init__(self, path: str | None):
+        self._path = path
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def key(provider: str, path: str) -> str:
+        stat = os.stat(path)
+        return f"{provider}:{os.path.realpath(path)}:{stat.st_size}:{int(stat.st_mtime)}"
+
+    def _load(self) -> dict:
+        try:
+            with open(self._path, encoding="utf-8") as handle:
+                data = json.load(handle)
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError, TypeError):
+            return {}
+
+    def get(self, provider: str, path: str, now: float) -> str | None:
+        if not self._path:
+            return None
+        with self._lock:
+            entry = self._load().get(self.key(provider, path)) or {}
+        fresh = now - float(entry.get("at") or 0) < UPLOAD_TTL_SECONDS[provider]
+        return entry.get("url") if fresh else None
+
+    def put(self, provider: str, path: str, url: str, now: float) -> None:
+        if not self._path:
+            return
+        with self._lock:
+            data = self._load()
+            data[self.key(provider, path)] = {"url": url, "at": now}
+            os.makedirs(os.path.dirname(self._path) or ".", exist_ok=True)
+            tmp = f"{self._path}.tmp"
+            with open(tmp, "w", encoding="utf-8") as handle:
+                json.dump(data, handle, indent=1)
+            os.replace(tmp, self._path)
+
+
+def parse_lora_scales(value: Any, count: int) -> list[float]:
+    """First number of each multiplier (phase-specific values are local-only)."""
+    tokens = [str(v) for v in value] if isinstance(value, list) else str(value or "").split()
+    scales = []
+    for token in tokens:
+        try:
+            scales.append(float(token.replace(",", ";").split(";")[0]))
+        except ValueError:
+            scales.append(1.0)
+    return (scales + [1.0] * count)[:count]
 
 
 def cloud_spec(model_def: Mapping[str, Any] | None) -> dict | None:
@@ -130,6 +208,10 @@ def build_input(spec: Mapping[str, Any], params: Mapping[str, Any], image_urls: 
     seed = params.get("seed")
     if seed_field and seed is not None and int(seed) >= 0:
         payload[seed_field] = int(seed)
+    for field, param, cast in (("steps_field", "num_inference_steps", int),
+                               ("guidance_field", "guidance_scale", float)):
+        if spec.get(field) and params.get(param) is not None:
+            payload[spec[field]] = cast(params[param])
     image_field = spec.get("image_field")
     if image_urls and image_field:
         if spec.get("image_list", True):
@@ -178,6 +260,28 @@ class FalClient:
     def upload(self, path: str) -> str:
         return _data_uri(path)
 
+    def upload_lora(self, lora: CloudLora) -> str:
+        initiate = self._http.post(
+            FAL_STORAGE_URL,
+            json={"file_name": lora.name, "content_type": "application/octet-stream"},
+            headers=self._headers,
+        )
+        target = _check(initiate, self.provider).json()
+        with open(lora.path, "rb") as handle:
+            put = self._http.put(target["upload_url"], content=handle,
+                                 headers={"Content-Type": "application/octet-stream"},
+                                 timeout=httpx.Timeout(1800.0, connect=15.0))
+        _check(put, self.provider)
+        return target["file_url"]
+
+    @staticmethod
+    def lora_reference(lora: CloudLora) -> str | None:
+        return None
+
+    @staticmethod
+    def apply_loras(payload: dict, refs: list[tuple[str, float]], civitai_token: str) -> None:
+        payload["loras"] = [{"path": url, "scale": scale} for url, scale in refs]
+
     def submit(self, endpoint: str, payload: dict) -> dict:
         response = self._http.post(f"{FAL_QUEUE_URL}/{endpoint}", json=payload, headers=self._headers)
         return _check(response, self.provider).json()
@@ -222,6 +326,36 @@ class ReplicateClient:
             )
         return _check(response, self.provider).json()["urls"]["get"]
 
+    def upload_lora(self, lora: CloudLora) -> str:
+        if os.path.getsize(lora.path) > REPLICATE_FILE_LIMIT:
+            raise CloudImageError(
+                f"LoRA {lora.name} is over 100 MB, Replicate's upload limit, and has no CivitAI source"
+            )
+        with open(lora.path, "rb") as handle:
+            response = self._http.post(
+                f"{REPLICATE_API_URL}/files",
+                files={"content": (lora.name, handle, "application/octet-stream")},
+                headers=self._headers,
+                timeout=httpx.Timeout(1800.0, connect=15.0),
+            )
+        return _check(response, self.provider).json()["urls"]["get"]
+
+    @staticmethod
+    def lora_reference(lora: CloudLora) -> str | None:
+        # Replicate downloads CivitAI models itself; no upload needed.
+        if lora.civitai_model_id is None:
+            return None
+        return f"https://civitai.com/models/{lora.civitai_model_id}"
+
+    @staticmethod
+    def apply_loras(payload: dict, refs: list[tuple[str, float]], civitai_token: str) -> None:
+        for (url, scale), (weights, scale_field) in zip(
+            refs, (("lora_weights", "lora_scale"), ("extra_lora", "extra_lora_scale"))
+        ):
+            payload[weights], payload[scale_field] = url, scale
+        if civitai_token and any("civitai.com/" in url for url, _ in refs):
+            payload["civitai_api_token"] = civitai_token
+
     def submit(self, endpoint: str, payload: dict) -> dict:
         response = self._http.post(
             f"{REPLICATE_API_URL}/models/{endpoint}/predictions",
@@ -265,6 +399,10 @@ def generate(
     http: httpx.Client | None = None,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
+    loras: list[CloudLora] | None = None,
+    civitai_token: str = "",
+    upload_cache: UploadCache | None = None,
+    wall_clock: Callable[[], float] = time.time,
 ) -> list[CloudImage]:
     """Run one cloud request and return the downloaded images."""
     provider = spec["provider"]
@@ -277,6 +415,15 @@ def generate(
     for path in images:
         if not os.path.isfile(path):
             raise CloudImageError(f"Reference image not found: {os.path.basename(path)}")
+    loras = list(loras or [])
+    lora_spec = spec.get("lora") or {}
+    if loras and not lora_spec:
+        raise CloudImageError("This cloud model does not accept LoRAs")
+    if loras and len(loras) > int(lora_spec.get("max") or 1):
+        raise CloudImageError(f"This cloud model accepts at most {lora_spec.get('max')} LoRAs")
+    for lora in loras:
+        if not os.path.isfile(lora.path):
+            raise CloudImageError(f"LoRA not found: {lora.name}")
     owns_http = http is None
     http = http or httpx.Client(timeout=httpx.Timeout(120.0, connect=15.0), follow_redirects=True)
     try:
@@ -284,7 +431,21 @@ def generate(
         update(phase="Cloud", message=f"Sending to {label}…", progress=5)
         urls = [client.upload(path) for path in images] if spec.get("image_field") else []
         endpoint = spec.get("edit_endpoint") if urls and spec.get("edit_endpoint") else spec["endpoint"]
-        handle = client.submit(endpoint, build_input(spec, params, urls))
+        payload = build_input(spec, params, urls)
+        if loras:
+            refs = []
+            for lora in loras:
+                url = client.lora_reference(lora)
+                if url is None and upload_cache is not None:
+                    url = upload_cache.get(provider, lora.path, wall_clock())
+                if url is None:
+                    update(phase="Cloud", message=f"Uploading LoRA {lora.name} to {label}…", progress=5)
+                    url = client.upload_lora(lora)
+                    if upload_cache is not None:
+                        upload_cache.put(provider, lora.path, url, wall_clock())
+                refs.append((url, lora.scale))
+            client.apply_loras(payload, refs, civitai_token)
+        handle = client.submit(endpoint, payload)
         deadline = clock() + TIMEOUT_SECONDS
         while True:
             if is_cancelled():
