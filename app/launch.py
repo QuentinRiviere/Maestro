@@ -7588,7 +7588,14 @@ def system_preflight():
     # CUDA — the generation pipeline is NVIDIA-only.
     try:
         import torch as _torch
-        if not _torch.cuda.is_available():
+        if not _torch.cuda.is_available() and _remote_generation_enabled():
+            checks.append({
+                "id": "cuda",
+                "level": "info",
+                "message": "No local NVIDIA GPU: generations run on the "
+                           "remote GPU worker (Settings → Remote GPU).",
+            })
+        elif not _torch.cuda.is_available():
             checks.append({
                 "id": "cuda",
                 "level": "error",

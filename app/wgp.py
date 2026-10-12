@@ -2611,7 +2611,12 @@ override_attention_modes_supported = get_supported_override_attention_modes()
 args = _parse_args()
 migrate_loras_layout()
 
-gpu_major, gpu_minor = torch.cuda.get_device_capability(args.gpu if len(args.gpu) > 0 else None)
+if torch.cuda.is_available():
+    gpu_major, gpu_minor = torch.cuda.get_device_capability(args.gpu if len(args.gpu) > 0 else None)
+else:
+    # Controller host without CUDA (e.g. a Mac driving a remote GPU worker):
+    # nothing is generated locally, so assume a bf16-capable target.
+    gpu_major, gpu_minor = 8, 0
 if  gpu_major < 8:
     print("Switching to FP16 models when possible as GPU architecture doesn't support optimed BF16 Kernels")
     bfloat16_supported = False

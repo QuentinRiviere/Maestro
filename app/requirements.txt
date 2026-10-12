@@ -60,10 +60,15 @@ gradio_rangeslider==0.0.8
 opencv-python==4.13.0.92
 ultralytics==8.3.228  # H3 Face Refiner detector; keep the existing Torch stack
 segment-anything==1.0
-rembg[gpu]==2.0.65
-onnxruntime-gpu==1.22.0; python_version < "3.11"
-onnxruntime-gpu==1.25.0.dev20260210001; python_version >= "3.11"
-decord==0.6.0
+rembg[gpu]==2.0.65; sys_platform != "darwin"
+# macOS (controller host driving a remote GPU worker): CPU builds.
+rembg==2.0.65; sys_platform == "darwin"
+onnxruntime-gpu==1.22.0; python_version < "3.11" and sys_platform != "darwin"
+onnxruntime-gpu==1.25.0.dev20260210001; python_version >= "3.11" and sys_platform != "darwin"
+onnxruntime==1.22.1; sys_platform == "darwin"
+decord==0.6.0; sys_platform != "darwin"
+# decord has no macOS arm64 wheels; eva-decord ships the same module.
+eva-decord==0.6.1; sys_platform == "darwin"
 timm==1.0.24
 # insightface: prebuilt Windows wheels hosted on a deepbeepmeep GitHub
 # release mirror (PyPI only ships sdist, which fails to build on Windows
@@ -95,7 +100,7 @@ peft==0.17.0
 vector-quantize-pytorch==1.27.19
 matplotlib==3.10.8
 gguf==0.17.1
-flash-linear-attention==0.4.1
+flash-linear-attention==0.4.1; sys_platform != "darwin"
 
 # Utilities
 ftfy==6.3.1
