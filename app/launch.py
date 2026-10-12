@@ -73,6 +73,12 @@ from services.checkpoint_compatibility import (
 )
 from services.generation_eta import AdaptiveGenerationEta, GenerationEtaHistory
 from services.remote_access import TailscaleManager
+from services.remote_worker import (
+    DstackError,
+    RemoteWorkerError,
+    RemoteWorkerManager,
+    RemoteWorkerSettingsStore,
+)
 from services.web_push import WebPushService, WebPushUnavailable
 from services.editor_projects import (
     build_editor_media_preview,
@@ -181,6 +187,13 @@ try:
 except (TypeError, ValueError):
     _maestro_server_port = 7860
 _tailscale = TailscaleManager(_maestro_settings_dir, _maestro_server_port)
+
+# Remote GPU worker (headless Maestro on a dstack/RunPod service). A process
+# started with --worker *is* that worker and never controls another one.
+_is_remote_worker_process = "--worker" in _launch_args
+_remote_worker = RemoteWorkerManager(RemoteWorkerSettingsStore(_maestro_settings_dir))
+if not _is_remote_worker_process:
+    _remote_worker.start_watchdog()
 
 # WanGP's legacy notifier fires at low-level output boundaries, which means a
 # multi-window generation or Director project can chime once per internal
@@ -7031,6 +7044,72 @@ def disable_tailscale_remote_access():
         return _tailscale.disable()
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+def _remote_worker_call(fn, *args, **kwargs):
+    if _is_remote_worker_process:
+        raise HTTPException(status_code=409, detail="This Maestro is a remote worker.")
+    try:
+        return fn(*args, **kwargs)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RemoteWorkerError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except DstackError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@api.get("/api/v1/remote-worker/settings")
+def get_remote_worker_settings():
+    return _remote_worker_call(lambda: _remote_worker.settings.public())
+
+
+@api.put("/api/v1/remote-worker/settings")
+async def update_remote_worker_settings(request: Request):
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Settings must be an object.")
+    return _remote_worker_call(_remote_worker.update_settings, body)
+
+
+@api.post("/api/v1/remote-worker/settings/import-dstack")
+def import_remote_worker_dstack_config():
+    return _remote_worker_call(_remote_worker.import_local_dstack_config)
+
+
+@api.post("/api/v1/remote-worker/test")
+def test_remote_worker_connection():
+    return _remote_worker_call(_remote_worker.test_connection)
+
+
+@api.post("/api/v1/remote-worker/volume")
+def create_remote_worker_volume():
+    return _remote_worker_call(_remote_worker.create_volume)
+
+
+@api.get("/api/v1/remote-worker/status")
+def get_remote_worker_status():
+    return _remote_worker_call(_remote_worker.status)
+
+
+@api.post("/api/v1/remote-worker/start")
+async def start_remote_worker(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    model_type = body.get("model_type") if isinstance(body, dict) else None
+    return _remote_worker_call(_remote_worker.start, model_type or None)
+
+
+@api.post("/api/v1/remote-worker/stop")
+def stop_remote_worker():
+    return _remote_worker_call(_remote_worker.stop)
+
+
+@api.get("/api/v1/remote-worker/logs")
+def get_remote_worker_logs(since: str | None = None):
+    return _remote_worker_call(lambda: {"lines": _remote_worker.logs(since)})
 
 
 @api.get("/api/v1/model-folders/scan")

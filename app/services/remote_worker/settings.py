@@ -1,0 +1,157 @@
+"""Persisted remote worker settings (``app/settings/remote_worker.json``).
+
+The dstack token is stored in full in the gitignored settings directory and
+only ever returned masked by the API, like the other provider keys.
+"""
+from __future__ import annotations
+
+import json
+import os
+import tempfile
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass, field, fields
+from pathlib import Path
+from typing import Any
+
+
+DEFAULT_REPO_URL = "https://github.com/QuentinRiviere/Maestro.git"
+
+
+@dataclass
+class RemoteWorkerSettings:
+    # dstack access
+    server_url: str = "http://127.0.0.1:3000"
+    project: str = "main"
+    token: str = ""
+    # what to run
+    run_name: str = "maestro-worker"
+    repo_url: str = DEFAULT_REPO_URL
+    repo_ref: str = "main"
+    image: str = "pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime"
+    torch_index: str = "https://download.pytorch.org/whl/cu128"
+    default_model_type: str = ""
+    # where and how much
+    backends: list[str] = field(default_factory=lambda: ["runpod"])
+    fleet: str = ""
+    gpu: str = "48GB.."
+    disk: str = "100GB.."
+    spot_policy: str = "on-demand"
+    max_price: float = 0.8
+    max_duration: str = "4h"
+    volume_name: str = "maestro-models"
+    volume_path: str = "/workspace/vol"
+    volume_region: str = "EU-SE-1"
+    volume_size: str = "200GB"
+    # behaviour
+    idle_ttl_minutes: int = 30
+    route_generations: bool = False
+    auto_start: bool = True
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.server_url and self.project and self.token)
+
+    @classmethod
+    def from_mapping(cls, data: Mapping[str, Any] | None) -> "RemoteWorkerSettings":
+        settings = cls()
+        settings.update(data or {})
+        return settings
+
+    def update(self, data: Mapping[str, Any]) -> list[str]:
+        """Apply known keys with type coercion; return the keys changed."""
+        changed: list[str] = []
+        for item in fields(self):
+            if item.name not in data:
+                continue
+            value = _coerce(item.name, data[item.name], getattr(self, item.name))
+            if value != getattr(self, item.name):
+                setattr(self, item.name, value)
+                changed.append(item.name)
+        return changed
+
+    def public(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload["token"] = _mask(self.token)
+        payload["token_set"] = bool(self.token)
+        payload["configured"] = self.configured
+        return payload
+
+
+def _coerce(name: str, value: Any, current: Any) -> Any:
+    if isinstance(current, bool):
+        return bool(value)
+    if isinstance(current, int):
+        number = int(value)
+        if name == "idle_ttl_minutes" and number < 1:
+            raise ValueError("idle_ttl_minutes must be at least 1")
+        return number
+    if isinstance(current, float):
+        number = float(value)
+        if number <= 0:
+            raise ValueError(f"{name} must be positive")
+        return number
+    if isinstance(current, list):
+        if isinstance(value, str):
+            value = [part.strip() for part in value.split(",")]
+        return [str(part) for part in value if str(part).strip()]
+    return str(value or "").strip()
+
+
+def _mask(secret: str) -> str:
+    if not secret:
+        return ""
+    return f"{secret[:4]}…{secret[-4:]}" if len(secret) > 12 else "••••"
+
+
+class RemoteWorkerSettingsStore:
+    def __init__(self, settings_dir: str | os.PathLike[str]) -> None:
+        self.path = Path(settings_dir) / "remote_worker.json"
+
+    def load(self) -> RemoteWorkerSettings:
+        try:
+            with open(self.path, encoding="utf-8") as handle:
+                return RemoteWorkerSettings.from_mapping(json.load(handle))
+        except FileNotFoundError:
+            return RemoteWorkerSettings()
+        except (OSError, ValueError):
+            return RemoteWorkerSettings()
+
+    def save(self, settings: RemoteWorkerSettings) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix=".remote_worker.", suffix=".tmp", dir=str(self.path.parent))
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(asdict(settings), handle, indent=2)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, self.path)
+            try:
+                os.chmod(self.path, 0o600)
+            except OSError:
+                pass
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+
+
+def read_local_dstack_config(path: str | os.PathLike[str] | None = None) -> dict[str, str] | None:
+    """Default project from ``~/.dstack/config.yml`` (server URL, name, token)."""
+    config_path = Path(path) if path else Path.home() / ".dstack" / "config.yml"
+    try:
+        import yaml  # PyYAML is installed as an omegaconf dependency.
+
+        with open(config_path, encoding="utf-8") as handle:
+            data = yaml.safe_load(handle) or {}
+    except Exception:
+        return None
+    projects = data.get("projects") or []
+    if not isinstance(projects, list) or not projects:
+        return None
+    chosen = next((p for p in projects if isinstance(p, dict) and p.get("default")), projects[0])
+    if not isinstance(chosen, dict) or not chosen.get("token"):
+        return None
+    return {
+        "server_url": str(chosen.get("url") or ""),
+        "project": str(chosen.get("name") or ""),
+        "token": str(chosen.get("token") or ""),
+    }
