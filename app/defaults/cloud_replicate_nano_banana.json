@@ -1,0 +1,32 @@
+{
+    "model": {
+        "name": "Nano Banana (Replicate)",
+        "architecture": "cloud_image",
+        "description": "Google Gemini 2.5 Flash Image on Replicate: text-to-image and multi-image editing. About $0.04 per image.",
+        "cloud": {
+            "provider": "replicate",
+            "endpoint": "google/nano-banana",
+            "image_field": "image_input",
+            "image_list": true,
+            "max_images_in": 10,
+            "size": "aspect_ratio",
+            "aspect_ratios": [
+                "1:1",
+                "2:3",
+                "3:2",
+                "3:4",
+                "4:3",
+                "4:5",
+                "5:4",
+                "9:16",
+                "16:9",
+                "21:9"
+            ],
+            "input": {
+                "output_format": "png"
+            }
+        }
+    },
+    "resolution": "1024x1024",
+    "batch_size": 1
+}

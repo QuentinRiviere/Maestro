@@ -1,0 +1,35 @@
+{
+    "model": {
+        "name": "FLUX Kontext Pro (fal.ai)",
+        "architecture": "cloud_image",
+        "description": "Black Forest Labs FLUX.1 Kontext [pro] on fal.ai: instruction-based editing of one source image, or text-to-image. About $0.04 per image.",
+        "cloud": {
+            "provider": "fal",
+            "endpoint": "fal-ai/flux-pro/kontext/text-to-image",
+            "edit_endpoint": "fal-ai/flux-pro/kontext",
+            "image_field": "image_url",
+            "image_list": false,
+            "max_images_in": 1,
+            "size": "aspect_ratio",
+            "aspect_ratios": [
+                "21:9",
+                "16:9",
+                "4:3",
+                "3:2",
+                "1:1",
+                "2:3",
+                "3:4",
+                "9:16",
+                "9:21"
+            ],
+            "count_field": "num_images",
+            "max_count": 4,
+            "seed_field": "seed",
+            "input": {
+                "output_format": "png"
+            }
+        }
+    },
+    "resolution": "1024x1024",
+    "batch_size": 1
+}

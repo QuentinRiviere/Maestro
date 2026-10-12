@@ -78,6 +78,8 @@ export interface ModelDef {
   nsfw_only?: boolean
   /** Model does not support user-selectable LoRAs. */
   loras_disabled?: boolean
+  /** Hosted provider for Cloud API models; null for local models. */
+  cloud_provider?: 'fal' | 'replicate' | null
 }
 
 export interface Resolution {
@@ -1376,6 +1378,12 @@ export interface ServicesConfig {
   openrouter_api_key_env?: boolean
   anthropic_api_key: string
   anthropic_api_key_set: boolean
+  fal_api_key: string
+  fal_api_key_set: boolean
+  fal_api_key_env?: boolean
+  replicate_api_key: string
+  replicate_api_key_set: boolean
+  replicate_api_key_env?: boolean
   use_director_v2: boolean
   nsfw_mode: boolean
   nsfw_accepted_at: string | null

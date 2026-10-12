@@ -1,0 +1,31 @@
+{
+    "model": {
+        "name": "Seedream 4 (Replicate)",
+        "architecture": "cloud_image",
+        "description": "ByteDance Seedream 4.0 on Replicate: 2K text-to-image and editing with up to 10 reference images. About $0.03 per image.",
+        "cloud": {
+            "provider": "replicate",
+            "endpoint": "bytedance/seedream-4",
+            "image_field": "image_input",
+            "image_list": true,
+            "max_images_in": 10,
+            "size": "aspect_ratio",
+            "aspect_ratios": [
+                "1:1",
+                "4:3",
+                "3:4",
+                "16:9",
+                "9:16",
+                "3:2",
+                "2:3",
+                "21:9"
+            ],
+            "input": {
+                "size": "2K",
+                "enhance_prompt": false
+            }
+        }
+    },
+    "resolution": "1024x1024",
+    "batch_size": 1
+}

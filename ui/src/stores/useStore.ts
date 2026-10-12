@@ -896,6 +896,7 @@ const familyModeMap: Record<string, GenerationMode> = {
   z_image: 'image',
   krea2: 'image',
   hidream: 'image',
+  cloud: 'image',
   wan: 'video',
   wan2_2: 'video',
   hunyuan: 'video',
@@ -1030,6 +1031,15 @@ const DEFAULT_ENABLED_MODELS = new Set([
   'yue2',
   // Audio — SFX
   'mmaudio_v2',
+  // Image — hosted Cloud API models (fal.ai, Replicate)
+  'cloud_fal_nano_banana',
+  'cloud_fal_flux_pro_ultra',
+  'cloud_fal_seedream_4',
+  'cloud_fal_flux_kontext_pro',
+  'cloud_replicate_nano_banana',
+  'cloud_replicate_flux_pro_ultra',
+  'cloud_replicate_seedream_4',
+  'cloud_replicate_flux_kontext_pro',
 ])
 
 /* Version of the curated defaults list above. enabledModels is a stored
@@ -1041,7 +1051,7 @@ const DEFAULT_ENABLED_MODELS = new Set([
  * a user who then disables them stays disabled forever. (This is
  * deliberately narrower than auto-enabling every unknown model — only
  * the curated list's own additions are pushed.) */
-const DEFAULTS_VERSION = 19
+const DEFAULTS_VERSION = 20
 const DEFAULTS_ADDED_IN: Record<number, string[]> = {
   // v1.2.0: the ACE-Step XL SFT pair; LM_4B becomes the music default.
   2: ['ace_step_v1_5_xl_sft', 'ace_step_v1_5_xl_sft_lm_4b'],
@@ -1074,6 +1084,17 @@ const DEFAULTS_ADDED_IN: Record<number, string[]> = {
   // Reserved: DaSiWa checkpoints are user imports, without curated additions.
   // Keep the version so earlier local visibility preferences remain valid.
   19: [],
+  // Hosted Cloud API image models (fal.ai, Replicate).
+  20: [
+    'cloud_fal_nano_banana',
+    'cloud_fal_flux_pro_ultra',
+    'cloud_fal_seedream_4',
+    'cloud_fal_flux_kontext_pro',
+    'cloud_replicate_nano_banana',
+    'cloud_replicate_flux_pro_ultra',
+    'cloud_replicate_seedream_4',
+    'cloud_replicate_flux_kontext_pro',
+  ],
 }
 const DEFAULTS_VERSION_KEY = 'maestro_defaults_version'
 

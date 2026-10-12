@@ -706,6 +706,30 @@ export function ServicesSettingsPanel() {
         )}
 
         <ApiKeyField
+          label="fal.ai API Key"
+          maskedValue={servicesConfig.fal_api_key}
+          isSet={servicesConfig.fal_api_key_set}
+          onSave={val => updateConfig({ fal_api_key: val }, { throwOnError: true })}
+        />
+        <p className="text-[10px] text-text-muted -mt-2">
+          {servicesConfig.fal_api_key_env
+            ? 'Using the key from the FAL_KEY environment variable. A key saved here takes precedence.'
+            : 'Optional. Enables the Cloud API image models served by fal.ai (billed per image by fal.ai).'}
+        </p>
+
+        <ApiKeyField
+          label="Replicate API Token"
+          maskedValue={servicesConfig.replicate_api_key}
+          isSet={servicesConfig.replicate_api_key_set}
+          onSave={val => updateConfig({ replicate_api_key: val }, { throwOnError: true })}
+        />
+        <p className="text-[10px] text-text-muted -mt-2">
+          {servicesConfig.replicate_api_key_env
+            ? 'Using the token from the REPLICATE_API_TOKEN environment variable. A token saved here takes precedence.'
+            : 'Optional. Enables the Cloud API image models served by Replicate (billed per image by Replicate).'}
+        </p>
+
+        <ApiKeyField
           label="CivitAI API Key"
           maskedValue={servicesConfig.civitai_api_key}
           isSet={servicesConfig.civitai_api_key_set}

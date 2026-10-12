@@ -1,0 +1,32 @@
+{
+    "model": {
+        "name": "FLUX1.1 Pro Ultra (fal.ai)",
+        "architecture": "cloud_image",
+        "description": "Black Forest Labs FLUX1.1 [pro] ultra on fal.ai: photoreal text-to-image up to 4 MP. About $0.06 per image.",
+        "cloud": {
+            "provider": "fal",
+            "endpoint": "fal-ai/flux-pro/v1.1-ultra",
+            "size": "aspect_ratio",
+            "aspect_ratios": [
+                "21:9",
+                "16:9",
+                "4:3",
+                "3:2",
+                "1:1",
+                "2:3",
+                "3:4",
+                "9:16",
+                "9:21"
+            ],
+            "count_field": "num_images",
+            "max_count": 4,
+            "seed_field": "seed",
+            "input": {
+                "output_format": "png",
+                "enable_safety_checker": false
+            }
+        }
+    },
+    "resolution": "1024x1024",
+    "batch_size": 1
+}

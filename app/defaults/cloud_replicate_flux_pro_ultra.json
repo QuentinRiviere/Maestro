@@ -1,0 +1,32 @@
+{
+    "model": {
+        "name": "FLUX1.1 Pro Ultra (Replicate)",
+        "architecture": "cloud_image",
+        "description": "Black Forest Labs FLUX1.1 [pro] ultra on Replicate: photoreal text-to-image up to 4 MP. About $0.06 per image.",
+        "cloud": {
+            "provider": "replicate",
+            "endpoint": "black-forest-labs/flux-1.1-pro-ultra",
+            "size": "aspect_ratio",
+            "aspect_ratios": [
+                "21:9",
+                "16:9",
+                "3:2",
+                "4:3",
+                "5:4",
+                "1:1",
+                "4:5",
+                "3:4",
+                "2:3",
+                "9:16",
+                "9:21"
+            ],
+            "seed_field": "seed",
+            "input": {
+                "output_format": "png",
+                "safety_tolerance": 6
+            }
+        }
+    },
+    "resolution": "1024x1024",
+    "batch_size": 1
+}

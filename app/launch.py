@@ -413,9 +413,10 @@ register_terminal_listener(lambda job, status: _generation_previews.clear(str(jo
 _studio_submission_lock = threading.RLock()
 _gen_lock = threading.Lock()
 # Director projects keep their parent job running between shots, so this also
-# holds the remote worker across a whole project.
+# holds the remote worker across a whole project. Cloud API jobs never use it.
 _remote_worker.pending_work = lambda: any(
     snapshot_job(job).get("status") in {"queued", "running"}
+    and not _is_cloud_model((job.get("params") or {}).get("model_type"))
     for job in list(_jobs.values())
 )
 
@@ -715,6 +716,8 @@ def _check_model_downloaded(model_type: str) -> bool:
         model_def = wgp.get_model_def(model_type)
         if model_def is None:
             return False
+        if model_def.get("cloud"):
+            return True
         groups = _model_weight_groups(model_type)
         if not groups:
             return False
@@ -821,6 +824,7 @@ def list_models():
             # nsfw_mode toggle can show/hide without reloading models.
             "nsfw_only": bool(md.get("nsfw_only", False)),
             "loras_disabled": bool(md.get("loras_disabled", False)),
+            "cloud_provider": (md.get("cloud") or {}).get("provider"),
         })
 
     return {"families": families, "models": models}
@@ -7719,6 +7723,19 @@ def _enhancement_settings_snapshot() -> dict:
                               **wgp.server_config.get("services", {})})
 
 
+def _cloud_image_key_fields(services: dict) -> dict:
+    from services import cloud_image
+
+    fields = {}
+    for provider, setting in cloud_image.PROVIDER_API_KEY_SETTING.items():
+        stored = services.get(setting, "")
+        available = bool(cloud_image.provider_api_key(provider, services))
+        fields[setting] = _mask_key(stored)
+        fields[f"{setting}_set"] = available
+        fields[f"{setting}_env"] = available and not stored
+    return fields
+
+
 @api.get("/api/v1/services-config")
 def get_services_config():
     """Return services settings with API keys masked."""
@@ -7749,6 +7766,7 @@ def get_services_config():
         ),
         "anthropic_api_key": _mask_key(services.get("anthropic_api_key", "")),
         "anthropic_api_key_set": bool(services.get("anthropic_api_key", "")),
+        **_cloud_image_key_fields(services),
         # Director v2 (layered architecture: structured shot planning,
         # mode-specific renderers, prompt validation) is now the default
         # as of 2026-05-03 after weeks of real-world validation. v1 had
@@ -7831,7 +7849,7 @@ async def update_services_config(request: Request):
         "enhance_llm_model_id", "enhance_llm_device",
         "enhance_fidelity_retries", "enhance_fidelity_auto_continue",
         "google_api_key", "llm_remote_api_key", "openai_api_key", "openrouter_api_key",
-        "anthropic_api_key",
+        "anthropic_api_key", "fal_api_key", "replicate_api_key",
         "use_director_v2", "nsfw_mode", "nsfw_accepted_at", "director_prompt_polish",
         "civitai_api_key", "voice_reference_enabled", "ltx_progressive_pipeline",
         "show_experimental", "auto_performance", "storage_allow_linked_removal",
@@ -25615,6 +25633,67 @@ def _remote_generation_enabled() -> bool:
     return bool(settings.route_generations and settings.configured)
 
 
+def _is_cloud_model(model_type) -> bool:
+    return bool((wgp.get_model_def(model_type) or {}).get("cloud"))
+
+
+def _run_cloud_generation(job: dict, raw_params: dict, *, finalize: bool) -> bool:
+    """Generate images through a hosted provider API and save them here."""
+    from datetime import datetime
+
+    from services import cloud_image
+    from shared.utils.audio_video import save_image_metadata
+
+    model_def = wgp.get_model_def(raw_params.get("model_type")) or {}
+    spec = cloud_image.cloud_spec(model_def)
+    if spec is None:
+        finish_job(job, "failed", error="Invalid cloud model definition", message="Invalid cloud model definition")
+        return False
+    services = wgp.server_config.get("services", {})
+    started = time.time()
+    try:
+        images = cloud_image.generate(
+            spec,
+            raw_params,
+            api_key=cloud_image.provider_api_key(spec["provider"], services),
+            update=lambda **updates: update_job(job, **updates),
+            is_cancelled=lambda: is_cancel_requested(job),
+        )
+    except cloud_image.CloudImageCancelled:
+        return False
+    except Exception as error:
+        detail = str(error)
+        finish_job(job, "failed", error=detail, message=f"Error: {detail}")
+        return False
+    out_dir = job.get("out_dir") or wgp.save_path
+    os.makedirs(out_dir, exist_ok=True)
+    stamp = datetime.now().strftime("%Y-%m-%d-%Hh%Mm%Ss")
+    metadata = {key: value for key, value in raw_params.items() if not str(key).startswith("_")}
+    metadata.update(
+        cloud_provider=spec["provider"],
+        cloud_endpoint=spec["endpoint"],
+        generation_time=round(time.time() - started, 1),
+        creation_date=datetime.now().isoformat(timespec="seconds"),
+        creation_timestamp=int(time.time()),
+    )
+    output_files = []
+    for index, image in enumerate(images):
+        name = f"{stamp}_{raw_params.get('model_type')}_{index + 1}{image.extension}"
+        path = os.path.join(out_dir, name)
+        with open(path, "wb") as handle:
+            handle.write(image.data)
+        try:
+            save_image_metadata(path, metadata)
+        except Exception as error:
+            print(f"[Cloud] Could not embed metadata in {name}: {error}")
+        output_files.append(name)
+    record_job_outputs(job, output_files)
+    if not finalize:
+        return update_job(job, progress=99, step=0, total_steps=0, phase="Finalizing", message="Finalizing...")
+    finish_job(job, "completed", progress=100, step=0, total_steps=0, phase="", message="Done")
+    return job.get("status") == "completed"
+
+
 def _run_remote_generation(job: dict, raw_params: dict, *, finalize: bool) -> bool:
     """Run a prepared job on the remote worker and publish its outputs here."""
     defer_output_publication = bool(raw_params.get("_defer_output_publication"))
@@ -26004,6 +26083,11 @@ def _run_generation(job_id: str, *, finalize: bool = True, _slot_owned: bool = F
                 llm_service.unload_model()
             if is_cancel_requested(job):
                 return False
+
+            # Hosted models never touch a GPU: the controller calls the
+            # provider API itself, even when a remote worker is configured.
+            if _is_cloud_model(raw_params.get("model_type")):
+                return _run_cloud_generation(job, raw_params, finalize=finalize)
 
             # Remote GPU worker: everything above (planning, enhancement,
             # reference preparation) stays local; the GPU work runs on the

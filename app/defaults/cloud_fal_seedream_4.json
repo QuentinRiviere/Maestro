@@ -1,0 +1,24 @@
+{
+    "model": {
+        "name": "Seedream 4 (fal.ai)",
+        "architecture": "cloud_image",
+        "description": "ByteDance Seedream 4.0 on fal.ai: text-to-image and editing with up to 10 reference images, custom size. About $0.03 per image.",
+        "cloud": {
+            "provider": "fal",
+            "endpoint": "fal-ai/bytedance/seedream/v4/text-to-image",
+            "edit_endpoint": "fal-ai/bytedance/seedream/v4/edit",
+            "image_field": "image_urls",
+            "image_list": true,
+            "max_images_in": 10,
+            "size": "image_size",
+            "count_field": "num_images",
+            "max_count": 4,
+            "seed_field": "seed",
+            "input": {
+                "enable_safety_checker": false
+            }
+        }
+    },
+    "resolution": "1024x1024",
+    "batch_size": 1
+}

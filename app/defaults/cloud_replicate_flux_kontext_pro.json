@@ -1,0 +1,37 @@
+{
+    "model": {
+        "name": "FLUX Kontext Pro (Replicate)",
+        "architecture": "cloud_image",
+        "description": "Black Forest Labs FLUX.1 Kontext [pro] on Replicate: instruction-based editing of one source image, or text-to-image. About $0.04 per image.",
+        "cloud": {
+            "provider": "replicate",
+            "endpoint": "black-forest-labs/flux-kontext-pro",
+            "image_field": "input_image",
+            "image_list": false,
+            "max_images_in": 1,
+            "size": "aspect_ratio",
+            "aspect_ratios": [
+                "1:1",
+                "16:9",
+                "9:16",
+                "4:3",
+                "3:4",
+                "3:2",
+                "2:3",
+                "4:5",
+                "5:4",
+                "21:9",
+                "9:21",
+                "2:1",
+                "1:2"
+            ],
+            "seed_field": "seed",
+            "input": {
+                "output_format": "png",
+                "safety_tolerance": 2
+            }
+        }
+    },
+    "resolution": "1024x1024",
+    "batch_size": 1
+}
