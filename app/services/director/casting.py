@@ -22,6 +22,8 @@ From the brief (and the skill rules and visual style when given), list the RECUR
 and the main locations, as concrete visual facts a painter could reproduce identically in every shot.
 Return ONLY JSON:
 {{"characters": [{{"name": "short name or role", "role": "story role in a few words",
+  "descriptor": "how a shot names this person without the name, at most 8 words, e.g. 'the teen girl with
+  see-through bangs'",
   "description": "apparent age, origin/ethnicity when it matters to the story or setting, face shape, eyes,
   skin, hair (cut, color, length), build, height, one or two distinctive features",
   "wardrobe": "the exact outfit worn in this production (garments, colors, materials, accessories)"}}],
@@ -33,6 +35,8 @@ Rules:
 - Match the culture, country and era the brief implies (e.g. a Korean drama set in a high school gets Korean
   students in Korean school uniforms and a Korean school building), unless the brief says otherwise.
 - Describe looks only: no personality, no actions, no camera language.
+- Write every field in English, whatever the language of the brief or the skill: they become image prompts.
+  Only names keep their original form.
 - Stay consistent with the visual style; never name a real person."""
 
 
@@ -69,6 +73,7 @@ def normalize_cast(raw: Any) -> dict:
         characters.append({
             "name": name,
             "role": _text(item.get("role"), 120),
+            "descriptor": _text(item.get("descriptor"), 80),
             "description": description,
             "wardrobe": _text(item.get("wardrobe"), 400),
             "image": _text(item.get("image"), 260) or None,
@@ -126,7 +131,8 @@ def planner_characters(cast: dict) -> list[dict]:
     """The cast in the ``characters`` shape every Director planner reads."""
     return [
         {"name": c["name"], "description": c["description"], "wardrobe": c.get("wardrobe", ""),
-         **({"role": c["role"]} if c.get("role") else {})}
+         **({"role": c["role"]} if c.get("role") else {}),
+         **({"descriptor": c["descriptor"]} if c.get("descriptor") else {})}
         for c in cast.get("characters") or []
     ]
 

@@ -840,8 +840,13 @@ def _strip_orphan_before_boilerplate(text: str) -> tuple[str, int]:
 #   stomach", "right hand", "white sweater"). The callback decides
 #   whether to fold it into the noun phrase based on a verb blocklist —
 #   "X's hand reaches" must NOT capture "reaches" into the noun.
+# The descriptor starts at a word boundary (never inside a word such as
+# "over-the-shoulder") and holds no other "the", so the match is the
+# possessor's own noun phrase, not a run of the sentence before it.
+_MAX_DESCRIPTOR_WORDS = 14
+
 _LONG_POSSESSIVE_RE = re.compile(
-    r"(?:\bthe\s+)?([\w][\w\s\-]{8,80}?)'s\s+(\w+)(\s+\w+)?",
+    r"(?:\b(?:the|a|an)\s+)?(?<![\w\-'])(\w(?:(?!\bthe\b)[\w\s\-]){7,79}?)'s\s+(\w+)(\s+\w+)?",
     re.IGNORECASE,
 )
 
@@ -1317,14 +1322,17 @@ def polish_prompts_third_pass(
             if isinstance(c, dict):
                 cid = c.get("id")
                 name = c.get("display_name") or c.get("name")
-                desc = c.get("physical_description") or c.get("description")
+                desc = c.get("descriptor") or c.get("physical_description") or c.get("description")
             else:
                 cid = getattr(c, "id", None)
                 name = getattr(c, "display_name", None)
                 desc = getattr(c, "physical_description", None)
             if cid and name:
                 char_id_to_name[cid] = name
-            if name and desc:
+            # A descriptor stands in for a name inside a sentence; a full
+            # appearance paragraph there ("the About 17, oval face, ...")
+            # wrecks the prompt, so only short ones qualify.
+            if name and desc and len(str(desc).split()) <= _MAX_DESCRIPTOR_WORDS:
                 name_to_desc[name] = desc
         return char_id_to_name, name_to_desc
 

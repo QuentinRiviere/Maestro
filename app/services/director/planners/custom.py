@@ -84,13 +84,16 @@ SCENE_CRAFT = """SCENE CRAFT (this is what separates a real scene from generated
 
 SCENE_DESIGN_SYSTEM = """You are the director preparing the scenes of a short production before shooting.
 From the brief, the skill rules and the cast, design the scenes. Return ONLY a JSON array, one object per scene:
-[{"scene_id": "short_snake_case", "place": "the exact location", "time_of_day": "...",
+[{"scene_id": "short_snake_case", "location": "the cast location this scene is shot in, by its exact name",
+  "place": "the exact location", "time_of_day": "...",
   "light": "one lighting description kept for every shot of this scene",
   "geography": "the layout of the space: where each character stands or moves, which screen side each one keeps",
   "props": ["objects that matter and which hand or place holds them"],
   "beats": ["the dramatic beats of this scene in order, each one action and its reaction"]}]
 Use as few scenes as the story needs (usually one or two for a short piece). Time and light only change
-between scenes, never inside one. Write in English."""
+between scenes, never inside one. When cast locations are listed, every scene takes place in one of them (its
+reference image is the set) and "place" describes that same location; use "" for location only if the story
+truly needs a place the cast lacks. Write in English."""
 
 
 def scene_grammar_block(spec: dict) -> str:
@@ -175,7 +178,9 @@ class CustomSkillPlanner(BasePlanner):
         narrative = spec.get("workflow", "story") == "story" and not clip_durations
         rules = skill_rules_block(spec, options)
         grammar = scene_grammar_block(spec)
-        scenes = self._design_scenes(concept, rules, grammar, characters or []) if narrative else []
+        locations = [loc for loc in kwargs.get("locations") or [] if isinstance(loc, dict) and loc.get("name")]
+        scenes = self._design_scenes(concept, rules, grammar, characters or [], locations) if narrative else []
+        scene_location = {scene["scene_id"]: scene.get("location", "") for scene in scenes}
         scene_ids = [scene["scene_id"] for scene in scenes]
         scene_block = (
             "SCENE DESIGN (fixed; every shot uses one scene_id and keeps its place, light and geography):\n"
@@ -273,6 +278,7 @@ OUTPUT FORMAT — respond with ONLY a JSON array of shot objects:
                 metadata={
                     "skill": spec.get("id"), "skill_version": spec.get("version"), **options,
                     **({"continuity_group": scene_id} if scene_id else {}),
+                    **({"location": scene_location[scene_id]} if scene_location.get(scene_id) else {}),
                     **({"closing_blocking": closing} if closing else {}),
                     **({"keep_sec": keep} if (keep := normalize_keep(raw.get("keep_sec"), duration)) else {}),
                 },
@@ -293,16 +299,20 @@ OUTPUT FORMAT — respond with ONLY a JSON array of shot objects:
                for scene in scenes],
         )
 
-    def _design_scenes(self, concept: str, rules: str, grammar: str, characters: list[dict]) -> list[dict]:
+    def _design_scenes(self, concept: str, rules: str, grammar: str, characters: list[dict],
+                       locations: list[dict] | None = None) -> list[dict]:
         """First pass: place, light, geography and beats of each scene."""
         cast = "\n".join(
             f"- {c.get('name')}: {c.get('description', '')}" for c in characters if isinstance(c, dict)
         )
+        sets = "\n".join(f"- {loc['name']}: {loc.get('description', '')}" for loc in locations or [])
+        location_names = {str(loc["name"]) for loc in locations or []}
         style = str(self.spec.get("style_hint") or "").strip()
         prompt = "\n\n".join(filter(None, [
             f"Brief: {concept}", rules, grammar,
             f"Visual style (the light you choose must respect it): {style}" if style else "",
             f"Cast:\n{cast}" if cast else "",
+            f"Cast locations:\n{sets}" if sets else "",
         ]))
         try:
             raw = self._call_llm_json(user_prompt=prompt, system_prompt=SCENE_DESIGN_SYSTEM,
@@ -319,8 +329,10 @@ OUTPUT FORMAT — respond with ONLY a JSON array of shot objects:
             if scene_id in seen:
                 continue
             seen.add(scene_id)
+            location = str(item.get("location") or "").strip()
             scenes.append({
                 "scene_id": scene_id,
+                "location": location if location in location_names else "",
                 **{key: str(item.get(key) or "")[:400] for key in ("place", "time_of_day", "light", "geography")},
                 "props": [str(p)[:160] for p in (item.get("props") or [])][:6],
                 "beats": [str(b)[:200] for b in (item.get("beats") or [])][:8],

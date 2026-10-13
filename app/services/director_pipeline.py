@@ -4814,6 +4814,14 @@ def _submit_and_wait(
     raise _GenerationTimeoutError(_director_job_outputs(settled))
 
 
+# Prompt lead for a shot edited from its scene's master image (reference 1).
+SCENE_CONTINUITY_PREFIX = (
+    "Same scene and same moment as reference image 1: keep the same location, set dressing, props, light "
+    "and time of day, the same people in the same clothes and hairstyles, and where each one stands in the "
+    "space. Only the camera setup changes, as follows: "
+)
+
+
 def review_pause_seconds() -> float | None:
     """How long the oldest Director review pause has lasted, None without one.
 
@@ -6690,6 +6698,8 @@ def _run_planning_v2(pid: str, params: dict, pipeline_type: str):
         if writer_loaded and not _casting_llm.is_loaded():
             _ensure_llm_loaded(params)
         planner_kwargs["characters"] = params.get("characters", [])
+        # Scenes are set in the cast locations, whose images become the sets.
+        planner_kwargs["locations"] = list((params.get("_director_cast") or {}).get("locations") or [])
         planner_kwargs["shot_image_policy"] = _director_effective_shot_image_policy(params)
         visual_inputs = planning_reference_inputs(params)
         if (
@@ -6788,6 +6798,7 @@ def _run_planning_v2(pid: str, params: dict, pipeline_type: str):
                 shot, "continuity_strategy", "independent"
             ),
             "_director_continuity_group": continuity_group,
+            "_director_location": str(metadata.get("location") or ""),
             "_director_opening_blocking": getattr(
                 shot, "spatial_setup", ""
             ),
@@ -7268,6 +7279,21 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
         )
         print(f"[Pipeline {pid}] Adopted establishing image as shared reference: {anchor_file}")
 
+    # Shots of one scene share its set, light, wardrobe and blocking. The
+    # first image of a scene becomes its master: every later shot of that
+    # scene is edited from the master (and from the shot just before it), so
+    # a new camera angle does not re-invent the room or the costumes.
+    location_labels = list(params.get("location_ref_labels") or [])
+    location_by_name = {
+        str(label): path for label, path in zip(location_labels, location_ref_paths)
+        if label and path and os.path.isfile(path)
+    }
+    first_group = next(
+        (str(p.get("_director_continuity_group") or "") for p in clip_plans
+         if p.get("_director_continuity_group")), "",
+    )
+    scene_masters: dict[str, str] = {}
+
     for i, plan in enumerate(clip_plans):
         if _pipelines[pid]["status"] == "cancelled":
             return clip_images, clip_keyframes
@@ -7275,8 +7301,19 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
         # ── Determine image source: original reference or previous scene's output ──
         image_source = plan.get("image_source", "original")
         source_ref = ref_image_path  # default: user's original reference
+        group = str(plan.get("_director_continuity_group") or "")
+        scene_master = scene_masters.get(group) if group else None
+        previous_in_scene = ""
+        if (
+            scene_master and i > 0 and clip_images[i - 1]
+            and str(clip_plans[i - 1].get("_director_continuity_group") or "") == group
+        ):
+            previous_in_scene = os.path.join(out_dir, clip_images[i - 1])
+        scene_location = location_by_name.get(str(plan.get("_director_location") or ""))
 
-        if image_source == "previous" and i > 0 and clip_images[i - 1]:
+        if scene_master:
+            image_source = "scene"
+        elif image_source == "previous" and i > 0 and clip_images[i - 1]:
             prev_img_path = os.path.join(out_dir, clip_images[i - 1])
             if os.path.isfile(prev_img_path):
                 source_ref = prev_img_path
@@ -7295,7 +7332,17 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
 
         img_t0 = time.time()
         try:
-            if image_source == "previous" and source_ref != ref_image_path:
+            if scene_master:
+                blocking = str(plan.get("_director_opening_blocking") or "").strip()
+                scene_prompt = SCENE_CONTINUITY_PREFIX + prompt
+                if blocking and blocking.lower() not in prompt.lower():
+                    scene_prompt += f" Positions at the start of this shot: {blocking}"
+                supplemental = [r for r in (previous_in_scene, ref_image_path) if r and r != scene_master]
+                print(f"[Pipeline {pid}] Shot {i+1}: same scene as {os.path.basename(scene_master)}"
+                      + (f", after {os.path.basename(previous_in_scene)}" if previous_in_scene else ""))
+                start_img = _gen_image(scene_prompt, scene_master,
+                                       supplemental_refs=supplemental + valid_character_refs)
+            elif image_source == "previous" and source_ref != ref_image_path:
                 # Dual reference: previous scene output as primary + original reference for character identity
                 # _gen_image puts source_ref first, then extra_refs (which includes character/location refs).
                 # We temporarily prepend the original ref to extra_refs so the model sees both.
@@ -7303,9 +7350,18 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
                 extra_refs.insert(0, ref_image_path)
                 start_img = _gen_image(prompt, source_ref, include_extra_refs=True)
                 extra_refs[:] = saved_extras  # restore
+            elif group and location_by_name:
+                # First shot of a scene: its own set (not every location of
+                # the project) plus the cast. A later scene starts from its
+                # set rather than from the anchor of the first one.
+                source = ref_image_path if (group == first_group or not scene_location) else scene_location
+                sets = [scene_location] if scene_location and scene_location != source else []
+                start_img = _gen_image(prompt, source, supplemental_refs=sets + valid_character_refs)
             else:
                 start_img = _gen_image(prompt, ref_image_path)
             clip_images.append(start_img)
+            if group and start_img and group not in scene_masters:
+                scene_masters[group] = os.path.join(out_dir, start_img)
         except _GenerationTimeoutError:
             raise
         except Exception as e:
