@@ -211,9 +211,13 @@ OUTPUT FORMAT — respond with ONLY a JSON array of shot objects:
 
         shot_dicts = self._call_llm_json(
             user_prompt=user_prompt, system_prompt=system_prompt,
-            max_tokens=max(1536, target_scenes * 520 + 768),
+            max_tokens=max(2048, target_scenes * 900 + 1024),
             image_paths=[reference_image_path] if has_reference else None,
         )
+        # A truncated answer can end on an empty shell; never render one.
+        shot_dicts = [raw for raw in shot_dicts or [] if isinstance(raw, dict)
+                      and any(raw.get(key) for key in ("action_beats", "scene_goal", "dialogue_beats",
+                                                       "opening_blocking", "closing_blocking", "subjects_on_screen"))]
         if not shot_dicts:
             raise ValueError("The LLM returned no shots")
         if clip_durations:
@@ -292,7 +296,12 @@ OUTPUT FORMAT — respond with ONLY a JSON array of shot objects:
         cast = "\n".join(
             f"- {c.get('name')}: {c.get('description', '')}" for c in characters if isinstance(c, dict)
         )
-        prompt = "\n\n".join(filter(None, [f"Brief: {concept}", rules, grammar, f"Cast:\n{cast}" if cast else ""]))
+        style = str(self.spec.get("style_hint") or "").strip()
+        prompt = "\n\n".join(filter(None, [
+            f"Brief: {concept}", rules, grammar,
+            f"Visual style (the light you choose must respect it): {style}" if style else "",
+            f"Cast:\n{cast}" if cast else "",
+        ]))
         try:
             raw = self._call_llm_json(user_prompt=prompt, system_prompt=SCENE_DESIGN_SYSTEM,
                                       max_tokens=2048, temperature=0.5)
