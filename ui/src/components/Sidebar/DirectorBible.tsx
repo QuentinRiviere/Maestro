@@ -117,6 +117,24 @@ export function DirectorBiblePicker({ disabled }: { disabled: boolean }) {
   )
 }
 
+/** Opens the bible manager from the Director header, whatever the current step. */
+export function BiblesButton() {
+  const bibleId = useStore(s => s.directorBibleId)
+  const [open, setOpen] = useState(false)
+  return (
+    <>
+      <button
+        onClick={() => setOpen(true)}
+        className="text-[10px] text-accent-blue hover:text-accent-blue/80 flex items-center gap-0.5 transition-colors"
+        title="Series bibles: approved characters, places, props, looks and world rules"
+      >
+        <BookOpen size={10} /> Bibles
+      </button>
+      {open && <BibleManagerDialog initialId={bibleId || undefined} onClose={() => setOpen(false)} />}
+    </>
+  )
+}
+
 /** Keep an approved cast for later episodes: a new bible, or merged into an existing one. */
 export function SaveCastToBible({ pid, compact = false }: { pid: string; compact?: boolean }) {
   const currentBible = useStore(s => (s.pipelineId === pid ? s.pipelineStatus?.bible?.id : '') ?? '')

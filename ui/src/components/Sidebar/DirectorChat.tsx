@@ -5,7 +5,7 @@ import { Upload, Loader2, Music, RotateCcw, Check, X, ChevronRight, ChevronDown,
 import { useStore, isPlannerSkill, directorModelUsesFixedMediaStrength, getFamiliesForMode, getModelsForFamily, resolveResolution } from '../../stores/useStore'
 import { DirectorLiveCast, DirectorReviewGate } from './DirectorReviewGate'
 import { DirectorSkillPicker } from './DirectorSkillPicker'
-import { DirectorBiblePicker } from './DirectorBible'
+import { BiblesButton, DirectorBiblePicker } from './DirectorBible'
 import { skillIcon } from '../../lib/skillIcons'
 import { fetchModelOptions, getFileUrl } from '../../api/client'
 import { DirectorLoraSelector } from '../SettingsDrawer/DirectorLoraSelector'
@@ -851,6 +851,7 @@ export function DirectorChat() {
             >
               Dashboard
             </button>
+            <BiblesButton />
             {(skill || step !== 'upload') && (
               <button
                 onClick={reset}
