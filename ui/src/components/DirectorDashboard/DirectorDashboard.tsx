@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef, Component, type ReactNode } from 'react'
-import { X, ChevronDown, ChevronRight, Play, ImageIcon, Check, AlertTriangle, Clock, Brain, Sparkles, Loader2, Camera, Film, Combine, Pencil, Trash2 } from 'lucide-react'
+import { X, ChevronDown, ChevronRight, Play, ImageIcon, Check, AlertTriangle, Clock, Brain, Sparkles, Loader2, Camera, Film, Combine, Pencil, Trash2, BookOpen } from 'lucide-react'
 import { useStore } from '../../stores/useStore'
 import { getFileUrl, updateClipPrompt } from '../../api/client'
 import type { PipelineClipState, SavedPipelineState } from '../../types'
 import { QualityReviewPanel } from './QualityReviewPanel'
+import { SaveCastToBible } from '../Sidebar/DirectorBible'
 
 /** Safely coerce any value to a displayable string */
 function safeStr(val: unknown): string {
@@ -552,6 +553,7 @@ function DirectorDashboardInner() {
   const deletePipeline = useStore(s => s.deletePipeline)
   const loadDirectorFromPipeline = useStore(s => s.loadDirectorFromPipeline)
   const [resuming, setResuming] = useState(false)
+  const [bibleFor, setBibleFor] = useState<string | null>(null)
   // Keyed by pipeline id — a bare boolean would let "arm on pipeline A,
   // switch to B, click once" delete B without a confirm.
   const [confirmDeletePid, setConfirmDeletePid] = useState<string | null>(null)
@@ -782,6 +784,16 @@ function DirectorDashboardInner() {
               <Pencil size={10} />
               Open &amp; Edit
             </button>
+            {(selectedPipeline.cast?.characters?.length || selectedPipeline.cast?.locations?.length) ? (
+              <button
+                onClick={() => setBibleFor(b => (b === selectedPipeline.pipeline_id ? null : selectedPipeline.pipeline_id))}
+                className="flex items-center gap-1 px-2 py-1 text-[10px] bg-accent-blue/10 border border-accent-blue/30 rounded text-accent-blue hover:bg-accent-blue/20 transition-colors"
+                title="Keep this project's cast in a bible, to start later episodes from it"
+              >
+                <BookOpen size={10} />
+                To bible
+              </button>
+            ) : null}
             <button
               onClick={() => {
                 if (!selectedPipeline) return
@@ -835,6 +847,11 @@ function DirectorDashboardInner() {
               <span className="text-[9px] text-red-400 max-w-[200px] truncate" title={regenError || repair?.error || repair?.message || undefined}>
                 {regenError || repair?.error || repair?.message}
               </span>
+            )}
+            {bibleFor === selectedPipeline.pipeline_id && (
+              <div className="basis-full max-w-md">
+                <SaveCastToBible pid={selectedPipeline.pipeline_id} compact />
+              </div>
             )}
           </div>
         )}

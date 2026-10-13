@@ -5,7 +5,7 @@ import type { SavedOmniCharacter, TtsVoice } from '../types'
 import { applyTtsVoices, ttsAudioModeForCount, ttsCharacterEnhancePrompt, ttsSpeakingVoiceCount, ttsVoiceLimit, ttsVoicePaths } from '../lib/ttsVoices'
 import { vigglePreparationKey, viggleTimeline } from '../lib/viggle'
 import { DEFAULT_AVATAR_SPEAKER_LOCATIONS, isLongCatAvatarModel, isMultiSpeakerAvatarModel, parseAvatarSpeakerRegions } from '../lib/avatarWorkflow'
-import type { GenerateParams, OutputFile, MediaFilter, AspectRatio, ResolutionPreset, ScailResolutionProfile, GenerationJob, ModelFamily, ModelDef, GenerationMode, StudioVideoWorkflow, StudioVideoCreateRoute, StudioVideoEffectiveCreateRoute, StudioImageWorkflow, ModelOptions, SystemConfig, SettingsTab, OutputMetadata, MultiClip, ServicesConfig, LlmStatus, LlmModelOption, AudioAnalysisResult, PlannedClip, ClipPlan, DirectorClipImage, DirectorImageGenProgress, SpeakerMapping, DirectorSkill, DirectorShotImageGuidance, ShortFilmCharacter, ShortFilmPath, ViralPlatform, ViralStyle, CivitAIModel, CivitAIDownload, PipelineListItem, PipelineClipState, PipelineRepairState, SavedPipelineState, DirectorQueueState, SystemDetectResponse, SystemStats, RecastCharacterMapping, RepaintRegionMapping, H3WindowPlan, MiniMaxH3Reference, AppMode } from '../types'
+import type { GenerateParams, OutputFile, MediaFilter, AspectRatio, ResolutionPreset, ScailResolutionProfile, GenerationJob, ModelFamily, ModelDef, GenerationMode, StudioVideoWorkflow, StudioVideoCreateRoute, StudioVideoEffectiveCreateRoute, StudioImageWorkflow, ModelOptions, SystemConfig, SettingsTab, OutputMetadata, MultiClip, ServicesConfig, LlmStatus, LlmModelOption, AudioAnalysisResult, PlannedClip, ClipPlan, DirectorClipImage, DirectorImageGenProgress, SpeakerMapping, DirectorSkill, DirectorShotImageGuidance, DirectorBibleSelection, ShortFilmCharacter, ShortFilmPath, ViralPlatform, ViralStyle, CivitAIModel, CivitAIDownload, PipelineListItem, PipelineClipState, PipelineRepairState, SavedPipelineState, DirectorQueueState, SystemDetectResponse, SystemStats, RecastCharacterMapping, RepaintRegionMapping, H3WindowPlan, MiniMaxH3Reference, AppMode } from '../types'
 import * as api from '../api/client'
 import { applyThemePrefs, getStoredPrefs, type FamilyId, type ThemeMode, type ThemePrefs } from '../lib/theme'
 import {
@@ -2158,6 +2158,7 @@ interface AppState {
   directorAutoMode: boolean
   directorCasting: boolean
   directorBibleId: string
+  directorBibleSelection: DirectorBibleSelection
   directorStoryboardReview: boolean
   directorSeamless: boolean
   directorShotImageGuidance: DirectorShotImageGuidance
@@ -2187,6 +2188,7 @@ interface AppState {
   setDirectorAutoMode: (v: boolean) => void
   setDirectorCasting: (v: boolean) => void
   setDirectorBibleId: (v: string) => void
+  setDirectorBibleSelection: (v: DirectorBibleSelection) => void
   setDirectorStoryboardReview: (v: boolean) => void
   setDirectorSeamless: (v: boolean) => void
   setDirectorShotImageGuidance: (v: DirectorShotImageGuidance) => void
@@ -2576,6 +2578,7 @@ async function _buildDirectorRestorePatch(
     directorAutoMode: ui.directorAutoMode == null ? pipeline.auto_mode : Boolean(ui.directorAutoMode),
     directorCasting: ui.directorCasting == null ? true : Boolean(ui.directorCasting),
     directorBibleId: typeof ui.directorBibleId === 'string' ? ui.directorBibleId : String(params.bible_id || ''),
+    directorBibleSelection: _record(ui.directorBibleSelection) as DirectorBibleSelection,
     directorStoryboardReview: Boolean(ui.directorStoryboardReview),
     directorSeamless: ui.directorSeamless == null ? pipeline.seamless : Boolean(ui.directorSeamless),
     directorShotImageGuidance: (ui.directorShotImageGuidance || pipeline.shot_image_guidance || 'auto') as DirectorShotImageGuidance,
@@ -10348,6 +10351,7 @@ export const useStore = create<AppState>((set, get) => ({
   directorAutoMode: true,
   directorCasting: true,
   directorBibleId: '',
+  directorBibleSelection: {},
   directorStoryboardReview: false,
   directorSeamless: false,
   directorShotImageGuidance: 'auto' as DirectorShotImageGuidance,
@@ -10403,7 +10407,8 @@ export const useStore = create<AppState>((set, get) => ({
   directorProjectId: null,
   setDirectorAutoMode: (v) => set({ directorAutoMode: v }),
   setDirectorCasting: (v) => set({ directorCasting: v }),
-  setDirectorBibleId: (v) => set({ directorBibleId: v }),
+  setDirectorBibleId: (v) => set({ directorBibleId: v, directorBibleSelection: {} }),
+  setDirectorBibleSelection: (v) => set({ directorBibleSelection: v }),
   setDirectorStoryboardReview: (v) => set({ directorStoryboardReview: v }),
   setDirectorSeamless: (v) => set({ directorSeamless: v }),
   setDirectorShotImageGuidance: (v) => set({
@@ -14072,6 +14077,12 @@ export const useStore = create<AppState>((set, get) => ({
         ? true : directorAutoMode,
       director_casting: state.directorCasting ? 'auto' : 'off',
       bible_id: state.directorBibleId || undefined,
+      ...(state.directorBibleId ? {
+        bible_characters: state.directorBibleSelection.characters,
+        bible_locations: state.directorBibleSelection.locations,
+        bible_props: state.directorBibleSelection.props,
+        bible_variants: state.directorBibleSelection.variants,
+      } : {}),
       storyboard_review: state.directorStoryboardReview || undefined,
       workspace: get().activeWorkspace,
       _director_project_id: state.directorProjectId || undefined,
@@ -14201,6 +14212,7 @@ export const useStore = create<AppState>((set, get) => ({
         directorAutoMode: state.directorAutoMode,
         directorCasting: state.directorCasting,
         directorBibleId: state.directorBibleId,
+        directorBibleSelection: state.directorBibleSelection,
         directorStoryboardReview: state.directorStoryboardReview,
         directorSeamless: state.directorSeamless,
         directorShotImageGuidance: state.directorShotImageGuidance,

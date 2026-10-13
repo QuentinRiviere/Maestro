@@ -6,6 +6,14 @@ export interface ModelFamily {
 
 export type DirectorPipelineType = 'music_video' | 'short_film_audio' | 'short_film_story'
 export type DirectorShotImageGuidance = 'auto' | 'prompt_only' | 'generate'
+
+/** The bible entries and looks one project uses; a missing list means every entry. */
+export interface DirectorBibleSelection {
+  characters?: string[]
+  locations?: string[]
+  props?: string[]
+  variants?: Record<string, string>
+}
 export type DirectorShotImagePolicy = 'generate' | 'prompt_only' | 'direct_references'
 
 export interface DirectorCapabilityResult {
@@ -2050,6 +2058,8 @@ export interface PipelineRepairState {
 export interface SavedPipelineState {
   version: number
   pipeline_id: string
+  /** Cast of the project (characters and locations with their reference images). */
+  cast?: { characters?: unknown[]; locations?: unknown[] } | null
   /** Stable project lineage. Every rerun is a new immutable pipeline revision. */
   project_id?: string
   parent_pipeline_id?: string | null
