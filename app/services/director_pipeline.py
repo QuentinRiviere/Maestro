@@ -1321,6 +1321,11 @@ def _save_pipeline_state_locked(pid: str) -> bool:
             "_director_environment": plan.get("_director_environment"),
             "_director_opening_blocking": plan.get("_director_opening_blocking"),
             "_director_closing_blocking": plan.get("_director_closing_blocking"),
+            # Scene bookkeeping the storyboard uses to keep a scene's set.
+            "_director_continuity_group": plan.get("_director_continuity_group"),
+            "_director_continuity_strategy": plan.get("_director_continuity_strategy"),
+            "_director_location": plan.get("_director_location"),
+            "_director_keep_sec": plan.get("_director_keep_sec"),
             "_director_audio_plan": plan.get("_director_audio_plan"),
             "image_prompt_pre_polish": pre_polish[i].get("image_prompt", "") if i < len(pre_polish) else None,
             "video_prompt_pre_polish": pre_polish[i].get("video_prompt", "") if i < len(pre_polish) else None,
@@ -4826,6 +4831,48 @@ SCENE_CONTINUITY_PREFIX = (
     "space. Only the camera setup changes, as follows: "
 )
 
+# How each image editor takes references for a storyboard shot: how many it
+# handles before it starts collaging them, and how its prompts name them
+# (Qwen-Image-Edit is trained on "Picture 1", Flux and Seedream on "image 1").
+_IMAGE_REF_PROFILES = (
+    ("qwen_image", {"max_refs": 3, "label": "Picture"}),
+    ("cloud_fal_seedream", {"max_refs": 4, "label": "image"}),
+    ("cloud_replicate_seedream", {"max_refs": 4, "label": "image"}),
+    ("cloud_fal_nano_banana", {"max_refs": 4, "label": "image"}),
+    ("cloud_replicate_nano_banana", {"max_refs": 4, "label": "image"}),
+)
+
+
+def image_ref_profile(image_model: str) -> dict:
+    model = str(image_model or "").lower()
+    for prefix, profile in _IMAGE_REF_PROFILES:
+        if model.startswith(prefix):
+            return profile
+    return {"max_refs": None, "label": "image"}
+
+
+def scene_continuity_prefix(image_model: str) -> str:
+    """The scene lead, naming reference 1 the way the editor was trained to read it."""
+    if image_ref_profile(image_model)["label"] == "Picture":
+        return SCENE_CONTINUITY_PREFIX.replace("reference image 1", "Picture 1")
+    return SCENE_CONTINUITY_PREFIX
+
+
+def scene_refs(image_model: str, master: str, characters: list[str], extras: list[str]) -> tuple[str, list[str]]:
+    """Source and supplemental refs for a scene shot, trimmed to what the editor handles.
+
+    The master (the scene's set, light and blocking) always comes first, then
+    the character sheets (identity), then the previous shot and the anchor.
+    """
+    maximum = image_ref_profile(image_model)["max_refs"]
+    ordered = list(dict.fromkeys(r for r in [*extras, *characters] if r and r != master))
+    if maximum:
+        keep = [r for r in characters if r in ordered][: maximum - 1]
+        keep += [r for r in extras if r in ordered and r not in keep][: maximum - 1 - len(keep)]
+        ordered = [r for r in [*extras, *characters] if r in keep]
+        ordered = list(dict.fromkeys(ordered))
+    return master, ordered
+
 
 def review_pause_seconds() -> float | None:
     """How long the oldest Director review pause has lasted, None without one.
@@ -5296,6 +5343,10 @@ def _resume_pipeline_reserved(pid: str, out_dir: str) -> tuple[bool, str]:
         "_director_environment": c.get("_director_environment"),
         "_director_opening_blocking": c.get("_director_opening_blocking"),
         "_director_closing_blocking": c.get("_director_closing_blocking"),
+        "_director_continuity_group": c.get("_director_continuity_group"),
+        "_director_continuity_strategy": c.get("_director_continuity_strategy"),
+        "_director_location": c.get("_director_location"),
+        "_director_keep_sec": c.get("_director_keep_sec"),
         "_director_audio_plan": c.get("_director_audio_plan"),
     } for c in saved_clips]
     planned_clips = [c.get("planned_clip") for c in saved_clips]
@@ -5597,7 +5648,30 @@ def _run_pipeline(pid: str, resume: bool = False):
 
         # On resume the saved clip_plans are ALREADY polished — re-polishing
         # would compound edits and drift the prompts, so skip the whole block.
-        if reused_plan:
+        # A prepared revision may ask for its image prompts to be rewritten
+        # for another image model (same plan, that model's prompt dialect).
+        if (
+            prepared_plans and not resume_plans and requires_shot_images
+            and params.get("repolish_image_prompts") and polish_mode == "third_pass"
+        ):
+            try:
+                from services.director.prompt_polish import polish_prompts_third_pass
+                _ensure_llm_loaded(params)
+                _update_pipeline(pid, phase="polishing_prompts", progress={
+                    "current": 0, "total": len(clip_plans),
+                    "message": f"Rewriting image prompts for {params.get('image_model')}...",
+                    "step": 0, "total_steps": 0,
+                })
+                clip_plans = polish_prompts_third_pass(
+                    clip_plans, params.get("video_model", ""), params.get("image_model", ""),
+                    False, image_loras=(params.get("image_loras") or {}).get("activated_loras", []),
+                    characters=params.get("characters", []) or [],
+                    polish_video_prompts=False, polish_image_prompts=True,
+                )
+                print(f"[Pipeline {pid}] Rewrote {len(clip_plans)} image prompt(s) for {params.get('image_model')}")
+            except Exception as e:
+                print(f"[Pipeline {pid}] Image prompt rewrite failed (non-fatal): {e}")
+        elif reused_plan:
             pass
         elif polish_mode == "third_pass" and clip_plans:
             try:
@@ -7166,6 +7240,11 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
             all_refs,
             pid=pid,
         )
+        # Past this many references the editor collages them instead of
+        # editing reference 1 (see image_ref_profile).
+        ref_budget = image_ref_profile(image_model)["max_refs"]
+        if ref_budget and len(all_refs) > ref_budget:
+            all_refs = all_refs[:ref_budget]
         print(f"[Pipeline {pid}] _gen_image: {len(all_refs)} refs: {[os.path.basename(r) for r in all_refs]}")
         gen_params: dict = {
             "model_type": image_model,
@@ -7339,14 +7418,16 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
         try:
             if scene_master:
                 blocking = str(plan.get("_director_opening_blocking") or "").strip()
-                scene_prompt = SCENE_CONTINUITY_PREFIX + prompt
+                scene_prompt = scene_continuity_prefix(image_model) + prompt
                 if blocking and blocking.lower() not in prompt.lower():
                     scene_prompt += f" Positions at the start of this shot: {blocking}"
-                supplemental = [r for r in (previous_in_scene, ref_image_path) if r and r != scene_master]
+                _master, supplemental = scene_refs(
+                    image_model, scene_master, valid_character_refs,
+                    [r for r in (previous_in_scene, ref_image_path) if r],
+                )
                 print(f"[Pipeline {pid}] Shot {i+1}: same scene as {os.path.basename(scene_master)}"
                       + (f", after {os.path.basename(previous_in_scene)}" if previous_in_scene else ""))
-                start_img = _gen_image(scene_prompt, scene_master,
-                                       supplemental_refs=supplemental + valid_character_refs)
+                start_img = _gen_image(scene_prompt, scene_master, supplemental_refs=supplemental)
             elif image_source == "previous" and source_ref != ref_image_path:
                 # Dual reference: previous scene output as primary + original reference for character identity
                 # _gen_image puts source_ref first, then extra_refs (which includes character/location refs).

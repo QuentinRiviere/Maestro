@@ -83,6 +83,24 @@ class SceneContinuityImageTests(unittest.TestCase):
         self.assertNotIn(pipeline.SCENE_CONTINUITY_PREFIX, requests[3]["prompt"])
 
 
+class ImageRefProfileTests(unittest.TestCase):
+    def test_qwen_gets_three_refs_named_pictures(self):
+        master, refs = pipeline.scene_refs("qwen_image_edit_2511_20B_fp8_lightning_8step", "m.jpg",
+                                           ["girl.jpg", "boy.jpg"], ["prev.jpg", "anchor.jpg"])
+        self.assertEqual((master, refs), ("m.jpg", ["girl.jpg", "boy.jpg"]))
+        self.assertIn("Picture 1", pipeline.scene_continuity_prefix("qwen_image_edit_plus_20B"))
+
+    def test_seedream_keeps_the_previous_shot_when_room_is_left(self):
+        _, refs = pipeline.scene_refs("cloud_fal_seedream_4", "m.jpg", ["girl.jpg", "boy.jpg"],
+                                      ["prev.jpg", "anchor.jpg"])
+        self.assertEqual(refs, ["prev.jpg", "girl.jpg", "boy.jpg"])
+
+    def test_flux_keeps_every_reference(self):
+        _, refs = pipeline.scene_refs("flux2_klein_9b", "m.jpg", ["girl.jpg"], ["prev.jpg", "anchor.jpg"])
+        self.assertEqual(refs, ["prev.jpg", "anchor.jpg", "girl.jpg"])
+        self.assertIn("reference image 1", pipeline.scene_continuity_prefix("flux2_klein_9b"))
+
+
 class CastLocationTests(unittest.TestCase):
     def test_cast_keeps_a_short_descriptor_for_prompts(self):
         cast = casting.normalize_cast({"characters": [{
