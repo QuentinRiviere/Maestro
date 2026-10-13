@@ -36,7 +36,8 @@ function useReadsImages(modelType: string): boolean {
   })
 }
 const BIBLE_MODEL_KEY = 'maestro.bibleImageModel'
-const PREFERRED_BIBLE_MODELS = ['cloud_fal_seedream_4', 'cloud_replicate_seedream_4', 'cloud_fal_nano_banana']
+// Nano Banana keeps faces natural; Seedream 4 over-sharpens them (halos, waxy skin, odd ears).
+const PREFERRED_BIBLE_MODELS = ['cloud_fal_nano_banana', 'cloud_replicate_nano_banana', 'cloud_fal_seedream_4']
 const readStoredModel = () => { try { return window.localStorage.getItem(BIBLE_MODEL_KEY) } catch { return null } }
 
 /** The image model bibles render with: picked on the Bibles page, apart from the Director's own model. */
@@ -83,7 +84,7 @@ function BibleModelPicker({ value, onChange }: { value: string; onChange: (model
     </select>
   )
 }
-const TEXT_ONLY_NOTE = 'cannot read an image: looks other than Default need a model that reads images to keep the same person or place. Pick one (Seedream 4, Nano Banana, FLUX Kontext, Klein, Qwen-Image-Edit) in the model menu at the top of the page.'
+const TEXT_ONLY_NOTE = 'cannot read an image: looks other than Default need a model that reads images to keep the same person or place. Pick one (Nano Banana, Seedream 4, FLUX Kontext, Klein, Qwen-Image-Edit) in the model menu at the top of the page.'
 
 const lookCount = (bible: DirectorBible) => (['characters', 'locations', 'props'] as const)
   .reduce((count, plural) => count + bible[plural].reduce((n, e) => n + e.variants.length, 0), 0)
