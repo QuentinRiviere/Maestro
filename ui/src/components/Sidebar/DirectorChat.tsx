@@ -244,6 +244,45 @@ function EnergyDot({ energy }: { energy: number }) {
 }
 
 // Chat bubble wrapper
+const SESSION_STATUS_LABEL: Record<string, string> = {
+  running: 'running', paused: 'paused', completed: 'done', failed: 'failed', cancelled: 'stopped',
+}
+
+/** Reopen an earlier Director session: live runs reattach, finished ones load. */
+function DirectorSessionSelect() {
+  const pipelines = useStore(s => s.dashboardPipelineList)
+  const pipelineId = useStore(s => s.pipelineId)
+  const recent = pipelines.slice(0, 30)
+
+  const open = (id: string) => {
+    const item = recent.find(entry => entry.id === id)
+    if (!item || id === pipelineId) return
+    const state = useStore.getState()
+    if (item.status === 'running' || item.status === 'paused') void state.reattachDirectorPipeline(id, true)
+    else void state.loadDirectorFromPipeline(id)
+  }
+
+  return (
+    <select
+      value={recent.some(entry => entry.id === pipelineId) ? pipelineId ?? '' : ''}
+      onFocus={() => void useStore.getState().loadPipelineList()}
+      onChange={event => open(event.target.value)}
+      aria-label="Reopen a Director session"
+      title="Reopen a Director session"
+      className="max-w-[9rem] truncate bg-bg-tertiary border border-border rounded px-1 py-0.5 text-[10px] text-text-secondary focus:outline-none focus:border-accent-blue"
+    >
+      <option value="">Sessions…</option>
+      {recent.map(entry => (
+        <option key={entry.id} value={entry.id}>
+          {new Date(entry.created_at * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+          {' · '}{SESSION_STATUS_LABEL[entry.status] ?? entry.status}
+          {' · '}{(entry.scene_description || entry.pipeline_type).slice(0, 40)}
+        </option>
+      ))}
+    </select>
+  )
+}
+
 function SystemBubble({ children }: { children: React.ReactNode }) {
   return (
     <div className="bg-bg-tertiary/50 rounded-lg p-3 border border-border/50 space-y-2">
@@ -803,6 +842,7 @@ export function DirectorChat() {
             )}
           </div>
           <div className="flex items-center gap-2">
+            <DirectorSessionSelect />
             <button
               onClick={() => useStore.getState().setDashboardOpen(true)}
               className="text-[10px] text-accent-blue hover:text-accent-blue/80 flex items-center gap-0.5 transition-colors"
