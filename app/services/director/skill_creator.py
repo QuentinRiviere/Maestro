@@ -75,12 +75,12 @@ does and why, how long shots hold, where actors look, what the light is), never 
 ("cinematic", "emotional", "dynamic", "beautiful"). Camera moves must be motivated by a story beat, never
 decorative. Each shot is generated alone by an image-to-video model: never ask for freeze frames, slow motion,
 speed ramps, split screens or on-screen text; describe the camera and the performance instead.
-Never let goal, structure, pacing or do ask for something that dont forbids; cutting_rhythm stays within
-shot_duration. At most 4 options, only when users genuinely need to choose."""
+Never let goal, structure, pacing or do ask for something that dont forbids. shot_duration is the rendered
+length of a shot; cutting_rhythm is how much of it the edit keeps, so it may be shorter but never longer. At most 4 options, only when users genuinely need to choose."""
 
 REPAIR_SYSTEM = """You fix a DIRECTOR SKILL definition. Keep its intent, language and every field that has no
 problem; resolve each listed problem (remove contradictions by keeping the rule that fits the skill's intent,
-replace unrenderable effects with camera and performance direction, align cutting_rhythm with shot_duration,
+replace unrenderable effects with camera and performance direction, keep cutting_rhythm no longer than shot_duration,
 fill an empty scene_grammar from the genre's real film grammar). Rules are concrete filmmaking direction, never
 aesthetic adjectives. Return ONLY the full corrected JSON definition, same shape as the input."""
 

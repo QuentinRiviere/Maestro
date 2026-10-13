@@ -369,10 +369,13 @@ def lint_spec(spec: dict) -> list[dict]:
     shot = spec.get("shot_duration") or []
     if bounds and len(shot) == 2:
         low, high = float(shot[0]), float(shot[1])
-        if bounds[0] < low - _RHYTHM_TOLERANCE or bounds[1] > high + _RHYTHM_TOLERANCE:
+        # Shots render at shot_duration and the tight edit keeps a part of
+        # each, so edited lengths below the render range are expected; only a
+        # cut longer than any rendered shot is impossible.
+        if bounds[1] > high + _RHYTHM_TOLERANCE:
             warnings.append({"code": "rhythm_mismatch", "fields": ["scene_grammar.cutting_rhythm", "shot_duration"],
-                             "message": f"cutting_rhythm names shots of {bounds[0]:g}-{bounds[1]:g} s but "
-                                        f"shot_duration allows {low:g}-{high:g} s: align them."})
+                             "message": f"cutting_rhythm names shots up to {bounds[1]:g} s but shots render at "
+                                        f"most {high:g} s: lengthen shot_duration or shorten the cuts."})
     if not any(str(grammar.get(field) or "").strip() for field in SCENE_GRAMMAR_FIELDS):
         warnings.append({"code": "no_scene_grammar", "fields": ["scene_grammar"],
                          "message": "No scene grammar: the planner gets no coverage, cutting or continuity logic "

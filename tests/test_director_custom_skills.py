@@ -102,10 +102,11 @@ class LintTests(unittest.TestCase):
 
     def test_rhythm_mismatch(self):
         rhythm = {**GRAMMAR, "cutting_rhythm": "Réactions 1,5 à 3 s, plans d'ensemble 3-5 secondes."}
-        warnings = self.lint({"goal": "x"}, grammar=rhythm, shot=(3, 8))
+        # Cuts shorter than the rendered shot are the tight edit's job.
+        self.assertEqual(self.lint({"goal": "x"}, grammar=rhythm, shot=(5, 8)), [])
+        warnings = self.lint({"goal": "x"}, grammar=rhythm, shot=(2, 4))
         self.assertEqual(self.codes(warnings), ["rhythm_mismatch"])
-        self.assertIn("1.5-5 s", warnings[0]["message"])
-        self.assertEqual(self.lint({"goal": "x"}, grammar=rhythm, shot=(2, 5)), [])
+        self.assertIn("up to 5 s", warnings[0]["message"])
 
     def test_missing_scene_grammar_is_flagged(self):
         self.assertEqual(self.codes(self.lint({"goal": "x"}, grammar=None)), ["no_scene_grammar"])
