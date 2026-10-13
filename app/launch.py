@@ -11008,12 +11008,14 @@ def director_bible_image(bible_id: str, name: str):
 async def director_pipeline_save_to_bible(pid: str, request: Request):
     """Save a project's cast and style into a new bible, or merge them into one."""
     from services.director.bibles import add_cast
-    from services.director_pipeline import get_pipeline_status
+    from services.director_pipeline import get_pipeline, load_pipeline_state
     body = await request.json() if request.headers.get("content-length", "0") != "0" else {}
     body = body if isinstance(body, dict) else {}
     base = wgp.server_config.get("save_path", "outputs")
-    p = get_pipeline_status(pid, base) or {}
-    cast = p.get("cast") or {}
+    # A running project holds its cast in memory; a finished one in its saved state.
+    p = get_pipeline(pid) or load_pipeline_state(base, pid) or {}
+    params = p.get("params") or p.get("_params_snapshot") or {}
+    cast = p.get("cast") or params.get("_director_cast") or {}
     if not (cast.get("characters") or cast.get("locations")):
         raise HTTPException(status_code=400, detail="This project has no cast to save")
     folders = [p.get("out_dir"), _director_state_dir(pid, p.get("out_dir") or base), base]
@@ -11021,8 +11023,7 @@ async def director_pipeline_save_to_bible(pid: str, request: Request):
         _bible_call, add_cast, cast, [f for f in folders if f],
         bible_id=str(body.get("bible_id") or "") or None,
         name=str(body.get("name") or ""),
-        style=p.get("style_contract")
-        or (p.get("params") or p.get("_params_snapshot") or {}).get("_director_style_contract"),
+        style=p.get("style_contract") or params.get("_director_style_contract"),
     )
     return {"bible": bible}
 
