@@ -10764,6 +10764,37 @@ def director_pipeline_status(pid: str):
     return p
 
 
+@api.get("/api/v1/director/pipeline/{pid}/cast/{kind}/{index}/image")
+def director_cast_image(pid: str, kind: str, index: int):
+    """Serve one cast reference image (character sheet or location plate)."""
+    from services.director_pipeline import get_pipeline_status
+    base = wgp.server_config.get("save_path", "outputs")
+    p = get_pipeline_status(pid, base) or {}
+    entries = (p.get("cast") or {}).get("characters" if kind == "character" else "locations") or []
+    if kind not in ("character", "location") or not 0 <= index < len(entries) or not entries[index].get("image"):
+        raise HTTPException(status_code=404, detail="Cast image not found")
+    name = os.path.basename(entries[index]["image"])
+    folders = [p.get("out_dir"), _director_state_dir(pid, p.get("out_dir") or base), base]
+    path = next((os.path.join(f, name) for f in folders if f and os.path.isfile(os.path.join(f, name))), "")
+    if not path:
+        raise HTTPException(status_code=404, detail="Cast image not found")
+    return FileResponse(path)
+
+
+@api.post("/api/v1/director/pipeline/{pid}/cast/{kind}/{index}/regenerate")
+async def director_cast_regenerate(pid: str, kind: str, index: int, request: Request):
+    """Edit one cast entry and render it again while the project waits on cast review."""
+    from services.director_pipeline import regenerate_cast_entry
+    if kind not in ("character", "location"):
+        raise HTTPException(status_code=404, detail="Unknown cast kind")
+    body = await request.json() if request.headers.get("content-length", "0") != "0" else {}
+    try:
+        cast = await asyncio.to_thread(regenerate_cast_entry, pid, kind, index, body if isinstance(body, dict) else {})
+        return {"cast": cast}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 # ── Director skills (declarative custom skills + Skill Creator) ──────────
 
 

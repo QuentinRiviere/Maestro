@@ -117,7 +117,8 @@ class CustomSkillPlanner(BasePlanner):
 
         char_profiles = [
             CharacterProfile(id=f"char_{i}", display_name=c.get("name", ""),
-                             physical_description=c.get("description", "person"))
+                             physical_description=c.get("description", "person"),
+                             wardrobe=c.get("wardrobe") or None)
             for i, c in enumerate(characters or [])
         ]
         system_prompt = f"""You are the director of a production written with a specific skill.

@@ -341,6 +341,12 @@ class MaestroMcp:
                      "location_ref_labels": _STR_LIST,
                      "auto_mode": {"type": "boolean", "default": True,
                                    "description": "False pauses after planning for review (director_continue)"},
+                     "casting": {"type": "boolean", "default": True,
+                                 "description": "Before planning, fix each recurring character and location "
+                                                "(description + reference image); skipped with your own refs"},
+                     "storyboard_review": {"type": "boolean", "default": False,
+                                           "description": "Pause to approve the cast, then the storyboard (shot "
+                                                          "images), before any video renders (director_continue)"},
                      "params": {"type": "object", "description": "Advanced: raw pipeline params merged last "
                                                                 "(video_params, image_params, seamless, ...)"},
                  }, ["scene_description", "video_model"]),
@@ -533,6 +539,8 @@ class MaestroMcp:
             "pipeline_type": pipeline_type,
             "scene_description": scene_description,
             "auto_mode": bool(args.get("auto_mode", True)),
+            "director_casting": "auto" if args.get("casting", True) else "off",
+            "storyboard_review": bool(args.get("storyboard_review", False)),
             "use_director_v2": services.get("use_director_v2", True),
             "llm_model_id": services.get("llm_model_id"),
             "llm_device": services.get("llm_device"),

@@ -2156,6 +2156,8 @@ interface AppState {
   directorSpeakers: string[]
   directorSpeakerMappings: SpeakerMapping[]
   directorAutoMode: boolean
+  directorCasting: boolean
+  directorStoryboardReview: boolean
   directorSeamless: boolean
   directorShotImageGuidance: DirectorShotImageGuidance
   /** Completed LLM stream outputs, kept so the thinking/output boxes stay
@@ -2182,6 +2184,8 @@ interface AppState {
   directorH3FirstBlockCacheMultiplierByModel: Record<string, number>
   directorH3FirstBlockCacheWarmupByModel: Record<string, number>
   setDirectorAutoMode: (v: boolean) => void
+  setDirectorCasting: (v: boolean) => void
+  setDirectorStoryboardReview: (v: boolean) => void
   setDirectorSeamless: (v: boolean) => void
   setDirectorShotImageGuidance: (v: DirectorShotImageGuidance) => void
   setDirectorSkill: (skill: DirectorSkill) => void
@@ -2568,6 +2572,8 @@ async function _buildDirectorRestorePatch(
     directorSpeakerMappings: Array.isArray(ui.directorSpeakerMappings)
       ? ui.directorSpeakerMappings as SpeakerMapping[] : [],
     directorAutoMode: ui.directorAutoMode == null ? pipeline.auto_mode : Boolean(ui.directorAutoMode),
+    directorCasting: ui.directorCasting == null ? true : Boolean(ui.directorCasting),
+    directorStoryboardReview: Boolean(ui.directorStoryboardReview),
     directorSeamless: ui.directorSeamless == null ? pipeline.seamless : Boolean(ui.directorSeamless),
     directorShotImageGuidance: (ui.directorShotImageGuidance || pipeline.shot_image_guidance || 'auto') as DirectorShotImageGuidance,
     directorLlmLog: Array.isArray(ui.directorLlmLog)
@@ -10329,6 +10335,8 @@ export const useStore = create<AppState>((set, get) => ({
   // the common flow), Seamless OFF (separate per-clip generations are easier
   // to retake/review than one rolling-window render).
   directorAutoMode: true,
+  directorCasting: true,
+  directorStoryboardReview: false,
   directorSeamless: false,
   directorShotImageGuidance: 'auto' as DirectorShotImageGuidance,
   directorLlmLog: [],
@@ -10382,6 +10390,8 @@ export const useStore = create<AppState>((set, get) => ({
   directorSourcePipelineId: null,
   directorProjectId: null,
   setDirectorAutoMode: (v) => set({ directorAutoMode: v }),
+  setDirectorCasting: (v) => set({ directorCasting: v }),
+  setDirectorStoryboardReview: (v) => set({ directorStoryboardReview: v }),
   setDirectorSeamless: (v) => set({ directorSeamless: v }),
   setDirectorShotImageGuidance: (v) => set({
     directorShotImageGuidance: v,
@@ -14045,6 +14055,8 @@ export const useStore = create<AppState>((set, get) => ({
       // Held work and reviewed revisions cannot pause for browser review.
       auto_mode: mode === 'queue' || state.directorClipPlans.length > 0
         ? true : directorAutoMode,
+      director_casting: state.directorCasting ? 'auto' : 'off',
+      storyboard_review: state.directorStoryboardReview || undefined,
       workspace: get().activeWorkspace,
       _director_project_id: state.directorProjectId || undefined,
       _director_parent_pipeline_id: state.directorSourcePipelineId || undefined,
@@ -14171,6 +14183,8 @@ export const useStore = create<AppState>((set, get) => ({
         directorSpeakers: state.directorSpeakers,
         directorSpeakerMappings: state.directorSpeakerMappings,
         directorAutoMode: state.directorAutoMode,
+        directorCasting: state.directorCasting,
+        directorStoryboardReview: state.directorStoryboardReview,
         directorSeamless: state.directorSeamless,
         directorShotImageGuidance: state.directorShotImageGuidance,
         directorLlmLog: state.directorLlmLog,

@@ -916,6 +916,45 @@ export interface PipelineStatus {
   lora_warnings?: string[]
   /** Read-only AI quality review (video LLM), when one was run. */
   video_review?: VideoReview | null
+  /** Recurring characters and locations fixed before planning. */
+  cast?: DirectorCast | null
+  workspace?: string
+}
+
+export interface DirectorCastEntry {
+  name: string
+  role?: string
+  description: string
+  wardrobe?: string
+  image: string | null
+}
+
+export interface DirectorCast {
+  characters: DirectorCastEntry[]
+  locations: DirectorCastEntry[]
+}
+
+export type DirectorCastKind = 'character' | 'location'
+
+export function directorCastImageUrl(pid: string, kind: DirectorCastKind, index: number, image: string): string {
+  return `${BASE}/api/v1/director/pipeline/${encodeURIComponent(pid)}/cast/${kind}/${index}/image?v=${encodeURIComponent(image)}`
+}
+
+export async function regenerateDirectorCastEntry(
+  pid: string,
+  kind: DirectorCastKind,
+  index: number,
+  changes: Partial<Pick<DirectorCastEntry, 'name' | 'description' | 'wardrobe'>>,
+): Promise<DirectorCast> {
+  const res = await fetch(
+    `${BASE}/api/v1/director/pipeline/${encodeURIComponent(pid)}/cast/${kind}/${index}/regenerate`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(changes) },
+  )
+  if (!res.ok) {
+    const error = await res.json().catch(() => null) as { detail?: unknown } | null
+    throw new Error(typeof error?.detail === 'string' ? error.detail : `Regenerate failed (${res.status})`)
+  }
+  return (await res.json() as { cast: DirectorCast }).cast
 }
 
 export interface VideoReviewIssue {

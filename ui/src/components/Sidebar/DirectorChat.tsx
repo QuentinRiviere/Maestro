@@ -3,6 +3,7 @@ import { DirectorGpuClipLimit } from './DirectorGpuClipLimit'
 import { useState, useCallback, useRef, useMemo, useEffect } from 'react'
 import { Upload, Loader2, Music, RotateCcw, Check, X, ChevronRight, ChevronDown, ImageIcon, Play, Film, Mic, Send, Users, FileText, ListVideo } from 'lucide-react'
 import { useStore, isPlannerSkill, directorModelUsesFixedMediaStrength, getFamiliesForMode, getModelsForFamily, resolveResolution } from '../../stores/useStore'
+import { DirectorReviewGate } from './DirectorReviewGate'
 import { DirectorSkillPicker } from './DirectorSkillPicker'
 import { skillIcon } from '../../lib/skillIcons'
 import { fetchModelOptions, getFileUrl } from '../../api/client'
@@ -1226,6 +1227,13 @@ export function DirectorChat() {
           <LlmLogStage stage="plan_video" label="Video prompts" />
         )}
 
+        {/* Server-side validation stops (cast, then storyboard) */}
+        {pipelineStatus?.status === 'paused' && (
+          <SystemBubble>
+            <DirectorReviewGate />
+          </SystemBubble>
+        )}
+
         {/* Video review step */}
         {atStep('review_video') && (
           <SystemBubble>
@@ -1246,7 +1254,7 @@ export function DirectorChat() {
               // Any active render changes Generate into an immutable queued
               // variant instead of trying to mutate or parallelize that run.
               isGenerating={isGenerating || pipelineActive || Boolean(directorQueue?.running)}
-              isAutoGenerating={autoMode && pipelineActive}
+              isAutoGenerating={autoMode && pipelineActive && pipelineStatus?.status !== 'paused'}
               editingQueueEntryId={directorQueueEditingEntryId}
             />
           </SystemBubble>
@@ -1520,6 +1528,10 @@ function DirectorSetupPanel({ locked }: { locked: boolean }) {
   const skill = useStore(s => s.directorSkill)
   const autoMode = useStore(s => s.directorAutoMode)
   const setAutoMode = useStore(s => s.setDirectorAutoMode)
+  const casting = useStore(s => s.directorCasting)
+  const setCasting = useStore(s => s.setDirectorCasting)
+  const storyboardReview = useStore(s => s.directorStoryboardReview)
+  const setStoryboardReview = useStore(s => s.setDirectorStoryboardReview)
   const seamless = useStore(s => s.directorSeamless)
   const setSeamless = useStore(s => s.setDirectorSeamless)
   const selectedVideoSupportsSeamless = useStore(s => {
@@ -1572,6 +1584,36 @@ function DirectorSetupPanel({ locked }: { locked: boolean }) {
             <span className={`text-[10px] ${autoMode ? 'text-red-400' : 'text-text-secondary'}`}>Auto</span>
           </label>
         </div>
+        {skill !== 'music_video' && (
+          <div className="flex items-center gap-4">
+            <label
+              className={`flex items-center gap-1.5 select-none ${locked ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
+              title="Before planning, write one fixed description and render one reference image per recurring character and location (skipped when you provide your own references)"
+            >
+              <input
+                type="checkbox"
+                checked={casting}
+                disabled={locked}
+                onChange={e => setCasting(e.target.checked)}
+                className="accent-accent-blue w-3 h-3"
+              />
+              <span className="text-[10px] text-text-secondary">Casting</span>
+            </label>
+            <label
+              className={`flex items-center gap-1.5 select-none ${locked ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
+              title="Even in Auto, stop to approve the cast and a storyboard (one start image per shot) before any video is rendered"
+            >
+              <input
+                type="checkbox"
+                checked={storyboardReview}
+                disabled={locked}
+                onChange={e => setStoryboardReview(e.target.checked)}
+                className="accent-accent-blue w-3 h-3"
+              />
+              <span className="text-[10px] text-text-secondary">Storyboard first</span>
+            </label>
+          </div>
+        )}
       </div>
 
       <div className="pt-2 border-t border-border/50 space-y-1.5">

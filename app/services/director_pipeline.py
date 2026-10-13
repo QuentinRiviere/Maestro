@@ -813,9 +813,13 @@ def _resolve_fresh_shot_image_policy(params: dict) -> str:
         return SHOT_IMAGE_GENERATE
     video_model = params.get("video_model") or "ltx2_22B_distilled_1_1"
     model_def = getter(video_model) or {}
+    requested = params.get("shot_image_guidance")
+    if params.get("storyboard_review") and str(requested or "auto").strip().lower() == "auto":
+        # A storyboard to validate is made of the shot images themselves.
+        requested = SHOT_IMAGE_GENERATE
     return resolve_shot_image_policy(
         model_def,
-        params.get("shot_image_guidance"),
+        requested,
         has_visual_references=_director_has_visual_references(params),
     )
 
@@ -1397,6 +1401,7 @@ def _save_pipeline_state_locked(pid: str) -> bool:
         # or interrupted planning run resume at the first unfinished unit
         # instead of repeating ten or more minutes of successful LLM work.
         "planning_checkpoint": p.get("_planning_checkpoint") or None,
+        "cast": p.get("cast"),
         "clips": clips,
         "output_files": p.get("output_files", []),
         "total_time_sec": (time.time() - p["created_at"]) if p.get("created_at") else None,
@@ -5422,6 +5427,9 @@ def _run_pipeline(pid: str, resume: bool = False):
         else:
             try:
                 clip_plans, planned_clips = _run_planning(pid, params, pipeline_type)
+                # Casting may add references that turn Auto into shot images.
+                shot_image_policy = _director_effective_shot_image_policy(params)
+                requires_shot_images = shot_images_required(shot_image_policy)
             except InterruptedError:
                 print(
                     f"[Pipeline {pid}] Director planning stopped; the latest "
@@ -5786,7 +5794,10 @@ def _run_pipeline(pid: str, resume: bool = False):
             )
 
         # In non-auto mode, pause for image review
-        if not auto_mode and requires_shot_images and not _prepared_imgs_ok:
+        if (
+            (not auto_mode or params.get("storyboard_review"))
+            and requires_shot_images and not _prepared_imgs_ok
+        ):
             _update_pipeline(pid, status="paused", pause_reason="review_images",
                              progress={"current": 2, "total": 3, "message": "Review images", "step": 0, "total_steps": 0})
             _wait_for_resume(pid)
@@ -6095,6 +6106,192 @@ def _custom_skill_style_hint(skill_type: str) -> str:
     from services.director.custom_skills import get_custom
     spec = get_custom(skill_type) or {}
     return f"Skill style: {spec['style_hint']}" if spec.get("style_hint") else ""
+
+
+def _director_casting_enabled(params: dict, pipeline_type: str) -> bool:
+    """Auto casts story-driven projects that bring no visual identity of their own."""
+    mode = str(params.get("director_casting") or "auto").strip().lower()
+    if mode in ("off", "false", "0"):
+        return False
+    if mode in ("on", "true", "1"):
+        return True
+    if pipeline_type not in ("short_film_story", "short_film_audio"):
+        return False
+    return not (
+        params.get("reference_image_path")
+        or params.get("character_ref_paths")
+        or params.get("generated_reference_image_filename")
+        or any(
+            isinstance(ref, dict) and str(ref.get("type") or ref.get("kind") or "").lower() == "image"
+            for ref in params.get("minimax_h3_references") or []
+        )
+    )
+
+
+def _cast_skill_rules(params: dict, skill_type: str) -> str:
+    if not str(skill_type).startswith("custom:"):
+        return ""
+    from services.director.custom_skills import get_custom
+    from services.director.planners.custom import skill_rules_block
+    spec = get_custom(skill_type)
+    return skill_rules_block(spec, params.get("skill_options") or {}) if spec else ""
+
+
+def _render_cast_image(pid: str, params: dict, kind: str, entry: dict, style: str) -> Optional[str]:
+    """Render one character sheet or location plate with the Director image model."""
+    from services.director import casting
+
+    with _pipeline_lock:
+        live = _pipelines.get(pid) or {}
+        out_dir = live.get("out_dir") or _wgp.save_path
+        workspace = live.get("workspace")
+    image_model = params.get("image_model") or "flux2_klein_9b"
+    image_params = params.get("image_params") or {}
+    prompt = (
+        casting.character_sheet_prompt(entry, style)
+        if kind == "character"
+        else casting.location_plate_prompt(entry, style)
+    )
+    gen_params = {
+        "model_type": image_model,
+        "prompt": prompt,
+        "image_refs": [],
+        "image_mode": 1,
+        "image_prompt_type": "",
+        "num_inference_steps": image_params.get("num_inference_steps", 8),
+        "guidance_scale": image_params.get("guidance_scale", 1),
+        "video_prompt_type": _director_image_prompt_type(image_model, []),
+        "resolution": image_params.get("resolution", "1280x720"),
+        "seed": -1,
+        "settings_version": 2.52,
+        "generation_mode": "image",
+        "repeat_generation": 1,
+        "negative_prompt": "",
+        "video_length": 1,
+        "_director_pipeline_id": pid,
+    }
+    try:
+        files = _submit_and_wait(gen_params, timeout_s=600, workspace=workspace, out_dir=out_dir)
+    except Exception as error:
+        print(f"[Pipeline {pid}] Casting image for {entry.get('name')} failed: {error}")
+        return None
+    return os.path.basename(files[0]) if files and files[0] else None
+
+
+def _apply_cast_references(pid: str, params: dict, cast: dict) -> None:
+    """Make the cast images the project's character and location references."""
+    with _pipeline_lock:
+        out_dir = (_pipelines.get(pid) or {}).get("out_dir") or _wgp.save_path
+    previous = set(params.get("_director_cast_ref_paths") or [])
+    added = []
+    for kind, plural in (("character", "characters"), ("location", "locations")):
+        paths = [p for p in params.get(f"{kind}_ref_paths") or [] if p not in previous]
+        labels = list(params.get(f"{kind}_ref_labels") or [])[: len(paths)]
+        labels += [""] * (len(paths) - len(labels))
+        for entry in cast.get(plural) or []:
+            path = os.path.join(out_dir, entry["image"]) if entry.get("image") else ""
+            if path and os.path.isfile(path):
+                paths.append(path)
+                labels.append(entry["name"])
+                added.append(path)
+        params[f"{kind}_ref_paths"] = paths
+        params[f"{kind}_ref_labels"] = labels
+    params["_director_cast_ref_paths"] = added
+    if str(params.get("shot_image_guidance") or "auto").strip().lower() == "auto":
+        params["_director_shot_image_policy"] = _resolve_fresh_shot_image_policy(params)
+    _update_pipeline(pid, cast=copy.deepcopy(cast))
+
+
+def _run_casting(pid: str, params: dict, generate, style_contract: dict, skill_type: str) -> None:
+    """Write the cast, render its references, and let a manual run review them."""
+    from services.director import casting
+
+    cast = params.get("_director_cast")
+    if not isinstance(cast, dict):
+        _update_pipeline(pid, phase="casting", progress={
+            "current": 0, "total": 0, "message": "Casting characters and locations...",
+            "step": 0, "total_steps": 0,
+        })
+        try:
+            cast = (
+                casting.cast_from_characters(params["characters"])
+                if params.get("characters")
+                else casting.derive_cast(
+                    params.get("scene_description", ""), generate,
+                    style=casting.style_phrase(style_contract),
+                    skill_rules=_cast_skill_rules(params, skill_type),
+                )
+            )
+        except Exception as error:
+            print(f"[Pipeline {pid}] Casting skipped: {error}")
+            return
+        params["_director_cast"] = cast
+    if cast["characters"] and not params.get("characters"):
+        params["characters"] = casting.planner_characters(cast)
+    print(
+        f"[Pipeline {pid}] Cast: {[c['name'] for c in cast['characters']]}, "
+        f"locations: {[l['name'] for l in cast['locations']]}"
+    )
+
+    if params.get("director_casting_images", True):
+        style = casting.style_phrase(style_contract)
+        entries = [("character", e) for e in cast["characters"]] + [("location", e) for e in cast["locations"]]
+        with _pipeline_lock:
+            out_dir = (_pipelines.get(pid) or {}).get("out_dir") or _wgp.save_path
+        for done, (kind, entry) in enumerate(entries):
+            if entry.get("image") and os.path.isfile(os.path.join(out_dir, entry["image"])):
+                continue
+            if _pipelines.get(pid, {}).get("status") == "cancelled":
+                return
+            _update_pipeline(pid, phase="casting", progress={
+                "current": done, "total": len(entries), "message": f"Casting: {entry['name']}",
+                "step": 0, "total_steps": 0,
+            })
+            entry["image"] = _render_cast_image(pid, params, kind, entry, style)
+            _update_pipeline(pid, cast=copy.deepcopy(cast))
+    _apply_cast_references(pid, params, cast)
+    _save_pipeline_state(pid)
+
+    review = not params.get("auto_mode", True) or params.get("storyboard_review")
+    if review and (cast["characters"] or cast["locations"]):
+        _update_pipeline(pid, status="paused", pause_reason="review_cast", progress={
+            "current": 0, "total": 0, "message": "Review the cast", "step": 0, "total_steps": 0,
+        })
+        _save_pipeline_state(pid)
+        _wait_for_resume(pid)
+        if _pipelines.get(pid, {}).get("status") == "cancelled":
+            raise InterruptedError("Cancelled during casting review")
+        cast = params.get("_director_cast") or cast
+        params["characters"] = casting.planner_characters(cast)
+        _apply_cast_references(pid, params, cast)
+        _update_pipeline(pid, phase="planning")
+
+
+def regenerate_cast_entry(pid: str, kind: str, index: int, changes: Optional[dict] = None) -> dict:
+    """Edit and re-render one cast entry while the project waits on cast review."""
+    from services.director import casting
+
+    with _pipeline_lock:
+        live = _pipelines.get(pid)
+        if not live or live.get("status") != "paused" or live.get("pause_reason") != "review_cast":
+            raise ValueError("The cast can only be changed while the project waits on cast review")
+        params = live["params"]
+    cast = params.get("_director_cast") or {}
+    plural = "characters" if kind == "character" else "locations"
+    entries = cast.get(plural) or []
+    if not 0 <= index < len(entries):
+        raise ValueError("Unknown cast entry")
+    entry = entries[index]
+    for field in ("name", "description", "wardrobe", "role"):
+        value = (changes or {}).get(field)
+        if isinstance(value, str) and value.strip():
+            entry[field] = value.strip()[:700]
+    style = casting.style_phrase(params.get("_director_style_contract"))
+    entry["image"] = _render_cast_image(pid, params, kind, entry, style) or entry.get("image")
+    params["_director_cast"] = cast
+    _update_pipeline(pid, cast=copy.deepcopy(cast))
+    _save_pipeline_state(pid)
+    return cast
 
 
 def _run_planning(pid: str, params: dict, pipeline_type: str):
@@ -6445,6 +6642,21 @@ def _run_planning_v2(pid: str, params: dict, pipeline_type: str):
     if block:
         planner_kwargs["polish_block"] = "\n\n".join(filter(None, [planner_kwargs.get("polish_block", ""), block]))
     _update_pipeline(pid, style_contract=style_contract)
+
+    # Casting: fix the recurring people and places (canonical descriptions and
+    # one reference image each) so every shot describes and shows one cast.
+    if _director_casting_enabled(params, pipeline_type):
+        _run_casting(pid, params, _logged_generate, style_contract, skill_type)
+        planner_kwargs["characters"] = params.get("characters", [])
+        planner_kwargs["shot_image_policy"] = _director_effective_shot_image_policy(params)
+        visual_inputs = planning_reference_inputs(params)
+        if (
+            any(visual_inputs[key] for key in ("character_ref_paths", "location_ref_paths"))
+            and VISUAL_IDENTITY_GUIDANCE not in planner_kwargs.get("polish_block", "")
+        ):
+            planner_kwargs["polish_block"] = "\n\n".join(
+                filter(None, [planner_kwargs.get("polish_block", ""), VISUAL_IDENTITY_GUIDANCE])
+            )
 
     # Also pass character/location ref labels and paths for image prompt rules
     planner_kwargs.update(visual_inputs)

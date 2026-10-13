@@ -87,6 +87,7 @@ class ViralVideoPlanner(BasePlanner):
                     id=f"char_{i}",
                     display_name=c.get("name", ""),
                     physical_description=c.get("description", "person"),
+                    wardrobe=c.get("wardrobe") or None,
                 )
                 for i, c in enumerate(characters)
             ]
