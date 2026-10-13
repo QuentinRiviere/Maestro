@@ -2157,6 +2157,7 @@ interface AppState {
   directorSpeakerMappings: SpeakerMapping[]
   directorAutoMode: boolean
   directorCasting: boolean
+  directorBibleId: string
   directorStoryboardReview: boolean
   directorSeamless: boolean
   directorShotImageGuidance: DirectorShotImageGuidance
@@ -2185,6 +2186,7 @@ interface AppState {
   directorH3FirstBlockCacheWarmupByModel: Record<string, number>
   setDirectorAutoMode: (v: boolean) => void
   setDirectorCasting: (v: boolean) => void
+  setDirectorBibleId: (v: string) => void
   setDirectorStoryboardReview: (v: boolean) => void
   setDirectorSeamless: (v: boolean) => void
   setDirectorShotImageGuidance: (v: DirectorShotImageGuidance) => void
@@ -2573,6 +2575,7 @@ async function _buildDirectorRestorePatch(
       ? ui.directorSpeakerMappings as SpeakerMapping[] : [],
     directorAutoMode: ui.directorAutoMode == null ? pipeline.auto_mode : Boolean(ui.directorAutoMode),
     directorCasting: ui.directorCasting == null ? true : Boolean(ui.directorCasting),
+    directorBibleId: typeof ui.directorBibleId === 'string' ? ui.directorBibleId : String(params.bible_id || ''),
     directorStoryboardReview: Boolean(ui.directorStoryboardReview),
     directorSeamless: ui.directorSeamless == null ? pipeline.seamless : Boolean(ui.directorSeamless),
     directorShotImageGuidance: (ui.directorShotImageGuidance || pipeline.shot_image_guidance || 'auto') as DirectorShotImageGuidance,
@@ -10344,6 +10347,7 @@ export const useStore = create<AppState>((set, get) => ({
   // to retake/review than one rolling-window render).
   directorAutoMode: true,
   directorCasting: true,
+  directorBibleId: '',
   directorStoryboardReview: false,
   directorSeamless: false,
   directorShotImageGuidance: 'auto' as DirectorShotImageGuidance,
@@ -10399,6 +10403,7 @@ export const useStore = create<AppState>((set, get) => ({
   directorProjectId: null,
   setDirectorAutoMode: (v) => set({ directorAutoMode: v }),
   setDirectorCasting: (v) => set({ directorCasting: v }),
+  setDirectorBibleId: (v) => set({ directorBibleId: v }),
   setDirectorStoryboardReview: (v) => set({ directorStoryboardReview: v }),
   setDirectorSeamless: (v) => set({ directorSeamless: v }),
   setDirectorShotImageGuidance: (v) => set({
@@ -14066,6 +14071,7 @@ export const useStore = create<AppState>((set, get) => ({
       auto_mode: mode === 'queue' || state.directorClipPlans.length > 0
         ? true : directorAutoMode,
       director_casting: state.directorCasting ? 'auto' : 'off',
+      bible_id: state.directorBibleId || undefined,
       storyboard_review: state.directorStoryboardReview || undefined,
       workspace: get().activeWorkspace,
       _director_project_id: state.directorProjectId || undefined,
@@ -14194,6 +14200,7 @@ export const useStore = create<AppState>((set, get) => ({
         directorSpeakerMappings: state.directorSpeakerMappings,
         directorAutoMode: state.directorAutoMode,
         directorCasting: state.directorCasting,
+        directorBibleId: state.directorBibleId,
         directorStoryboardReview: state.directorStoryboardReview,
         directorSeamless: state.directorSeamless,
         directorShotImageGuidance: state.directorShotImageGuidance,

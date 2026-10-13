@@ -60,7 +60,7 @@ def parse_cast(text: str) -> dict:
     return normalize_cast(raw)
 
 
-def normalize_cast(raw: Any) -> dict:
+def normalize_cast(raw: Any, *, max_characters: int = MAX_CHARACTERS, max_locations: int = MAX_LOCATIONS) -> dict:
     raw = raw if isinstance(raw, dict) else {}
     characters = []
     for item in raw.get("characters") or []:
@@ -90,7 +90,7 @@ def normalize_cast(raw: Any) -> dict:
             "description": description,
             "image": _text(item.get("image"), 260) or None,
         })
-    return {"characters": characters[:MAX_CHARACTERS], "locations": locations[:MAX_LOCATIONS]}
+    return {"characters": characters[:max_characters], "locations": locations[:max_locations]}
 
 
 def cast_from_characters(characters: list[dict]) -> dict:

@@ -10947,6 +10947,86 @@ async def director_cast_regenerate(pid: str, kind: str, index: int, request: Req
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+# ── Director bibles (a series' approved cast, style and world) ───────────
+
+
+def _bible_call(fn, *args, **kwargs):
+    from services.director.bibles import BibleError
+    try:
+        return fn(*args, **kwargs)
+    except BibleError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@api.get("/api/v1/director/bibles")
+def director_bibles_list():
+    from services.director.bibles import list_bibles
+    return {"bibles": list_bibles()}
+
+
+@api.post("/api/v1/director/bibles")
+async def director_bible_create(request: Request):
+    from services.director.bibles import save_bible
+    body = await request.json()
+    return {"bible": _bible_call(save_bible, body if isinstance(body, dict) else {})}
+
+
+@api.get("/api/v1/director/bibles/{bible_id}")
+def director_bible_get(bible_id: str):
+    from services.director.bibles import get_bible
+    bible = _bible_call(get_bible, bible_id)
+    if not bible:
+        raise HTTPException(status_code=404, detail="Bible not found")
+    return {"bible": bible}
+
+
+@api.put("/api/v1/director/bibles/{bible_id}")
+async def director_bible_update(bible_id: str, request: Request):
+    from services.director.bibles import save_bible
+    body = await request.json()
+    return {"bible": _bible_call(save_bible, body if isinstance(body, dict) else {}, bible_id=bible_id)}
+
+
+@api.delete("/api/v1/director/bibles/{bible_id}")
+def director_bible_delete(bible_id: str):
+    from services.director.bibles import delete_bible
+    if not _bible_call(delete_bible, bible_id):
+        raise HTTPException(status_code=404, detail="Bible not found")
+    return {"deleted": bible_id}
+
+
+@api.get("/api/v1/director/bibles/{bible_id}/images/{name}")
+def director_bible_image(bible_id: str, name: str):
+    from services.director.bibles import image_path
+    path = _bible_call(image_path, bible_id, name)
+    if path is None:
+        raise HTTPException(status_code=404, detail="Bible image not found")
+    return FileResponse(str(path))
+
+
+@api.post("/api/v1/director/pipeline/{pid}/bible")
+async def director_pipeline_save_to_bible(pid: str, request: Request):
+    """Save a project's cast and style into a new bible, or merge them into one."""
+    from services.director.bibles import add_cast
+    from services.director_pipeline import get_pipeline_status
+    body = await request.json() if request.headers.get("content-length", "0") != "0" else {}
+    body = body if isinstance(body, dict) else {}
+    base = wgp.server_config.get("save_path", "outputs")
+    p = get_pipeline_status(pid, base) or {}
+    cast = p.get("cast") or {}
+    if not (cast.get("characters") or cast.get("locations")):
+        raise HTTPException(status_code=400, detail="This project has no cast to save")
+    folders = [p.get("out_dir"), _director_state_dir(pid, p.get("out_dir") or base), base]
+    bible = await asyncio.to_thread(
+        _bible_call, add_cast, cast, [f for f in folders if f],
+        bible_id=str(body.get("bible_id") or "") or None,
+        name=str(body.get("name") or ""),
+        style=p.get("style_contract")
+        or (p.get("params") or p.get("_params_snapshot") or {}).get("_director_style_contract"),
+    )
+    return {"bible": bible}
+
+
 # ── Director skills (declarative custom skills + Skill Creator) ──────────
 
 

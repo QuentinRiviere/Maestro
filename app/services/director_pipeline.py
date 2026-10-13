@@ -1407,6 +1407,7 @@ def _save_pipeline_state_locked(pid: str) -> bool:
         # instead of repeating ten or more minutes of successful LLM work.
         "planning_checkpoint": p.get("_planning_checkpoint") or None,
         "cast": p.get("cast"),
+        "bible": p.get("bible"),
         "edit_file": p.get("edit_file"),
         "clips": clips,
         "output_files": p.get("output_files", []),
@@ -6261,6 +6262,41 @@ def _cast_skill_rules(params: dict, skill_type: str) -> str:
     return skill_rules_block(spec, params.get("skill_options") or {}) if spec else ""
 
 
+def _apply_bible(pid: str, params: dict) -> str:
+    """Start a project from its bible: cast, style contract and world rules.
+
+    The cast entries (``bible_characters`` / ``bible_locations`` pick them by
+    name) are copied into the project, so casting skips the LLM and the image
+    renders and the cast review shows the bible's people and places. A project
+    that already has a cast (a resumed or revised one) keeps it. Returns the
+    bible's world block for the planner ("" without a bible).
+    """
+    bible_id = str(params.get("bible_id") or "").strip()
+    if not bible_id:
+        return ""
+    from services.director import bibles
+
+    bible = bibles.get_bible(bible_id)
+    if not bible:
+        raise ValueError(f"Unknown bible: {bible_id}")
+    if not isinstance(params.get("_director_cast"), dict):
+        with _pipeline_lock:
+            out_dir = (_pipelines.get(pid) or {}).get("out_dir") or _wgp.save_path
+        params["_director_cast"] = bibles.project_cast(
+            bible, out_dir,
+            characters=params.get("bible_characters"), locations=params.get("bible_locations"),
+        )
+        params["_director_bible_revision"] = bible.get("revision", 1)
+        if bible.get("style") and not isinstance(params.get("_director_style_contract"), dict):
+            params["_director_style_contract"] = copy.deepcopy(bible["style"])
+    # The bible is the cast: casting runs on it whatever the pipeline type.
+    params["director_casting"] = "on"
+    _update_pipeline(pid, bible={"id": bible["id"], "name": bible["name"],
+                                 "revision": params.get("_director_bible_revision")})
+    print(f"[Pipeline {pid}] Bible {bible['id']} r{params.get('_director_bible_revision')}")
+    return bibles.world_block(bible)
+
+
 def _render_cast_image(pid: str, params: dict, kind: str, entry: dict, style: str) -> Optional[str]:
     """Render one character sheet or location plate with the Director image model."""
     from services.director import casting
@@ -6746,6 +6782,11 @@ def _run_planning_v2(pid: str, params: dict, pipeline_type: str):
         )) else "",
     ]))
     params["_director_writing_version"] = DIRECTOR_WRITING_VERSION
+
+    # A bible brings an approved cast, style and world rules of its series.
+    bible_block = _apply_bible(pid, params)
+    if bible_block:
+        planner_kwargs["polish_block"] = "\n\n".join(filter(None, [planner_kwargs.get("polish_block", ""), bible_block]))
 
     # Style contract: the medium this project aims for (any style, not only
     # realism). The planner writes for it and quality review judges against it.

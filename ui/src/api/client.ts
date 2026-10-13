@@ -918,6 +918,7 @@ export interface PipelineStatus {
   video_review?: VideoReview | null
   /** Recurring characters and locations fixed before planning. */
   cast?: DirectorCast | null
+  bible?: { id: string; name: string; revision: number | null } | null
   workspace?: string
 }
 

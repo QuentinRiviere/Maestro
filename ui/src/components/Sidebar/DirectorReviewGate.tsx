@@ -5,6 +5,7 @@ import {
   type DirectorCastEntry, type DirectorCastKind,
 } from '../../api/client'
 import { useStore } from '../../stores/useStore'
+import { SaveCastToBible } from './DirectorBible'
 
 /** One cast entry; the parent re-keys it when the server's text changes. */
 function CastCard({ pid, kind, index, entry }: {
@@ -161,6 +162,7 @@ export function DirectorReviewGate() {
             />
           ))}
         </div>
+        <SaveCastToBible pid={pid} />
         {actions('Approve cast and plan shots')}
       </div>
     )
