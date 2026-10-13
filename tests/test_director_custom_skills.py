@@ -142,3 +142,25 @@ class CreatorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_custom_planner_writes_shots_the_video_model_renders_alone():
+    from services.director.custom_skills import validate_spec
+    from services.director.planners.custom import CustomSkillPlanner, fit_shot_range, model_shot_bounds
+
+    bounds = model_shot_bounds({"fps": 24, "frames_minimum": 124, "frames_maximum": 192})
+    assert fit_shot_range(2, 5, bounds) == (5.2, 5.2)
+    assert fit_shot_range(2, 12, bounds) == (5.2, 8.0)
+    assert fit_shot_range(2, 5, None) == (2.0, 5.0)
+
+    seen = {}
+
+    def generate(**call):
+        seen["system"] = call.get("system_prompt", "")
+        return json.dumps([{"scene_goal": "a", "duration_sec": 2}, {"scene_goal": "b", "duration_sec": 30}])
+
+    spec = validate_spec({"name": "Drama", "shot_duration": [2, 5], "rules": {"goal": "tension"}})
+    plan = CustomSkillPlanner(spec, llm_generate=generate).plan(
+        concept="a meeting", target_duration=12, fps=24, frames_minimum=124, frames_maximum=192)
+    assert [shot.duration_sec for shot in plan.shots] == [5.2, 5.2]
+    assert "between 5.2 and 5.2 seconds" in seen["system"]

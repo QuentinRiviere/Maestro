@@ -6,6 +6,7 @@ never execute code or change the pipeline contract.
 """
 from __future__ import annotations
 
+import math
 from typing import Any, Optional
 
 from ..policies import build_camera_style_block, build_character_rules_block
@@ -19,6 +20,34 @@ _RULE_LABELS = {
     "goal": "Purpose", "structure": "Structure", "pacing": "Pacing", "camera": "Camera",
     "dialogue": "Dialogue", "sound": "Sound",
 }
+
+
+def model_shot_bounds(kwargs: dict) -> tuple[float, float] | None:
+    """The video model's renderable shot length in seconds, when it has one.
+
+    Shots shorter than the minimum are later merged two by two into one
+    render, which keeps only the first shot's prompt, so planners must write
+    shots the model can render on their own.
+    """
+    try:
+        fps = float(kwargs.get("fps") or 0)
+        minimum = int(kwargs.get("frames_minimum") or 0)
+        maximum = int(kwargs.get("frames_maximum") or 0)
+    except (TypeError, ValueError):
+        return None
+    if fps <= 0 or minimum <= 0 or maximum < minimum:
+        return None
+    return minimum / fps, maximum / fps
+
+
+def fit_shot_range(low: float, high: float, bounds: tuple[float, float] | None) -> tuple[float, float]:
+    """Clamp a skill's shot range into what the video model renders natively."""
+    if not bounds:
+        return float(low), float(high)
+    model_low = math.ceil(bounds[0] * 10) / 10
+    model_high = max(model_low, math.floor(bounds[1] * 10) / 10)
+    low = min(max(float(low), model_low), model_high)
+    return low, min(max(float(high), low), model_high)
 
 
 def skill_rules_block(spec: dict, options: dict[str, str]) -> str:
@@ -68,7 +97,7 @@ class CustomSkillPlanner(BasePlanner):
             raise ValueError(f"{spec.get('name')} needs a brief")
         options = {str(k): str(v) for k, v in (skill_options or {}).items()}
         has_reference = bool(reference_image_path)
-        low, high = (spec.get("shot_duration") or [3, 8])[:2]
+        low, high = fit_shot_range(*(spec.get("shot_duration") or [3, 8])[:2], model_shot_bounds(kwargs))
         target_duration = int(target_duration or spec.get("default_duration") or 30)
         clip_durations = [
             max(0.5, float(c.get("duration_sec") or (float(c.get("end", 0)) - float(c.get("start", 0))) or low))
@@ -83,7 +112,8 @@ class CustomSkillPlanner(BasePlanner):
             average = (low + high) / 2
             target_scenes = max(1, min(int(spec.get("max_shots") or 12), round(target_duration / average)))
             timing_rule = (f"Output exactly {target_scenes} shot plans totaling about {target_duration}s, "
-                           f"each between {low} and {high} seconds.")
+                           f"each between {low:g} and {high:g} seconds. Every shot is rendered on its own, so give "
+                           "each one enough action to fill its full duration.")
 
         char_profiles = [
             CharacterProfile(id=f"char_{i}", display_name=c.get("name", ""),

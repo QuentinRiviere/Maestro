@@ -16,6 +16,7 @@ from ..schema import (
 )
 from ..policies import build_character_rules_block, build_camera_style_block
 from .base import BasePlanner
+from .custom import fit_shot_range, model_shot_bounds
 
 
 # Platform defaults
@@ -96,8 +97,11 @@ class ViralVideoPlanner(BasePlanner):
         )
 
         # Plan number of shots — viral videos use more cuts
-        target_scenes = max(3, min(12, target_duration // 5))
-        timing_rule = f"Output exactly {target_scenes} shot plans totaling ~{target_duration}s."
+        bounds = model_shot_bounds(kwargs)
+        low, high = fit_shot_range(3, 8, bounds)
+        target_scenes = max(3, min(12, round(target_duration / ((low + high) / 2 if bounds else 5))))
+        timing_rule = (f"Output exactly {target_scenes} shot plans totaling ~{target_duration}s, "
+                       f"each between {low:g} and {high:g} seconds.")
         if clip_durations:
             # The soundtrack is already cut: shots must follow its timeline.
             target_scenes = len(clip_durations)
@@ -182,7 +186,10 @@ Create {target_scenes} short, punchy shots. Hook first! Go:"""
 
         shots = []
         for i, raw in enumerate(shot_dicts):
-            duration = raw.get("duration_sec", raw.get("duration", 5))
+            try:
+                duration = max(low, min(high, float(raw.get("duration_sec", raw.get("duration", 5)))))
+            except (TypeError, ValueError):
+                duration = low
             if clip_durations:
                 duration = clip_durations[i]
 
