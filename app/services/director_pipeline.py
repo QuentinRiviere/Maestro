@@ -6646,9 +6646,12 @@ def _run_planning_v2(pid: str, params: dict, pipeline_type: str):
     # Casting: fix the recurring people and places (canonical descriptions and
     # one reference image each) so every shot describes and shows one cast.
     if _director_casting_enabled(params, pipeline_type):
+        from services import llm_service as _casting_llm
+        writer_loaded = _casting_llm.is_loaded()
         _run_casting(pid, params, _logged_generate, style_contract, skill_type)
         # Every image job unloads the writer to free VRAM; planning needs it back.
-        _ensure_llm_loaded(params)
+        if writer_loaded and not _casting_llm.is_loaded():
+            _ensure_llm_loaded(params)
         planner_kwargs["characters"] = params.get("characters", [])
         planner_kwargs["shot_image_policy"] = _director_effective_shot_image_policy(params)
         visual_inputs = planning_reference_inputs(params)

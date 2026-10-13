@@ -80,3 +80,28 @@ def test_cast_images_replace_previous_cast_references_only():
             assert dp._pipelines[pid]["cast"]["characters"][0]["image"] == "sheet.png"
         finally:
             dp._pipelines.pop(pid, None)
+
+
+def test_planner_llm_calls_retry_a_dropped_stream_only(monkeypatch):
+    from services.director.planners import base
+
+    monkeypatch.setattr(base.time, "sleep", lambda _s: None)
+    answers = iter([RuntimeError("LLM request failed: Response ended prematurely"), "[]"])
+
+    def flaky(**_kwargs):
+        answer = next(answers)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    assert base._retry_transient(flaky)(prompt="p") == "[]"
+
+    def broken(**_kwargs):
+        raise ValueError("bad schema")
+
+    try:
+        base._retry_transient(broken)(prompt="p")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("a non-transient error must not be retried")

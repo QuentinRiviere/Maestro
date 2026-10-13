@@ -28,6 +28,34 @@ except ImportError:
     json_repair = None  # type: ignore
     _HAVE_JSON_REPAIR = False
 
+# Hosted providers sometimes cut a long streamed answer or answer 5xx/429.
+# One dropped connection must not fail a whole Director run.
+_TRANSIENT_LLM_ERRORS = (
+    "ended prematurely", "connection", "timed out", "timeout", "temporarily",
+    "429", "500", "502", "503", "504", "rate limit", "overloaded",
+)
+_TRANSIENT_RETRY_DELAYS_S = (3, 10)
+
+
+def _is_transient_llm_error(error: Exception) -> bool:
+    text = f"{type(error).__name__} {error}".lower()
+    return any(marker in text for marker in _TRANSIENT_LLM_ERRORS)
+
+
+def _retry_transient(gen_fn: Callable[..., str]) -> Callable[..., str]:
+    def call(**kwargs):
+        for delay in _TRANSIENT_RETRY_DELAYS_S:
+            try:
+                return gen_fn(**kwargs)
+            except Exception as error:
+                if not _is_transient_llm_error(error):
+                    raise
+                print(f"[Planner] LLM call failed ({error}); retrying in {delay}s")
+                time.sleep(delay)
+        return gen_fn(**kwargs)
+    return call
+
+
 from ..schema import ProductionPlan, ShotPlan
 from services.text_integrity import repair_payload, repair_text
 
@@ -358,7 +386,9 @@ class BasePlanner(ABC):
           - Other / unknown: budget=0, thinking off (conservative default).
         Callers can still pass an explicit thinking_budget to override.
         """
-        gen_fn = self._generate_streaming if (streaming and self._generate_streaming) else self._generate
+        gen_fn = _retry_transient(
+            self._generate_streaming if (streaming and self._generate_streaming) else self._generate
+        )
         if gen_fn is None:
             raise RuntimeError("No LLM generate function provided to planner")
 
