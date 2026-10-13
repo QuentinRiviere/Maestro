@@ -1357,6 +1357,28 @@ export interface RemoteWorkerStatus {
   service_url?: string
   idle_seconds?: number
   idle_stop_in_seconds?: number | null
+  /** Models the pod pulls from R2 while Maestro starts. */
+  preload_models?: string[]
+  /** A Director project waits for a review: the idle stop is suspended (30 min max). */
+  review_hold?: boolean
+  /** Startup steps of the current pod, read from its logs. */
+  boot?: RemoteWorkerBoot
+}
+
+export interface RemoteWorkerBootStep {
+  phase: string
+  label: string
+  state: 'started' | 'done' | 'failed' | 'skipped' | string
+  /** Epoch seconds. */
+  started_at?: number | null
+  ended_at?: number | null
+  seconds?: number
+  details?: Record<string, unknown>
+}
+
+export interface RemoteWorkerBoot {
+  steps: RemoteWorkerBootStep[]
+  submitted_at?: number | null
 }
 
 export interface RemoteWorkerConnectionTest {

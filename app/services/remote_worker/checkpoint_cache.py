@@ -42,7 +42,13 @@ _SKIP_DIR = ".cache"
 def _cached_path(path: str) -> bool:
     """Whether a root-relative path belongs in the cache."""
     return not path.endswith(_SKIP_SUFFIXES) and _SKIP_DIR not in path.split("/")
+
+
 Runner = Callable[..., subprocess.CompletedProcess]
+# Checkpoints are few and large (up to ~20 GB a file): s5cmd's defaults
+# (5 parts of 50 MB in flight per file) leave most of a fast link idle.
+_CP_FLAGS = "--concurrency 16 --part-size 64"
+_HASH_WORKERS = max(4, min(8, os.cpu_count() or 4))
 # A publish that drops below this rate is abandoned: the cache only saves
 # time, and a stalled upload must never hold a generation hostage.
 _MIN_UPLOAD_BYTES_PER_S = 15_000_000
@@ -103,6 +109,8 @@ class R2CheckpointCache:
         self._roots = {name: os.path.abspath(path) for name, path in roots.items()}
         self._s5cmd = s5cmd
         self._runner = runner
+        # A test runner cannot stream; files are then verified after the batch.
+        self._stream = runner is subprocess.run
 
     @classmethod
     def from_environment(cls, roots: Mapping[str, str]) -> "R2CheckpointCache | None":
@@ -162,6 +170,49 @@ class R2CheckpointCache:
             self._s5("run", batch, timeout=timeout)
         finally:
             os.unlink(batch)
+
+    def _stream_batch(self, lines: list[str], on_line: Callable[[str], None]) -> None:
+        """``s5cmd run`` reporting each finished command as it completes."""
+        with tempfile.NamedTemporaryFile("w", suffix=".s5cmd", delete=False) as handle:
+            handle.write("\n".join(lines) + "\n")
+            batch = handle.name
+        try:
+            process = subprocess.Popen(
+                [self._s5cmd, "--endpoint-url", self._endpoint_url, "run", batch],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=self._env(),
+            )
+            assert process.stdout is not None
+            for line in process.stdout:
+                on_line(line.rstrip("\n"))
+            stderr = process.stderr.read() if process.stderr else ""
+            if process.wait() != 0:
+                raise CheckpointCacheError(f"s5cmd run failed ({process.returncode}): {stderr.strip()[:500]}")
+        finally:
+            os.unlink(batch)
+
+    def _pull(self, entries: list["FileEntry"], on_file: Callable[["FileEntry"], None]) -> None:
+        """Download ``entries``, calling ``on_file`` for each one as soon as it lands."""
+        pending = {self._local(e.root, e.path): e for e in entries}
+        lines = []
+        for destination, entry in pending.items():
+            os.makedirs(os.path.dirname(destination), exist_ok=True)
+            lines.append(f'cp {_CP_FLAGS} "{self._remote(entry.root, entry.path)}" "{destination}"')
+        if not lines:
+            return
+        if not self._stream:
+            self._run_batch(lines)
+            for entry in entries:
+                on_file(entry)
+            return
+
+        def finished(line: str) -> None:
+            for destination in list(pending):
+                if line.endswith(" " + destination):
+                    on_file(pending.pop(destination))
+                    return
+        self._stream_batch(lines, finished)
+        for entry in pending.values():  # reported nothing: checked by the caller
+            on_file(entry)
 
     def _remote(self, root: str, path: str) -> str:
         return f"{self._base}/{root}/{path}"
@@ -244,22 +295,25 @@ class R2CheckpointCache:
             if not (os.path.isfile(self._local(entry.root, entry.path))
                     and os.path.getsize(self._local(entry.root, entry.path)) == entry.size)
         ]
-        lines = []
-        for entry in missing:
-            destination = self._local(entry.root, entry.path)
-            os.makedirs(os.path.dirname(destination), exist_ok=True)
-            lines.append(f'cp "{self._remote(entry.root, entry.path)}" "{destination}"')
-        self._run_batch(lines)
+        # Each file is hashed as soon as it lands, while the rest download.
+        with ThreadPoolExecutor(max_workers=_HASH_WORKERS) as pool:
+            checks = []
+
+            def landed(entry: FileEntry) -> None:
+                if entry.sha256:
+                    checks.append(pool.submit(self._matches, entry))
+            self._pull(missing, landed)
+            tampered = [path for path in (check.result() for check in checks) if path]
         problems = [
             entry.path for entry in missing
-            if not (os.path.isfile(self._local(entry.root, entry.path))
-                    and os.path.getsize(self._local(entry.root, entry.path)) == entry.size)
+            if entry.path not in tampered
+            and not (os.path.isfile(self._local(entry.root, entry.path))
+                     and os.path.getsize(self._local(entry.root, entry.path)) == entry.size)
         ]
         if problems:
             raise CheckpointCacheError(
                 f"R2 pull incomplete for {model_type}: {', '.join(problems[:5])}"
             )
-        tampered = self._verify([entry for entry in missing if entry.sha256])
         if tampered:
             raise CheckpointCacheError(
                 f"R2 cache files of {model_type} do not match their hashes (removed): {', '.join(tampered[:5])}"
@@ -273,21 +327,23 @@ class R2CheckpointCache:
         log.info("hydrated %s: %d file(s) pulled from R2", model_type, len(missing))
         return len(missing)
 
-    def _verify(self, entries: list[FileEntry]) -> list[str]:
-        """Paths whose local content does not match the manifest hash (deleted)."""
-        def check(entry: FileEntry) -> str | None:
-            local = self._local(entry.root, entry.path)
-            if file_sha256(local) == entry.sha256:
-                return None
-            os.remove(local)
-            return entry.path
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            return [path for path in pool.map(check, entries) if path]
+    def _matches(self, entry: FileEntry) -> str | None:
+        """Hash-check a pulled file: None if it matches, else delete it and return its path.
+
+        A missing or short file is left to the size check (incomplete pull).
+        """
+        local = self._local(entry.root, entry.path)
+        if not (os.path.isfile(local) and os.path.getsize(local) == entry.size):
+            return None
+        if file_sha256(local) == entry.sha256:
+            return None
+        os.remove(local)
+        return entry.path
 
     def _with_hashes(self, entries: list[FileEntry]) -> list[FileEntry]:
         def hashed(entry: FileEntry) -> FileEntry:
             return FileEntry(entry.root, entry.path, entry.size, file_sha256(self._local(entry.root, entry.path)))
-        with ThreadPoolExecutor(max_workers=4) as pool:
+        with ThreadPoolExecutor(max_workers=_HASH_WORKERS) as pool:
             return list(pool.map(hashed, entries))
 
     def has_hashes(self, model_type: str) -> bool:
@@ -338,7 +394,7 @@ class R2CheckpointCache:
         ]
         upload_bytes = sum(entry.size for entry in new_files)
         self._run_batch([
-            f'cp "{self._local(entry.root, entry.path)}" "{self._remote(entry.root, entry.path)}"'
+            f'cp {_CP_FLAGS} "{self._local(entry.root, entry.path)}" "{self._remote(entry.root, entry.path)}"'
             for entry in new_files
         ], timeout=max(_MIN_UPLOAD_TIMEOUT_S, upload_bytes / _MIN_UPLOAD_BYTES_PER_S))
         if new_files or new_links or not old_files:

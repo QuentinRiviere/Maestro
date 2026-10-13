@@ -4814,6 +4814,36 @@ def _submit_and_wait(
     raise _GenerationTimeoutError(_director_job_outputs(settled))
 
 
+def review_pause_seconds() -> float | None:
+    """How long the oldest Director review pause has lasted, None without one.
+
+    The remote worker stays up while the user reviews a cast, prompts or
+    storyboard, so continuing does not pay a cold start.
+    """
+    now = time.time()
+    with _pipeline_lock:
+        waits = [
+            now - float(p.get("paused_at") or now)
+            for p in _pipelines.values()
+            if p.get("status") == "paused" and str(p.get("pause_reason") or "").startswith("review")
+        ]
+    return max(waits) if waits else None
+
+
+def active_model_types() -> list[str]:
+    """Image then video models of the Director projects in progress, for preloading."""
+    models: list[str] = []
+    with _pipeline_lock:
+        pipelines = [p for p in _pipelines.values() if p.get("status") in {"running", "paused"}]
+        for pipeline in sorted(pipelines, key=lambda p: float(p.get("created_at") or 0)):
+            params = pipeline.get("params") or {}
+            for key in ("image_model", "video_model"):
+                model = params.get(key)
+                if isinstance(model, str) and model and model not in models:
+                    models.append(model)
+    return models
+
+
 def _update_pipeline(pid: str, **kwargs):
     """Thread-safe update; cancellation is an absorbing terminal state."""
     terminal_event = None
@@ -4829,6 +4859,8 @@ def _update_pipeline(pid: str, **kwargs):
         previous_status = str(pipeline.get("status") or "").lower()
         pipeline.update(kwargs)
         next_status = str(pipeline.get("status") or "").lower()
+        if next_status == "paused" and previous_status != "paused":
+            pipeline["paused_at"] = time.time()
         if (
             next_status in {"completed", "failed"}
             and next_status != previous_status

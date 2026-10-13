@@ -50,6 +50,7 @@ class FakeDstack:
         self.token = "tok-123456789abc"
         self.secrets = {}
         self.fleets = {}
+        self.log_lines = [("t1", "[maestro-worker] building venv")]
 
     def post(self, url, json=None, headers=None, timeout=None):
         path = url.split("127.0.0.1:3000", 1)[1]
@@ -81,9 +82,10 @@ class FakeDstack:
             self.run["status"] = "terminating"
             return FakeResponse()
         if path.endswith("/logs/poll"):
-            line = base64.b64encode(b"[maestro-worker] building venv").decode()
-            return FakeResponse(body={"logs": [{"timestamp": "t1", "log_source": "stdout", "message": line}],
-                                      "next_token": None})
+            start = json.get("start_time")
+            logs = [{"timestamp": ts, "log_source": "stdout", "message": base64.b64encode(text.encode()).decode()}
+                    for ts, text in self.log_lines if not start or ts > start]
+            return FakeResponse(body={"logs": logs, "next_token": None})
         return FakeResponse(404, {"detail": "nope"})
 
     # transitions
@@ -210,6 +212,9 @@ class RunSpecTests(unittest.TestCase):
         self.assertNotIn("registry_auth", config)
         self.assertEqual(config["fleets"], ["studio-comfy-fleet"])
         self.assertTrue(config["probes"][0]["url"].startswith("/"))
+        # The route opens on the first passing probe, so probe often until then.
+        self.assertEqual((config["probes"][0]["interval"], config["probes"][0]["ready_after"]), (2, 1))
+        self.assertTrue(config["probes"][0]["until_ready"])
         self.assertIn("--branch feat/remote", config["commands"][0])
         self.assertTrue(config["commands"][-1].endswith("remote_worker_boot.sh"))
         self.assertNotIn("R2_ACCOUNT_ID", config["env"])
@@ -350,6 +355,51 @@ class ManagerTests(unittest.TestCase):
         self.assertEqual(self.manager.status()["state"], "ready")
         self.proxy_up = False  # checked once per run, not on every poll
         self.assertEqual(self.manager.status()["state"], "ready")
+
+    def test_review_pause_holds_the_worker_for_half_an_hour(self):
+        self.manager.start()
+        self.fake.to_running(ready=True)
+        self.manager.status()
+        paused_for = {"seconds": None}
+        self.manager.review_pause = lambda: paused_for["seconds"]
+        self.clock.now += 31 * 60
+        paused_for["seconds"] = 20 * 60
+        self.assertFalse(self.manager.idle_tick())
+        self.assertTrue(self.manager.status()["review_hold"])
+        paused_for["seconds"] = 31 * 60
+        self.assertTrue(self.manager.idle_tick())
+
+    def test_start_preloads_the_requested_then_upcoming_models(self):
+        self.manager.update_settings({"r2_account_id": "acc", "r2_access_key_id": "kid",
+                                      "r2_secret_access_key": "secret", "r2_bucket": "bucket"})
+        self.manager.upcoming_models = lambda: ["flux2_klein_9b", "minimax_h3", "cloud_veo"]
+        self.manager.start("minimax_h3")
+        env = self.fake.run["run_spec"]["configuration"]["env"]
+        self.assertEqual(env["MAESTRO_PRELOAD_MODELS"], "minimax_h3,flux2_klein_9b")
+        self.assertEqual(self.manager.status()["preload_models"], ["minimax_h3", "flux2_klein_9b"])
+
+    def test_boot_steps_come_from_the_pod_logs(self):
+        self.manager.start()
+        self.fake.run["submitted_at"] = "2026-10-13T11:00:00+00:00"
+        self.fake.to_running(ready=False)
+        self.fake.log_lines = [
+            ("2026-10-13T11:00:40+00:00", '[Boot] {"phase": "clone", "state": "started"}'),
+            ("2026-10-13T11:00:42+00:00", '[Boot] {"phase": "clone", "state": "done"}\n'
+                                          '[Boot] {"phase": "prefetch", "state": "started", "model_type": "m"}'),
+            ("2026-10-13T11:01:00+00:00", "[Maestro] Importing WanGP engine..."),
+        ]
+        steps = {s["label"]: s for s in self.manager.status()["boot"]["steps"]}
+        self.assertEqual(steps["GPU host found and image pulled"]["seconds"], 40)
+        self.assertEqual(steps["Code cloned"]["seconds"], 2)
+        self.assertEqual(steps["Weights pulled from R2: m"]["state"], "started")
+        self.assertEqual(steps["Engine loaded"]["state"], "started")
+
+        self.fake.log_lines.append(("2026-10-13T11:01:30+00:00",
+                                    '[Boot] {"phase": "prefetch", "state": "done", "model_type": "m", "gigabytes": 20}'))
+        self.clock.now += 5
+        steps = {s["label"]: s for s in self.manager.status()["boot"]["steps"]}
+        self.assertEqual(steps["Weights pulled from R2: m"]["seconds"], 48)
+        self.assertEqual(steps["Weights pulled from R2: m"]["details"], {"gigabytes": 20})
 
     def test_idle_ttl_stops_ready_worker_but_not_during_jobs(self):
         self.manager.start()

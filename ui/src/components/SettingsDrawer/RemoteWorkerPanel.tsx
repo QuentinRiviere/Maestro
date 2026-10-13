@@ -22,6 +22,7 @@ import type {
 } from '../../types'
 import { Toggle } from './NotificationSettingsPanel'
 import { R2CachePanel } from './R2CachePanel'
+import { WorkerBootSteps } from './WorkerBootSteps'
 
 const STATE_LABEL: Record<RemoteWorkerState, string> = {
   not_configured: 'Not configured',
@@ -312,11 +313,19 @@ export function RemoteWorkerPanel() {
                 <span>
                   {status?.active_jobs
                     ? `${status.active_jobs} job running`
-                    : `Auto-stop in ${formatMinutes(status?.idle_stop_in_seconds)}`}
+                    : status?.review_hold
+                      ? 'Kept up for a Director review'
+                      : `Auto-stop in ${formatMinutes(status?.idle_stop_in_seconds)}`}
+                </span>
+              )}
+              {!!status?.preload_models?.length && (
+                <span className="col-span-2 truncate" title={status.preload_models.join(', ')}>
+                  Preloading · {status.preload_models.join(', ')}
                 </span>
               )}
             </div>
           )}
+          {ACTIVE_STATES.includes(state) && <WorkerBootSteps boot={status?.boot} />}
         </div>
 
         <label className="block space-y-1">

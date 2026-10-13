@@ -121,4 +121,8 @@ RUN curl -sL --fail --connect-timeout 30 --max-time 900 -o "/tmp/wheels/${FLASH_
  && rm -rf /tmp/wheels \
  && python -c "import importlib.metadata as m; print('sageattention', m.version('sageattention'), '| flash_attn', m.version('flash_attn'))"
 
+# uv installs without bytecode, so every pod used to compile torch, diffusers
+# and the rest on its first imports. Compile once here instead.
+RUN python -m compileall -q -j 0 "$VIRTUAL_ENV/lib" >/dev/null || true
+
 WORKDIR /workspace

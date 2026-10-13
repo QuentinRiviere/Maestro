@@ -25,9 +25,12 @@ VENV="${VIRTUAL_ENV:-/opt/maestro-venv}"
 export SERVER_PORT="${SERVER_PORT:-7860}"
 
 log() { echo "[maestro-worker] $(date -u +%H:%M:%S) $*"; }
+# Startup steps the controller shows in the UI (see services/remote_worker/boot_events.py).
+boot_event() { echo "[Boot] {\"phase\": \"$1\", \"state\": \"$2\"${3:+, $3}}"; }
 
-log "app dir ${APP_DIR}, data ${DATA}, $(nproc) vCPU"
-nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader || true
+GPU_NAME="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 || true)"
+log "app dir ${APP_DIR}, data ${DATA}, $(nproc) vCPU, GPU ${GPU_NAME:-none}"
+boot_event container started "\"vcpu\": $(nproc), \"gpu\": \"${GPU_NAME:-none}\""
 
 if [ ! -x "${VENV}/bin/python" ]; then
   echo "FATAL: ${VENV} is missing; run this worker from the maestro-worker image" >&2
@@ -59,6 +62,19 @@ else
   log "no R2 cache configured; weights come from their original sources"
 fi
 
+cd "${APP_DIR}"
+# Pull the weights of the work that started this pod while Maestro boots.
+if [ -n "${MAESTRO_PRELOAD_MODELS:-}" ] && [ "${1:-}" != "--cache-warm" ]; then
+  log "prefetching ${MAESTRO_PRELOAD_MODELS} from R2 in the background"
+  "${VENV}/bin/python" -m services.remote_worker.prefetch "${MAESTRO_PRELOAD_MODELS}" &
+fi
+
+# A fresh clone has no bytecode: compile it on every core now rather than
+# module by module, on one core, during Maestro's imports.
+boot_event compile started
+"${VENV}/bin/python" -m compileall -q -j 0 "${APP_DIR}" >/dev/null 2>&1 || true
+boot_event compile done
+
 # Worker-local paths, applied by wgp on top of its own (auto-tuned on first
 # boot) config. Writing a partial wgp_config.json instead would skip wgp's
 # defaults entirely.
@@ -76,10 +92,10 @@ export MAESTRO_CONFIG_OVERRIDES="$(cat <<JSON
 JSON
 )"
 
-cd "${APP_DIR}"
 if [ "${1:-}" = "--cache-warm" ]; then
   log "caching ${2:-?} in R2, then exiting"
 else
   log "starting Maestro API on port ${SERVER_PORT}"
+  boot_event maestro started
 fi
 exec "${VENV}/bin/python" launch.py --worker "$@"

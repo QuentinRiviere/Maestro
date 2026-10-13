@@ -428,6 +428,28 @@ _remote_worker.pending_work = lambda: any(
 )
 
 
+def _remote_upcoming_models() -> list[str]:
+    """Models of the queued local work, then of the Director projects in progress."""
+    from services.director_pipeline import active_model_types
+
+    models = [
+        (job.get("params") or {}).get("model_type")
+        for job in list(_jobs.values())
+        if snapshot_job(job).get("status") in {"queued", "running"}
+    ]
+    return [m for m in [*models, *active_model_types()] if isinstance(m, str) and m and not _is_cloud_model(m)]
+
+
+def _remote_review_pause() -> float | None:
+    from services.director_pipeline import review_pause_seconds
+
+    return review_pause_seconds()
+
+
+_remote_worker.upcoming_models = _remote_upcoming_models
+_remote_worker.review_pause = _remote_review_pause
+
+
 def _play_host_completion_sound() -> None:
     """Play one asynchronous chime on the computer running Maestro."""
     if not wgp.server_config.get("maestro_host_notification_sound_enabled", False):
@@ -1572,9 +1594,13 @@ def _download_model_files_cached(
         if entry is not None:
             entry["phase"] = name
 
+    from services.remote_worker.prefetch import wait_for as _wait_for_prefetch
+
     # Snapshots diff the whole disk, so cached downloads run one at a time.
     with _checkpoint_cache_lock:
         phase("pulling_cache")
+        # The boot prefetch may already be pulling this model from R2.
+        _wait_for_prefetch(model_type)
         try:
             cache.hydrate(model_type)
         except CheckpointCacheError as exc:

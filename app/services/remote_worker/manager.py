@@ -23,6 +23,7 @@ import uuid
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from services.remote_worker import boot_events
 from services.remote_worker.dstack_client import DstackClient, DstackError
 from services.remote_worker.settings import (
     SECRET_FIELDS,
@@ -50,6 +51,11 @@ class RemoteWorkerError(RuntimeError):
 # With stop_when_queue_empty, the worker waits this long after its last job so
 # a follow-up job (next queue item, next Director shot) can claim it.
 QUEUE_EMPTY_GRACE_SECONDS = 30.0
+# A Director project paused for the user's review keeps the worker this long,
+# so continuing does not pay a cold start; past it the idle stop applies.
+REVIEW_HOLD_SECONDS = 30 * 60
+# Startup steps are read from the run logs at most this often.
+BOOT_LOG_POLL_SECONDS = 3.0
 
 
 class RemoteWorkerManager:
@@ -76,6 +82,10 @@ class RemoteWorkerManager:
         # Whether the host still has queued or running generations (set by
         # launch.py, which owns the job queue).
         self.pending_work: Callable[[], bool] = pending_work or (lambda: False)
+        # Seconds the oldest Director review pause has lasted, None without one.
+        self.review_pause: Callable[[], float | None] = lambda: None
+        # Models the queued work will need, preloaded from R2 at boot.
+        self.upcoming_models: Callable[[], list[str]] = lambda: []
         self._lock = threading.RLock()
         self._active_jobs = 0
         self._ready_since: float | None = None
@@ -91,6 +101,12 @@ class RemoteWorkerManager:
         self._watchdog_stop = threading.Event()
         self.r2_keys = EphemeralR2Keys(store.path.parent / "remote_worker_r2_keys.json")
         self._network_filter: dict[str, Any] = {}
+        self._preload_models: list[str] = []
+        self._boot_submission: str | None = None
+        self._boot_lines: list[dict[str, str]] = []
+        self._boot_cursor: str | None = None
+        self._boot_polled_at = 0.0
+        self._route_ready_at: float | None = None
 
     # ── settings ───────────────────────────────────────────────────────────
 
@@ -161,6 +177,8 @@ class RemoteWorkerManager:
             "pod_r2_keys": self.r2_keys.enabled(settings),
             "pod_r2_keys_active": len(self.r2_keys.tracked()),
             "network_filter": self._network_filter or None,
+            "preload_models": list(self._preload_models),
+            "review_hold": self._review_hold_active(),
         }
         if not settings.configured:
             return base
@@ -213,8 +231,10 @@ class RemoteWorkerManager:
                 details["image_pull_percent"] = int(
                     100 * (pull.get("downloaded_bytes") or 0) / max(1, pull["total_bytes"])
                 )
+            details["boot"] = self._boot(run, submission, "starting")
             return {**details, "state": "starting"}
         if not _probes_ready(run, submission):
+            details["boot"] = self._boot(run, submission, "booting")
             return {**details, "state": "booting"}
         # Probes passing is not enough: the dstack proxy registers the
         # replica a little later and answers 404 "Service not found" until
@@ -223,8 +243,10 @@ class RemoteWorkerManager:
         service_url = self.client().service_base_url(run)
         if self._proxy_ok_run != run_id:
             if not service_url or not self._proxy_check(service_url, self.settings.token):
+                details["boot"] = self._boot(run, submission, "booting")
                 return {**details, "state": "booting", "message": "Waiting for the dstack proxy route"}
             self._proxy_ok_run = run_id
+            self._route_ready_at = self._clock()
 
         with self._lock:
             if self._run_id != run_id or self._ready_since is None:
@@ -233,6 +255,7 @@ class RemoteWorkerManager:
                 self._last_activity = self._ready_since
             idle_seconds = 0 if self._active_jobs else max(0.0, self._clock() - (self._last_activity or self._clock()))
         self._maybe_preload(service_url)
+        details["boot"] = self._boot(run, submission, "ready")
         details.update({
             "state": "ready",
             "service_url": service_url,
@@ -243,6 +266,54 @@ class RemoteWorkerManager:
             ),
         })
         return details
+
+    def _boot(self, run: Mapping[str, Any], submission: Mapping[str, Any], state: str) -> dict[str, Any]:
+        """Startup steps of the current pod, from its ``[Boot]`` log lines."""
+        submission_id = str(submission.get("id") or "")
+        with self._lock:
+            if submission_id != self._boot_submission:
+                self._boot_submission = submission_id
+                self._boot_lines, self._boot_cursor = [], None
+                if state != "ready":
+                    self._route_ready_at = None
+            events = boot_events.parse_events(self._boot_lines)
+            # Once ready with every step finished, the logs are not read again.
+            settled = state == "ready" and bool(events) and all(
+                step["state"] != "started" for step in boot_events.steps(events))
+            due = self._clock() - self._boot_polled_at >= BOOT_LOG_POLL_SECONDS
+            poll = bool(submission_id) and state != "starting" and due and not settled
+            if poll:
+                self._boot_polled_at = self._clock()
+            cursor = self._boot_cursor
+        if poll:
+            try:
+                lines = self.client().poll_logs(self.settings.run_name, submission_id,
+                                                start_time=cursor, limit=1000)
+            except (DstackError, RemoteWorkerError):
+                lines = []
+            with self._lock:
+                if submission_id == self._boot_submission and lines:
+                    self._boot_lines.extend(line for line in lines if boot_events.relevant(line.get("message", "")))
+                    self._boot_cursor = lines[-1].get("timestamp") or self._boot_cursor
+                events = boot_events.parse_events(self._boot_lines)
+        with self._lock:
+            route_ready = self._route_ready_at
+        steps = boot_events.steps(events)
+        submitted = boot_events.seconds(str(run.get("submitted_at") or ""))
+        # The first line the pod prints ends the wait for a host and the image.
+        container = next((e["at"] for e in events), None)
+        host = {"phase": "host", "label": "GPU host found and image pulled",
+                "state": "done" if container else "started", "started_at": submitted, "ended_at": container}
+        api = next((step for step in steps if step["phase"] == "api"), None)
+        route = None
+        if api and api.get("ended_at"):
+            route = {"phase": "route", "label": "dstack route open", "started_at": api["ended_at"],
+                     "state": "done" if route_ready else "started", "ended_at": route_ready}
+        result = [host, *steps] + ([route] if route else [])
+        for step in result:
+            if step.get("started_at") is not None and step.get("ended_at") is not None:
+                step["seconds"] = round(max(0.0, step["ended_at"] - step["started_at"]), 1)
+        return {"steps": result, "submitted_at": submitted}
 
     def _maybe_preload(self, service_url: str | None) -> None:
         """Ask a ready worker to fetch the selected model's weights, once per run."""
@@ -285,7 +356,8 @@ class RemoteWorkerManager:
                 client.apply_fleet(build_fleet_spec(settings))
             self._stop_reason = None
             self._last_activity = self._clock()
-            run_spec = build_run_spec(settings, output_scope)
+            self._preload_models = self._models_to_preload(model_type)
+            run_spec = build_run_spec(settings, output_scope, preload_models=self._preload_models)
             try:
                 self._network_filter = pin_fast_offers(
                     run_spec, lambda spec: client.get_plan(spec, max_offers=PLAN_OFFERS), settings,
@@ -296,6 +368,16 @@ class RemoteWorkerManager:
             client.apply(run_spec)
             log.info("remote worker %s submitted (model %s)", settings.run_name, model_type or "-")
         return self.status()
+
+    def _models_to_preload(self, model_type: str | None) -> list[str]:
+        models = [model_type] if model_type else []
+        try:
+            models += list(self.upcoming_models())
+        except Exception as exc:  # preloading is only a head start
+            log.warning("remote worker upcoming-models check failed: %s", exc)
+        if not models and self.settings.default_model_type:
+            models.append(self.settings.default_model_type)
+        return list(dict.fromkeys(m for m in models if isinstance(m, str) and m and not m.startswith("cloud_")))
 
     def stop(self, reason: str = "Stopped by user") -> dict[str, Any]:
         settings = self.settings
@@ -380,7 +462,7 @@ class RemoteWorkerManager:
         should_abort: Callable[[], bool] = lambda: False,
         on_update: Callable[[Mapping[str, Any]], None] = lambda status: None,
         timeout: float = 45 * 60,
-        poll_interval: float = 10.0,
+        poll_interval: float = 3.0,
     ) -> dict[str, Any]:
         """Start the worker if needed and block until it is ready.
 
@@ -429,10 +511,20 @@ class RemoteWorkerManager:
             log.warning("remote worker pending-work check failed: %s", exc)
             return True
 
+    def _review_hold_active(self) -> bool:
+        try:
+            waited = self.review_pause()
+        except Exception as exc:  # an unknown review state must not keep a pod billing
+            log.warning("remote worker review-pause check failed: %s", exc)
+            return False
+        return waited is not None and waited < REVIEW_HOLD_SECONDS
+
     def idle_tick(self) -> bool:
         """Stop the worker when idle past its limit. Returns True if stopped."""
         settings = self.settings
         if not settings.configured:
+            return False
+        if self._review_hold_active():
             return False
         with self._lock:
             if self._active_jobs or self._ready_since is None or self._last_activity is None:

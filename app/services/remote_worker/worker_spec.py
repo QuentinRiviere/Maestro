@@ -87,7 +87,13 @@ def pod_r2_env(settings: RemoteWorkerSettings, output_scope: str = "") -> dict[s
     return env
 
 
-def build_run_spec(settings: RemoteWorkerSettings, output_scope: str = "") -> dict[str, Any]:
+def _boot_event(phase: str, state: str) -> str:
+    """Shell that prints a startup step the controller shows (see boot_events.py)."""
+    return f"echo '[Boot] {{\"phase\": \"{phase}\", \"state\": \"{state}\"}}'"
+
+
+def build_run_spec(settings: RemoteWorkerSettings, output_scope: str = "",
+                   preload_models: list[str] | None = None) -> dict[str, Any]:
     """Service spec: clone Maestro at ``repo_ref`` and run the boot script.
 
     The image (docker/remote-worker) carries the Python environment, so a boot
@@ -98,13 +104,16 @@ def build_run_spec(settings: RemoteWorkerSettings, output_scope: str = "") -> di
     RunPod.
     """
     clone = (
-        f"rm -rf {SOURCE_DIR} && "
-        f"git clone --depth 1 --branch {shlex.quote(settings.repo_ref)} "
-        f"{shlex.quote(settings.repo_url)} {SOURCE_DIR}"
+        f"{_boot_event('clone', 'started')} && rm -rf {SOURCE_DIR} && "
+        f"git clone --quiet --depth 1 --single-branch --branch {shlex.quote(settings.repo_ref)} "
+        f"{shlex.quote(settings.repo_url)} {SOURCE_DIR} && {_boot_event('clone', 'done')}"
     )
     env: dict[str, str] = {"SERVER_PORT": str(WORKER_PORT)}
     if settings.r2_configured:
         env.update(pod_r2_env(settings, output_scope))
+        if preload_models:
+            # Pulled from R2 by the boot script while Maestro starts.
+            env["MAESTRO_PRELOAD_MODELS"] = ",".join(preload_models)
     configuration: dict[str, Any] = {
         "type": "service",
         "name": settings.run_name,
@@ -120,11 +129,16 @@ def build_run_spec(settings: RemoteWorkerSettings, output_scope: str = "") -> di
         "gateway": False,
         "auth": True,
         "replicas": 1,
+        # dstack only opens the proxy route once the probe passes: probe
+        # often so the route follows Maestro's startup within seconds, and
+        # stop probing once ready.
         "probes": [{
             "type": "http",
             "url": HEALTH_PATH,
-            "interval": 15,
-            "ready_after": 2,
+            "interval": 2,
+            "timeout": 5,
+            "ready_after": 1,
+            "until_ready": True,
         }],
     }
     if settings.registry_username and settings.registry_token:

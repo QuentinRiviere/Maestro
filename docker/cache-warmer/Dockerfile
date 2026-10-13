@@ -40,4 +40,7 @@ RUN python /tmp/controller_requirements.py /opt/maestro/requirements.txt --arch 
  && uv pip install -r /tmp/requirements-cpu.txt --index-strategy unsafe-best-match \
  && sha256sum /opt/maestro/requirements.txt | cut -d' ' -f1 > /opt/maestro/requirements.sha256
 
+# uv installs without bytecode; compile once instead of on every pod.
+RUN python -m compileall -q -j 0 "$VIRTUAL_ENV/lib" >/dev/null || true
+
 WORKDIR /opt/maestro

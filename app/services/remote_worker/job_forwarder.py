@@ -419,6 +419,11 @@ def _worker_status_message(status: Mapping[str, Any]) -> str:
         pull = status.get("image_pull_percent")
         return f"Starting remote GPU worker… (image {pull}%)" if pull is not None else "Starting remote GPU worker…"
     if state == "booting":
+        # The step in progress, e.g. "Weights pulled from R2: minimax_h3".
+        steps = (status.get("boot") or {}).get("steps") or []
+        current = next((step for step in reversed(steps) if step.get("state") == "started"), None)
+        if current and current.get("phase") != "host":
+            return f"Remote worker: {current.get('label')}…"
         return "Remote worker booting Maestro…"
     if state == "stopping":
         return "Waiting for the previous worker to stop…"

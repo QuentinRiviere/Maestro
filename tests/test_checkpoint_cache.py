@@ -60,7 +60,7 @@ class FakeS5:
                     for line in handle:
                         parts = shlex.split(line)
                         if parts:
-                            self._cp(parts[1], parts[2])
+                            self._cp(parts[-2], parts[-1])
         except FileNotFoundError as exc:
             return subprocess.CompletedProcess(argv, 1, "", f"ERROR: {exc}")
         return subprocess.CompletedProcess(argv, 0, "", "")
