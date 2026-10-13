@@ -731,6 +731,14 @@ _MOTION_VERBS_RE = re.compile(
 )
 
 
+_FIELD_LABEL_RE = re.compile(r"(?:^|\|)\s*[A-Z][A-Z /]{2,24}:")
+
+
+def _is_field_prompt(text: str) -> bool:
+    """True for planner prompts made of labelled fields separated by ``|``."""
+    return len(_FIELD_LABEL_RE.findall(text or "")) >= 2
+
+
 def _strip_motion_sentences(text: str) -> tuple[str, int]:
     """Drop any sentence containing a motion-implying verb.
 
@@ -743,6 +751,11 @@ def _strip_motion_sentences(text: str) -> tuple[str, int]:
     Returns (cleaned_text, num_sentences_dropped).
     """
     if not text or not text.strip():
+        return text, 0
+    # Field prompts ("SHOT: ... | SUBJECT: ... | SETTING: ...") hold one
+    # field per label; dropping a "sentence" there deletes the framing or a
+    # whole subject, which is far worse than a stray motion verb.
+    if _is_field_prompt(text):
         return text, 0
     boundary_re = re.compile(r"[.!?][\"']?\s+")
     sentences = []

@@ -243,3 +243,19 @@ class TestEndToEndDedupePlusCollapse(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestFieldPromptMotionStrip(unittest.TestCase):
+    def test_field_prompt_keeps_framing_and_every_subject(self):
+        from services.director.prompt_polish import sanitize_image_prompt
+
+        prompt = (
+            "SHOT: Close-up tracking on the hand and wrist, tilting slightly up. | SETTING: School hallway. "
+            "| SUBJECT: the girl from the reference image as she walks past. and the boy from the reference "
+            "image, stepping forward from the windowsill. | MOOD: Electric tension. Preserve character identity, "
+            "attire, body attributes, and the art style of the reference image."
+        )
+        cleaned = sanitize_image_prompt(prompt)
+        self.assertIn("SHOT: Close-up tracking", cleaned)
+        self.assertIn("the boy from the reference image", cleaned)
+        self.assertTrue(cleaned.endswith("art style of the reference image."))
