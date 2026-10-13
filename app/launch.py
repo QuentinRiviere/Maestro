@@ -1515,7 +1515,12 @@ def _download_model_files(model_type: str):
 _checkpoint_cache_lock = threading.Lock()
 
 
-def _download_model_files_cached(model_type: str, entry: dict | None = None):
+def _download_model_files_cached(
+    model_type: str,
+    entry: dict | None = None,
+    *,
+    background_publish: bool = True,
+) -> int | None:
     """On a remote worker, wrap the download with the R2 checkpoint cache.
 
     The cache pulls the files this model needed last time, Maestro's own
@@ -1538,7 +1543,7 @@ def _download_model_files_cached(model_type: str, entry: dict | None = None):
         cache = R2CheckpointCache.from_environment(roots)
     if cache is None:
         _download_model_files(model_type)
-        return
+        return None
 
     def phase(name: str) -> None:
         if entry is not None:
@@ -1556,6 +1561,10 @@ def _download_model_files_cached(model_type: str, entry: dict | None = None):
         _download_model_files(model_type)
         after = cache.snapshot()
     phase("done")
+
+    if not background_publish:
+        # Cache warming: the upload is the point, so report it and its errors.
+        return cache.publish(model_type, before, after)
 
     # The weights are usable now; uploading them only speeds up the next pod,
     # so it must not keep the generation that asked for them waiting.
@@ -7432,6 +7441,64 @@ def stop_remote_worker():
 @api.get("/api/v1/remote-worker/logs")
 def get_remote_worker_logs(since: str | None = None):
     return _remote_worker_call(lambda: {"lines": _remote_worker.logs(since)})
+
+
+def _cache_warmer():
+    from services.remote_worker.cache_warmer import CacheWarmer
+    global _cache_warmer_instance
+    if _cache_warmer_instance is None:
+        _cache_warmer_instance = CacheWarmer(lambda: _remote_worker.settings, _remote_worker.client)
+    return _cache_warmer_instance
+
+
+_cache_warmer_instance = None
+
+
+def _cache_warmer_call(fn, *args):
+    from services.remote_worker.cache_warmer import CacheWarmerError
+    try:
+        return _remote_worker_call(fn, *args)
+    except CacheWarmerError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@api.get("/api/v1/remote-worker/cache")
+def get_remote_worker_cache():
+    """Models in the R2 checkpoint cache, plus the CPU cache job's progress."""
+    from services.remote_worker.cache_warmer import list_cached_models
+    from services.remote_worker.r2_store import R2Store
+
+    def _read():
+        store = R2Store.from_settings(_remote_worker.settings)
+        cached, error = [], None
+        if store is None:
+            error = "R2 is not configured"
+        else:
+            try:
+                cached = list_cached_models(store)
+            except Exception as exc:
+                error = f"Could not read the R2 cache: {exc}"
+        return {"cached": cached, "error": error, "job": _cache_warmer().status()}
+
+    return _cache_warmer_call(_read)
+
+
+@api.post("/api/v1/remote-worker/cache/warm")
+async def warm_remote_worker_cache(request: Request):
+    """Download models on a cheap CPU pod and publish them to the R2 cache."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    model_types = body.get("model_types") if isinstance(body, dict) else None
+    if not isinstance(model_types, list):
+        raise HTTPException(status_code=400, detail="model_types must be a list")
+    return _cache_warmer_call(lambda: _cache_warmer().start(model_types))
+
+
+@api.post("/api/v1/remote-worker/cache/warm/stop")
+def stop_remote_worker_cache_warm():
+    return _cache_warmer_call(lambda: _cache_warmer().stop())
 
 
 @api.get("/api/v1/model-folders/scan")
@@ -31362,7 +31429,58 @@ else:
 # Entry point
 # ============================================================================
 
+def _run_cache_warm(model_types: list[str]) -> int:
+    """``--cache-warm a,b``: put models in the R2 cache from a CPU pod, then exit.
+
+    Each line starting with ``[CacheWarm]`` is a JSON event the controller
+    reads from the run logs to show per-model progress.
+    """
+    from services.remote_worker.checkpoint_cache import R2CheckpointCache
+
+    def emit(model_type: str, state: str, **extra) -> None:
+        print("[CacheWarm] " + json.dumps({"model_type": model_type, "state": state, **extra}), flush=True)
+
+    checkpoints_paths = wgp.server_config.get("checkpoints_paths") or ["ckpts"]
+    roots = {"ckpts": checkpoints_paths[0]}
+    if os.environ.get("HF_HOME"):
+        roots["hf"] = os.environ["HF_HOME"]
+    if wgp.server_config.get("loras_root"):
+        roots["loras"] = wgp.server_config["loras_root"]
+    cache = R2CheckpointCache.from_environment(roots)
+    if cache is None:
+        print("[CacheWarm] R2 is not configured on this pod", flush=True)
+        return 2
+
+    failures = 0
+    for model_type in model_types:
+        if not wgp.get_model_def(model_type):
+            emit(model_type, "failed", error="Unknown model")
+            failures += 1
+            continue
+        if cache.read_manifest(model_type)[0]:
+            emit(model_type, "cached", message="Already in the R2 cache")
+            continue
+        emit(model_type, "downloading")
+        started = time.time()
+        try:
+            published = _download_model_files_cached(model_type, background_publish=False)
+        except Exception as exc:
+            emit(model_type, "failed", error=str(exc)[:300])
+            failures += 1
+            continue
+        emit(model_type, "cached", files=published, seconds=round(time.time() - started))
+    return 1 if failures else 0
+
+
 if __name__ == "__main__":
+    if "--cache-warm" in _launch_args:
+        _warm_index = _launch_args.index("--cache-warm")
+        _warm_targets = _launch_args[_warm_index + 1] if _warm_index + 1 < len(_launch_args) else ""
+        _warm_code = _run_cache_warm([m for m in _warm_targets.split(",") if m])
+        sys.stdout.flush()
+        # Background threads started at import must not keep a billed pod alive.
+        os._exit(_warm_code)
+
     port = int(os.environ.get("SERVER_PORT", "7860"))
 
     # Bind-host resolution priority:

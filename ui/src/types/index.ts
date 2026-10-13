@@ -1352,6 +1352,39 @@ export interface RemoteWorkerConnectionTest {
   fleets: string[]
 }
 
+export interface R2CachedModel {
+  model_type: string
+  files: number
+  bytes: number
+  updated_at: number
+}
+
+export type R2CacheJobState = 'idle' | 'starting' | 'running' | 'done' | 'failed' | 'stopped' | 'unknown'
+
+export interface R2CacheJobModel {
+  model_type: string
+  state: 'downloading' | 'cached' | 'failed'
+  message?: string
+  error?: string
+  files?: number
+  seconds?: number
+}
+
+export interface R2CacheJob {
+  state: R2CacheJobState
+  message?: string
+  requested?: string[]
+  models: R2CacheJobModel[]
+  price_per_hour?: number | null
+  cost?: number | null
+}
+
+export interface R2CacheStatus {
+  cached: R2CachedModel[]
+  error: string | null
+  job: R2CacheJob
+}
+
 export interface RemoteWorkerLogLine {
   timestamp: string
   source: string

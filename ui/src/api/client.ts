@@ -2273,6 +2273,22 @@ export function stopRemoteWorker(): Promise<import('../types').RemoteWorkerStatu
   return remoteWorkerRequest('/stop', { method: 'POST' }, 'Could not stop the remote worker')
 }
 
+export function fetchR2CacheStatus(): Promise<import('../types').R2CacheStatus> {
+  return remoteWorkerRequest('/cache', undefined, 'Failed to read the R2 cache')
+}
+
+export function warmR2Cache(modelTypes: string[]): Promise<import('../types').R2CacheJob> {
+  return remoteWorkerRequest('/cache/warm', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model_types: modelTypes }),
+  }, 'Could not start the cache job')
+}
+
+export function stopR2CacheWarm(): Promise<import('../types').R2CacheJob> {
+  return remoteWorkerRequest('/cache/warm/stop', { method: 'POST' }, 'Could not stop the cache job')
+}
+
 export async function fetchRemoteWorkerLogs(since?: string): Promise<import('../types').RemoteWorkerLogLine[]> {
   const query = since ? `?since=${encodeURIComponent(since)}` : ''
   const payload = await remoteWorkerRequest<{ lines: import('../types').RemoteWorkerLogLine[] }>(

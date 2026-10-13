@@ -68,5 +68,9 @@ JSON
 )"
 
 cd "${APP_DIR}"
-log "starting Maestro API on port ${SERVER_PORT}"
-exec "${VENV}/bin/python" launch.py --worker
+if [ "${1:-}" = "--cache-warm" ]; then
+  log "caching ${2:-?} in R2, then exiting"
+else
+  log "starting Maestro API on port ${SERVER_PORT}"
+fi
+exec "${VENV}/bin/python" launch.py --worker "$@"

@@ -21,6 +21,7 @@ import type {
   RemoteWorkerStatus,
 } from '../../types'
 import { Toggle } from './NotificationSettingsPanel'
+import { R2CachePanel } from './R2CachePanel'
 
 const STATE_LABEL: Record<RemoteWorkerState, string> = {
   not_configured: 'Not configured',
@@ -515,6 +516,8 @@ export function RemoteWorkerPanel() {
           <Field locked={isLocked('r2_prefix')} label="Prefix" value={merged.r2_prefix} onChange={value => update('r2_prefix', value)} placeholder="maestro" />
         </div>
       </section>
+
+      {settings?.r2_configured && merged.configured && <R2CachePanel />}
 
       <div className="flex items-center gap-2">
         <ActionButton onClick={save} disabled={!dirty || busy !== null} tone="primary">
