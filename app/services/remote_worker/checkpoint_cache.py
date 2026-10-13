@@ -24,6 +24,8 @@ import logging
 import os
 import subprocess
 import tempfile
+import threading
+import time
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -49,6 +51,7 @@ Runner = Callable[..., subprocess.CompletedProcess]
 # (5 parts of 50 MB in flight per file) leave most of a fast link idle.
 _CP_FLAGS = "--concurrency 16 --part-size 64"
 _HASH_WORKERS = max(4, min(8, os.cpu_count() or 4))
+PROGRESS_INTERVAL_SECONDS = 2.0
 # A publish that drops below this rate is abandoned: the cache only saves
 # time, and a stalled upload must never hold a generation hostage.
 _MIN_UPLOAD_BYTES_PER_S = 15_000_000
@@ -283,8 +286,40 @@ class R2CheckpointCache:
 
     # ── public operations ─────────────────────────────────────────────────
 
-    def hydrate(self, model_type: str) -> int:
-        """Pull cached files for ``model_type``; return how many were fetched."""
+    def _tree_bytes(self) -> int:
+        """Bytes under the cache roots, partial downloads included."""
+        total = 0
+        for root in self._roots.values():
+            for directory, _dirs, names in os.walk(root):
+                for name in names:
+                    try:
+                        total += os.lstat(os.path.join(directory, name)).st_size
+                    except OSError:
+                        pass
+        return total
+
+    def _report_progress(self, total_bytes: int, files_total: int, landed: list,
+                         on_progress: Callable[[dict], None], stop: threading.Event) -> None:
+        """Call ``on_progress`` every few seconds while a pull runs."""
+        baseline, started = self._tree_bytes(), time.time()
+        while True:
+            finished = stop.wait(PROGRESS_INTERVAL_SECONDS)
+            done = total_bytes if finished else min(total_bytes, max(0, self._tree_bytes() - baseline))
+            elapsed = max(0.001, time.time() - started)
+            try:
+                on_progress({"done_bytes": done, "total_bytes": total_bytes, "files_done": len(landed),
+                             "files_total": files_total, "bytes_per_second": int(done / elapsed)})
+            except Exception:  # progress is cosmetic; never break the pull
+                pass
+            if finished:
+                return
+
+    def hydrate(self, model_type: str, on_progress: Callable[[dict], None] | None = None) -> int:
+        """Pull cached files for ``model_type``; return how many were fetched.
+
+        ``on_progress`` receives ``{done_bytes, total_bytes, files_done,
+        files_total, bytes_per_second}`` every few seconds during the pull.
+        """
         files, links = self.read_manifest(model_type)
         if self.require_hashes and any(not entry.sha256 for entry in files):
             raise CheckpointCacheError(
@@ -296,14 +331,29 @@ class R2CheckpointCache:
                     and os.path.getsize(self._local(entry.root, entry.path)) == entry.size)
         ]
         # Each file is hashed as soon as it lands, while the rest download.
-        with ThreadPoolExecutor(max_workers=_HASH_WORKERS) as pool:
-            checks = []
+        landed_files: list[FileEntry] = []
+        stop = threading.Event()
+        reporter = None
+        if on_progress is not None and missing:
+            reporter = threading.Thread(
+                target=self._report_progress, daemon=True, name=f"r2-progress-{model_type}",
+                args=(sum(e.size for e in missing), len(missing), landed_files, on_progress, stop),
+            )
+            reporter.start()
+        try:
+            with ThreadPoolExecutor(max_workers=_HASH_WORKERS) as pool:
+                checks = []
 
-            def landed(entry: FileEntry) -> None:
-                if entry.sha256:
-                    checks.append(pool.submit(self._matches, entry))
-            self._pull(missing, landed)
-            tampered = [path for path in (check.result() for check in checks) if path]
+                def landed(entry: FileEntry) -> None:
+                    landed_files.append(entry)
+                    if entry.sha256:
+                        checks.append(pool.submit(self._matches, entry))
+                self._pull(missing, landed)
+                tampered = [path for path in (check.result() for check in checks) if path]
+        finally:
+            stop.set()
+            if reporter is not None:
+                reporter.join(timeout=5)
         problems = [
             entry.path for entry in missing
             if entry.path not in tampered

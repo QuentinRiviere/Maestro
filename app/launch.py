@@ -1593,6 +1593,11 @@ def _download_model_files_cached(
     def phase(name: str) -> None:
         if entry is not None:
             entry["phase"] = name
+            entry.pop("progress", None)
+
+    def progress(value: dict) -> None:
+        if entry is not None:
+            entry["progress"] = value
 
     from services.remote_worker.prefetch import wait_for as _wait_for_prefetch
 
@@ -1600,9 +1605,9 @@ def _download_model_files_cached(
     with _checkpoint_cache_lock:
         phase("pulling_cache")
         # The boot prefetch may already be pulling this model from R2.
-        _wait_for_prefetch(model_type)
+        _wait_for_prefetch(model_type, on_progress=progress)
         try:
-            cache.hydrate(model_type)
+            cache.hydrate(model_type, on_progress=progress)
         except CheckpointCacheError as exc:
             print(f"[Worker] R2 cache pull failed for {model_type}, downloading instead: {exc}")
         before = cache.snapshot()
@@ -1677,6 +1682,22 @@ def model_downloads_status():
                 "cancel_id": snapshot.get("download_id"),
                 "cancellable": bool(snapshot.get("cancellable")),
                 "phase": entry.get("phase"),
+                "started": entry.get("started"),
+                "progress": entry.get("progress"),
+            }
+    # Weights fetched from their source report through safe_download's
+    # per-file tracker; a model's download is the sum of the active files.
+    active = [d for d in safe_download.get_active_downloads() if d.get("status") == "downloading"]
+    for item in downloads.values():
+        if item["status"] == "downloading" and item["phase"] == "downloading" and active:
+            done = sum(int(d.get("downloaded_bytes") or 0) for d in active)
+            first = min(float(d.get("started_at") or time.time()) for d in active)
+            item["progress"] = {
+                "done_bytes": done,
+                "total_bytes": sum(int(d.get("total_bytes") or 0) for d in active) or None,
+                "files_done": None, "files_total": None,
+                "bytes_per_second": int(done / max(0.001, time.time() - first)),
+                "file": max(active, key=lambda d: d.get("last_active_at") or 0).get("filename"),
             }
     return {"downloads": downloads}
 

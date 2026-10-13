@@ -1363,6 +1363,24 @@ export interface RemoteWorkerStatus {
   review_hold?: boolean
   /** Startup steps of the current pod, read from its logs. */
   boot?: RemoteWorkerBoot
+  /** Weights the ready worker is pulling from R2 or downloading. */
+  worker_downloads?: RemoteWorkerDownload[]
+}
+
+export interface RemoteWorkerDownloadProgress {
+  done_bytes: number
+  total_bytes?: number | null
+  files_done?: number | null
+  files_total?: number | null
+  bytes_per_second?: number
+  file?: string
+}
+
+export interface RemoteWorkerDownload {
+  model_type: string
+  /** pulling_cache | downloading | publishing_cache */
+  phase?: string | null
+  progress?: RemoteWorkerDownloadProgress | null
 }
 
 export interface RemoteWorkerBootStep {

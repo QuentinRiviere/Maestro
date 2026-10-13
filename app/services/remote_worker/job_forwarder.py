@@ -248,9 +248,10 @@ class RemoteJobForwarder:
             if state in ("failed", "cancelled"):
                 raise RemoteJobError(f"Remote worker could not fetch {model_type}: {entry.get('error') or state}")
             phase = {
-                "pulling_cache": "Pulling weights from the R2 cache…",
-                "publishing_cache": "Saving new weights to the R2 cache…",
-            }.get(entry.get("phase") or "", "Downloading model weights on the worker…")
+                "pulling_cache": f"Pulling {model_type} from the R2 cache",
+                "publishing_cache": f"Saving {model_type} to the R2 cache",
+            }.get(entry.get("phase") or "", f"Downloading {model_type} on the worker")
+            phase += format_progress(entry.get("progress")) or "…"
             # The elapsed minutes are the job's heartbeat: callers that cancel
             # a job without visible progress (Director waits) must not mistake
             # a long first download or R2 upload for a stuck job.
@@ -411,6 +412,17 @@ class RemoteJobForwarder:
             join_output_file=renamed.get(join) if join else None,
             r2_objects={renamed[n]: k for n, k in objects.items() if n in renamed},
         )
+
+
+def format_progress(progress: Mapping[str, Any] | None) -> str:
+    """`` · 12.3 / 41.0 GB · 640 MB/s`` from a worker download progress, or ""."""
+    if not isinstance(progress, Mapping) or not progress.get("done_bytes"):
+        return ""
+    done = float(progress["done_bytes"]) / 1e9
+    total = float(progress.get("total_bytes") or 0) / 1e9
+    text = f" · {done:.1f} / {total:.1f} GB" if total else f" · {done:.1f} GB"
+    rate = float(progress.get("bytes_per_second") or 0) / 1e6
+    return text + (f" · {rate:.0f} MB/s" if rate >= 1 else "")
 
 
 def _worker_status_message(status: Mapping[str, Any]) -> str:

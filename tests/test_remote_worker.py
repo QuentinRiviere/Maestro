@@ -284,6 +284,8 @@ class ManagerTests(unittest.TestCase):
         )
         self.proxy_up = True
         self.manager._preload = lambda url, token, model: self.preloads.append((url, model))
+        self.worker_downloads = {}
+        self.manager._fetch_downloads = lambda url, token: self.worker_downloads
         self.manager.update_settings({"token": self.fake.token})
 
     def _wait_preload_threads(self):
@@ -400,6 +402,20 @@ class ManagerTests(unittest.TestCase):
         steps = {s["label"]: s for s in self.manager.status()["boot"]["steps"]}
         self.assertEqual(steps["Weights pulled from R2: m"]["seconds"], 48)
         self.assertEqual(steps["Weights pulled from R2: m"]["details"], {"gigabytes": 20})
+
+    def test_ready_status_lists_the_worker_downloads(self):
+        self.manager.start()
+        self.fake.to_running(ready=True)
+        self.worker_downloads = {
+            "minimax_h3": {"status": "downloading", "phase": "pulling_cache",
+                           "progress": {"done_bytes": 12_300_000_000, "total_bytes": 41_000_000_000,
+                                        "bytes_per_second": 640_000_000}},
+            "flux2_klein_9b": {"status": "completed", "phase": "done"},
+        }
+        downloads = self.manager.status()["worker_downloads"]
+        self.assertEqual([d["model_type"] for d in downloads], ["minimax_h3"])
+        from services.remote_worker.job_forwarder import format_progress
+        self.assertEqual(format_progress(downloads[0]["progress"]), " · 12.3 / 41.0 GB · 640 MB/s")
 
     def test_idle_ttl_stops_ready_worker_but_not_during_jobs(self):
         self.manager.start()

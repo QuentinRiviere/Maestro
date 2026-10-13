@@ -77,6 +77,11 @@ def steps(events: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
             "started_at": event.get("at"),
         })
         state = str(event["state"])
+        if state == "progress":
+            # Progress of a running step: only its details change.
+            step.setdefault("details", {}).update(
+                {k: v for k, v in event.items() if k not in {"phase", "state", "at", "model_type"}})
+            continue
         if state == "started":
             step["started_at"] = step.get("started_at") or event.get("at")
             if phase == "container":

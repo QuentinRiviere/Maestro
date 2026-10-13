@@ -107,6 +107,9 @@ class RemoteWorkerManager:
         self._boot_cursor: str | None = None
         self._boot_polled_at = 0.0
         self._route_ready_at: float | None = None
+        self._fetch_downloads: Callable[[str, str], dict[str, Any]] = _worker_downloads
+        self._downloads: dict[str, Any] = {}
+        self._downloads_polled_at = 0.0
 
     # ── settings ───────────────────────────────────────────────────────────
 
@@ -256,6 +259,7 @@ class RemoteWorkerManager:
             idle_seconds = 0 if self._active_jobs else max(0.0, self._clock() - (self._last_activity or self._clock()))
         self._maybe_preload(service_url)
         details["boot"] = self._boot(run, submission, "ready")
+        details["worker_downloads"] = self._worker_downloads(service_url)
         details.update({
             "state": "ready",
             "service_url": service_url,
@@ -314,6 +318,19 @@ class RemoteWorkerManager:
             if step.get("started_at") is not None and step.get("ended_at") is not None:
                 step["seconds"] = round(max(0.0, step["ended_at"] - step["started_at"]), 1)
         return {"steps": result, "submitted_at": submitted}
+
+    def _worker_downloads(self, service_url: str | None) -> list[dict[str, Any]]:
+        """Weights the ready worker is pulling or downloading, with their progress."""
+        if not service_url:
+            return []
+        if self._clock() - self._downloads_polled_at >= BOOT_LOG_POLL_SECONDS:
+            self._downloads_polled_at = self._clock()
+            self._downloads = self._fetch_downloads(service_url, self.settings.token)
+        return [
+            {"model_type": model_type, "phase": entry.get("phase"), "progress": entry.get("progress")}
+            for model_type, entry in sorted(self._downloads.items())
+            if isinstance(entry, Mapping) and entry.get("status") == "downloading"
+        ]
 
     def _maybe_preload(self, service_url: str | None) -> None:
         """Ask a ready worker to fetch the selected model's weights, once per run."""
@@ -575,6 +592,17 @@ def _proxy_reachable(service_url: str, token: str) -> bool:
         return response.status_code == 200
     except Exception:
         return False
+
+
+def _worker_downloads(service_url: str, token: str) -> dict[str, Any]:
+    import requests
+
+    try:
+        response = requests.get(f"{service_url}api/v1/models/downloads/status",
+                                headers={"Authorization": f"Bearer {token}"}, timeout=5)
+        return (response.json() or {}).get("downloads") or {} if response.ok else {}
+    except Exception:
+        return {}
 
 
 def _request_worker_preload(service_url: str, token: str, model_type: str) -> None:

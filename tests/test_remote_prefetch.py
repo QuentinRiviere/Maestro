@@ -101,8 +101,10 @@ def test_prefetch_reports_boot_events_and_releases_waiters(r2, tmp_path, capsys)
     assert prefetch.prefetch(["m", "missing"], _cache(script, tmp_path)) == 0
     events = boot_events.parse_events(
         {"timestamp": "", "message": line} for line in capsys.readouterr().out.splitlines())
-    assert [(e["model_type"], e["state"]) for e in events] == [
+    assert [(e["model_type"], e["state"]) for e in events if e["state"] != "progress"] == [
         ("m", "started"), ("m", "done"), ("missing", "started"), ("missing", "done")]
+    final = [e for e in events if e["state"] == "progress"][-1]
+    assert (final["model_type"], final["done_gigabytes"]) == ("m", 0.0)
     started = time.time()
     prefetch.wait_for("m")  # finished: returns at once
     assert time.time() - started < 1
@@ -117,3 +119,12 @@ def test_maestro_waits_for_a_running_prefetch(r2, tmp_path):
     started = time.time()
     prefetch.wait_for("m", timeout=5)
     assert 0.2 < time.time() - started < 3
+
+
+def test_pull_progress_reaches_the_total(r2, tmp_path):
+    script, bucket = r2
+    _publish(bucket, "m", {"a.safetensors": b"A" * 4096, "b.safetensors": b"B" * 1024})
+    seen = []
+    assert _cache(script, tmp_path).hydrate("m", on_progress=seen.append) == 2
+    assert seen[-1]["done_bytes"] == seen[-1]["total_bytes"] == 5120
+    assert seen[-1]["files_done"] == seen[-1]["files_total"] == 2

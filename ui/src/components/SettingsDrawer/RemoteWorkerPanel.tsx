@@ -22,7 +22,7 @@ import type {
 } from '../../types'
 import { Toggle } from './NotificationSettingsPanel'
 import { R2CachePanel } from './R2CachePanel'
-import { WorkerBootSteps } from './WorkerBootSteps'
+import { WorkerBootSteps, WorkerDownloads } from './WorkerBootSteps'
 
 const STATE_LABEL: Record<RemoteWorkerState, string> = {
   not_configured: 'Not configured',
@@ -180,12 +180,13 @@ export function RemoteWorkerPanel() {
   }, [run, refreshStatus])
 
   // Poll faster while the worker is changing state.
+  const downloading = !!status?.worker_downloads?.length
   useEffect(() => {
     if (!settings?.configured) return
-    const delay = state === 'starting' || state === 'booting' || state === 'stopping' ? 4000 : 15000
+    const delay = state === 'starting' || state === 'booting' || state === 'stopping' || downloading ? 4000 : 15000
     const timer = window.setInterval(() => void refreshStatus(), delay)
     return () => window.clearInterval(timer)
-  }, [settings?.configured, state, refreshStatus])
+  }, [settings?.configured, state, downloading, refreshStatus])
 
   useEffect(() => {
     if (!showLogs || !LOG_STATES.includes(state)) return
@@ -326,6 +327,7 @@ export function RemoteWorkerPanel() {
             </div>
           )}
           {ACTIVE_STATES.includes(state) && <WorkerBootSteps boot={status?.boot} />}
+          {state === 'ready' && <WorkerDownloads downloads={status?.worker_downloads} />}
         </div>
 
         <label className="block space-y-1">

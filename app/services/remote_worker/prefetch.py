@@ -24,6 +24,8 @@ from services.remote_worker.checkpoint_cache import CheckpointCacheError, R2Chec
 
 BOOT_MARKER = "[Boot]"
 WAIT_TIMEOUT_SECONDS = 30 * 60
+# Progress lines in the run logs at most this often per model.
+LOG_PROGRESS_SECONDS = 10.0
 
 
 def boot_event(phase: str, state: str, **extra) -> None:
@@ -47,10 +49,42 @@ def worker_roots() -> dict[str, str]:
     return roots
 
 
-def wait_for(model_type: str, timeout: float = WAIT_TIMEOUT_SECONDS) -> None:
+def read_progress(model_type: str) -> dict | None:
+    """The latest progress of a running prefetch (``CheckpointCache.hydrate`` shape)."""
+    if not os.path.exists(_marker(model_type, "running")):
+        return None
+    try:
+        with open(_marker(model_type, "progress"), encoding="utf-8") as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return None
+
+
+def _progress_writer(model_type: str):
+    last_log = [0.0]
+
+    def write(progress: dict) -> None:
+        tmp = _marker(model_type, "progress.tmp")
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump(progress, handle)
+        os.replace(tmp, _marker(model_type, "progress"))
+        if time.time() - last_log[0] >= LOG_PROGRESS_SECONDS:
+            last_log[0] = time.time()
+            boot_event("prefetch", "progress", model_type=model_type,
+                       done_gigabytes=round(progress["done_bytes"] / 1e9, 1),
+                       gigabytes=round(progress["total_bytes"] / 1e9, 1),
+                       megabytes_per_second=round(progress["bytes_per_second"] / 1e6))
+    return write
+
+
+def wait_for(model_type: str, timeout: float = WAIT_TIMEOUT_SECONDS,
+             on_progress=None) -> None:
     """Block while the boot prefetch of ``model_type`` is still pulling files."""
     deadline = time.time() + timeout
     while os.path.exists(_marker(model_type, "running")) and time.time() < deadline:
+        progress = read_progress(model_type)
+        if on_progress is not None and progress:
+            on_progress(progress)
         time.sleep(1)
 
 
@@ -68,7 +102,7 @@ def prefetch(model_types: list[str], cache: R2CheckpointCache | None) -> int:
         boot_event("prefetch", "started", model_type=model_type)
         try:
             files, _links = cache.read_manifest(model_type)
-            pulled = cache.hydrate(model_type)
+            pulled = cache.hydrate(model_type, on_progress=_progress_writer(model_type))
         except CheckpointCacheError as exc:
             failures += 1
             boot_event("prefetch", "failed", model_type=model_type, error=str(exc)[:300])

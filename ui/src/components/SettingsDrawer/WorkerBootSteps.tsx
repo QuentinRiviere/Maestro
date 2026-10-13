@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Check, Loader2, Minus, X } from 'lucide-react'
-import type { RemoteWorkerBoot, RemoteWorkerBootStep } from '../../types'
+import type { RemoteWorkerBoot, RemoteWorkerBootStep, RemoteWorkerDownload } from '../../types'
 
 function formatSeconds(seconds: number): string {
   if (seconds < 60) return `${Math.round(seconds)} s`
@@ -10,6 +10,10 @@ function formatSeconds(seconds: number): string {
 function stepDetail(step: RemoteWorkerBootStep): string | null {
   const details = step.details ?? {}
   if (step.state === 'failed' && typeof details.error === 'string') return details.error
+  if (step.state === 'started' && typeof details.done_gigabytes === 'number' && typeof details.gigabytes === 'number') {
+    const rate = typeof details.megabytes_per_second === 'number' ? ` · ${details.megabytes_per_second} MB/s` : ''
+    return `${details.done_gigabytes} / ${details.gigabytes} GB${rate}`
+  }
   if (typeof details.gigabytes === 'number' && typeof step.seconds === 'number' && step.seconds > 0) {
     const rate = (details.gigabytes * 8000) / step.seconds
     return `${details.gigabytes} GB · ${Math.round(rate)} Mb/s`
@@ -62,6 +66,46 @@ export function WorkerBootSteps({ boot }: { boot?: RemoteWorkerBoot }) {
               )}
             </span>
             {elapsed != null && elapsed >= 0 && <span className="shrink-0 tabular-nums text-text-muted">{formatSeconds(elapsed)}</span>}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+const DOWNLOAD_PHASE: Record<string, string> = {
+  pulling_cache: 'From R2 cache',
+  downloading: 'From source',
+  publishing_cache: 'Saving to R2',
+}
+
+/** Weights the ready worker is fetching right now, with their progress. */
+export function WorkerDownloads({ downloads }: { downloads?: RemoteWorkerDownload[] }) {
+  if (!downloads?.length) return null
+  return (
+    <div className="space-y-1.5 border-t border-border/60 pt-1.5 text-[10px]">
+      <div className="text-text-muted">Downloads on the worker</div>
+      {downloads.map(download => {
+        const progress = download.progress
+        const total = progress?.total_bytes ?? 0
+        const percent = progress && total > 0 ? Math.min(100, (progress.done_bytes / total) * 100) : null
+        const rate = progress?.bytes_per_second ? ` · ${Math.round(progress.bytes_per_second / 1e6)} MB/s` : ''
+        const amount = progress
+          ? `${(progress.done_bytes / 1e9).toFixed(1)}${total > 0 ? ` / ${(total / 1e9).toFixed(1)}` : ''} GB${rate}`
+          : 'starting…'
+        return (
+          <div key={download.model_type} className="space-y-0.5 text-text-secondary">
+            <div className="flex items-center gap-1.5">
+              <Loader2 size={10} className="shrink-0 animate-spin text-accent-blue" />
+              <span className="min-w-0 flex-1 truncate">{download.model_type}</span>
+              <span className="shrink-0 text-text-muted">{DOWNLOAD_PHASE[download.phase ?? ''] ?? download.phase ?? ''}</span>
+            </div>
+            <div className="h-1 overflow-hidden rounded bg-bg-hover">
+              <div className="h-full bg-accent-blue transition-all" style={{ width: `${percent ?? 0}%` }} />
+            </div>
+            <div className="truncate text-text-muted" title={progress?.file ?? undefined}>
+              {amount}{progress?.file ? ` · ${progress.file}` : ''}
+            </div>
           </div>
         )
       })}
