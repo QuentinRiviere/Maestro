@@ -80,6 +80,9 @@ class FakePlanner(CustomSkillPlanner):
 
     def _call_llm_json(self, **kwargs):
         self.prompts.append(kwargs)
+        # Story skills first design their scenes, then plan the shots.
+        if kwargs["system_prompt"].startswith("You are the director preparing the scenes"):
+            return list(getattr(self, "scenes", []))
         return list(self.answer)
 
 
@@ -90,11 +93,11 @@ class PlannerTests(unittest.TestCase):
     def test_rules_options_and_duration_bounds(self):
         planner = FakePlanner(self.spec, [{"scene_goal": "a", "duration_sec": 10}, {"scene_goal": "b", "duration_sec": 1}])
         plan = planner.plan(scene_description="Carbonara in 20 seconds", skill_options={"cuisine": "thai"})
-        prompt = planner.prompts[0]["system_prompt"]
+        prompt = planner.prompts[-1]["system_prompt"]
         self.assertIn("Never: No faces", prompt)
         self.assertIn("Cuisine: thai", prompt)
         self.assertIn("Cuts every 2 s on the beat.", prompt)
-        self.assertIn("Carbonara", planner.prompts[0]["user_prompt"])
+        self.assertIn("Carbonara", planner.prompts[-1]["user_prompt"])
         self.assertEqual([s.duration_sec for s in plan.shots], [4.0, 2.0])
         self.assertEqual(plan.skill_type, "custom:recipe_reel")
         self.assertEqual(plan.shots[0].metadata["skill_version"], 3)
@@ -104,6 +107,31 @@ class PlannerTests(unittest.TestCase):
             concept="x", clips=[{"duration_sec": 1.5}, {"start": 1.5, "end": 5}])
         self.assertEqual([s.duration_sec for s in plan.shots], [1.5, 3.5])
         self.assertEqual(plan.shots[0].audio_plan.mode, "audio_driven")
+
+    def test_story_shots_follow_the_scene_design(self):
+        spec = {**self.spec, "workflow": "story", "shot_duration": [5, 8],
+                "scene_grammar": {"camera_default": "Locked-off; push in only on a realization."}}
+        planner = FakePlanner(spec, [
+            {"scene_id": "hallway", "duration_sec": 6, "keep_sec": [0.5, 3.5], "visual_style": "lens flare",
+             "opening_blocking": "She walks screen-left to right", "closing_blocking": "She stops by the window"},
+            {"scene_id": "unknown", "duration_sec": 6, "keep_sec": [0, 6], "closing_blocking": "He holds her wrist"},
+        ])
+        planner.scenes = [{"scene_id": "Hallway", "place": "school corridor", "time_of_day": "afternoon",
+                           "light": "warm side light", "geography": "she keeps screen-left, he screen-right"}]
+        plan = planner.plan(scene_description="A new student meets a mysterious boy")
+        shot_prompt = planner.prompts[-1]["system_prompt"]
+        self.assertIn("SCENE CRAFT", shot_prompt)
+        self.assertIn("she keeps screen-left", shot_prompt)
+        self.assertIn("Locked-off; push in only on a realization.", shot_prompt)
+        first, second = plan.shots
+        self.assertEqual(first.metadata["continuity_group"], "hallway")
+        self.assertEqual(second.metadata["continuity_group"], "hallway")
+        self.assertEqual((first.continuity_strategy, second.continuity_strategy), ("independent", "continuous"))
+        self.assertEqual(first.spatial_setup, "She walks screen-left to right")
+        self.assertEqual(first.metadata["closing_blocking"], "She stops by the window")
+        self.assertEqual(first.metadata["keep_sec"], (0.5, 3.5))
+        self.assertNotIn("keep_sec", second.metadata)  # the whole shot is kept
+        self.assertEqual(first.visual_style, "")
 
     def test_block_without_options(self):
         self.assertIn("SKILL: Recipe Reel", skill_rules_block(self.spec, {}))

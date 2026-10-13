@@ -1402,6 +1402,7 @@ def _save_pipeline_state_locked(pid: str) -> bool:
         # instead of repeating ten or more minutes of successful LLM work.
         "planning_checkpoint": p.get("_planning_checkpoint") or None,
         "cast": p.get("cast"),
+        "edit_file": p.get("edit_file"),
         "clips": clips,
         "output_files": p.get("output_files", []),
         "total_time_sec": (time.time() - p["created_at"]) if p.get("created_at") else None,
@@ -5838,6 +5839,10 @@ def _run_pipeline(pid: str, resume: bool = False):
             completed_clip_videos = _clip_video_slots(
                 output_files or [], len(clip_plans),
             )
+            # Kept out of output_files: consumers read those as shots + one join.
+            edit_name = _build_tight_edit(pid, clip_plans, completed_clip_videos, pipeline_out_dir)
+            if edit_name:
+                _update_pipeline(pid, edit_file=edit_name)
         completed = _update_pipeline(
             pid,
             status="completed",
@@ -6781,6 +6786,8 @@ def _run_planning_v2(pid: str, params: dict, pipeline_type: str):
                 )
             ],
             "_director_duration_sec": getattr(shot, "duration_sec", None),
+            # Part of the rendered shot the tight edit keeps (render long, cut short).
+            "_director_keep_sec": metadata.get("keep_sec"),
         }
         if is_h3_model:
             audio_plan = getattr(shot, "audio_plan", None)
@@ -6825,6 +6832,31 @@ def _run_planning_v2(pid: str, params: dict, pipeline_type: str):
         print(f"[Pipeline] Shot {idx+1}: duration={dur}s, windows={wc}, keyframes={kf_count}, prompt_len={len(cp.get('video_prompt',''))}")
 
     return clip_plans, planned_clips
+
+
+def _build_tight_edit(pid: str, clip_plans: list[dict], clip_videos: list, out_dir: str) -> Optional[str]:
+    """Join each shot's planned keep range into ``*_edit.mp4``; the full join stays."""
+    from services.director.edit_cut import EDIT_SUFFIX, build_edit, has_cuts, normalize_keep
+
+    if not clip_videos or len(clip_videos) != len(clip_plans) or not all(clip_videos):
+        return None
+    keeps = [
+        normalize_keep(plan.get("_director_keep_sec"), plan.get("_director_duration_sec"))
+        for plan in clip_plans
+    ]
+    if not has_cuts(keeps):
+        return None
+    paths = [os.path.join(out_dir, os.path.basename(str(name))) for name in clip_videos]
+    if not all(os.path.isfile(path) for path in paths):
+        return None
+    name = time.strftime("%Y-%m-%d-%Hh%Mm%Ss") + f"_{pid}{EDIT_SUFFIX}"
+    try:
+        build_edit(paths, keeps, os.path.join(out_dir, name))
+    except Exception as error:  # noqa: BLE001 - the full join is the deliverable
+        print(f"[Pipeline {pid}] Tight edit failed (full join kept): {error}")
+        return None
+    print(f"[Pipeline {pid}] Tight edit: {sum(1 for k in keeps if k)} shot(s) trimmed -> {name}")
+    return name
 
 
 def _run_planning_legacy(pid: str, params: dict, pipeline_type: str):
