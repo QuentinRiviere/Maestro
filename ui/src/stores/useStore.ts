@@ -2808,6 +2808,11 @@ function findResolutionSelection(
 
 // Last cast and storyboard images the media feed was refreshed for.
 let _directorFeedMediaKey = ''
+const SIDEBAR_MODE_KEY = 'maestro_sidebar_mode'
+
+function _lastSidebarMode(): string | null {
+  try { return localStorage.getItem(SIDEBAR_MODE_KEY) } catch { return null }
+}
 let _galleryRevision = 0
 let _galleryMetadataRevision = 0
 let _galleryMorePending = false
@@ -4399,7 +4404,8 @@ export const useStore = create<AppState>((set, get) => ({
         _directorPipelineReconnectAttempted = true
         const active = pipelines.find(item => DIRECTOR_PIPELINE_ACTIVE.has(item.status))
         if (active && !get().pipelineId) {
-          void get().reattachDirectorPipeline(active.id, false)
+          // Reopen the Director chat when the page was reloaded from it.
+          void get().reattachDirectorPipeline(active.id, _lastSidebarMode() === 'director')
         }
       }
 
@@ -10622,10 +10628,12 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   setSidebarMode: (mode) => {
+    try { localStorage.setItem(SIDEBAR_MODE_KEY, mode) } catch { /* private mode */ }
     if (mode === 'director') {
-      const { sidebarMode, directorAudioFile } = get()
+      const { sidebarMode, directorAudioFile, pipelineId } = get()
       if (sidebarMode !== 'director') {
-        if (!directorAudioFile) {
+        // A reconnected run owns the chat; restarting at upload would hide it.
+        if (!directorAudioFile && !pipelineId) {
           set({ sidebarMode: 'director', directorStep: 'upload', directorError: null })
         } else {
           set({ sidebarMode: 'director' })
