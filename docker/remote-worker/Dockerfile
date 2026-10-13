@@ -27,10 +27,11 @@ ARG TORCH_INDEX
 # for shared/sage2_core.py to enable the SageAttention2++ kernels).
 ARG SAGEATTENTION_COMMIT=eb615cf6cf4d221338033340ee2de1c37fbdba4a
 # A100 (8.0), L40S/RTX 4090/RTX 6000 Ada (8.9), H100 (9.0, built as 9.0a by
-# setup.py), RTX 50/RTX PRO 6000 Blackwell (12.0). sm_86 GPUs (A40, RTX A6000)
+# setup.py). Blackwell (12.0) is left out: v2.2.0's setup.py also compiles the
+# sm90 extension for it and ptxas rejects wgmma on sm_120. sm_86 GPUs (A40, RTX A6000)
 # run the sm_80 cubins plus SageAttention's Triton path. Each extra arch adds
 # compile time to every kernel file, so keep the list to GPUs the fleet uses.
-ARG SAGEATTENTION_CUDA_ARCHS="8.0;8.9;9.0;12.0"
+ARG SAGEATTENTION_CUDA_ARCHS="8.0;8.9;9.0"
 # GitHub's hosted runner has 4 vCPUs and 16 GB RAM; nvcc already fans out
 # over the arch list (--threads=8 in setup.py), so keep ninja jobs low to
 # stay clear of the OOM killer.

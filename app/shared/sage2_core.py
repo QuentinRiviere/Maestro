@@ -67,8 +67,9 @@ from typing import Any, List, Literal, Optional, Tuple, Union
 import warnings
 import os
 
-# Architectures sageattn dispatches below; others (e.g. sm_100) raise at run time.
-_SAGE2_ARCHS = {(8, 0), (8, 6), (8, 9), (9, 0), (12, 0)}
+# Architectures the worker image compiles kernels for; others (sm_100, sm_120)
+# would raise at run time, so they stay on sage (Triton) or sdpa.
+_SAGE2_ARCHS = {(8, 0), (8, 6), (8, 9), (9, 0)}
 
 
 def is_sage2_supported():
