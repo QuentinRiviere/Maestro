@@ -129,7 +129,9 @@ class BibleLookTests(unittest.TestCase):
 
     def test_a_render_slot_becomes_a_candidate_or_a_failure(self):
         _, slot = bibles.start_render("spring_rain", self.girl, "default")
-        self.assertEqual(self._bible()["characters"][0]["variants"][0]["images"][0]["status"], "rendering")
+        self.assertEqual(self._bible()["characters"][0]["variants"][0]["images"][0]["status"], "queued")
+        bibles.mark_rendering("spring_rain", self.girl, "default", slot)
+        self.assertEqual(bibles.active_renders()[0]["status"], "rendering")
         bible = bibles.finish_render("spring_rain", self.girl, "default", slot, source=self.upload)
         self.assertEqual(bible["characters"][0]["variants"][0]["images"][0]["status"], "approved")
         _, slot = bibles.start_render("spring_rain", self.girl, "winter")
@@ -137,9 +139,9 @@ class BibleLookTests(unittest.TestCase):
         self.assertEqual(bible["characters"][0]["variants"][1]["images"][0]["error"], "worker down")
 
     def test_a_render_cut_by_a_restart_reads_as_failed(self):
-        bibles.start_render("spring_rain", self.girl, "default")
-        with patch.object(bibles, "RENDER_STALE_SECONDS", -1):
-            image = self._bible()["characters"][0]["variants"][0]["images"][0]
+        _, slot = bibles.start_render("spring_rain", self.girl, "default")
+        bibles._LIVE_SLOTS.discard(slot)  # what a restart leaves behind
+        image = self._bible()["characters"][0]["variants"][0]["images"][0]
         self.assertEqual((image["status"], image["error"]), ("failed", "Interrupted"))
 
     def test_editing_the_text_keeps_the_images(self):
@@ -205,7 +207,7 @@ class BibleRenderTests(unittest.TestCase):
             pipeline.render_bible_image("spring_rain", prop, "default", image_model="cloud_fal_seedream_4")
             for _ in range(100):
                 image = bibles.get_bible("spring_rain")["props"][0]["variants"][0]["images"][0]
-                if image["status"] != "rendering":
+                if image["status"] not in bibles.IN_PROGRESS:
                     break
                 time.sleep(0.02)
         self.assertEqual(image["status"], "approved")
@@ -410,7 +412,7 @@ class BibleGenerateTests(unittest.TestCase):
             bible = pipeline.generate_bible_assets("spring_rain", image_model="cloud_fal_seedream_4")
             self.assertEqual(len(bibles.missing_images(bible)), 0)  # every slot reserved at once
             for _ in range(200):
-                if not any(i["status"] == "rendering" for plural in ("characters", "locations")
+                if not any(i["status"] in bibles.IN_PROGRESS for plural in ("characters", "locations")
                            for e in bibles.get_bible("spring_rain")[plural] for v in e["variants"] for i in v["images"]):
                     break
                 time.sleep(0.02)
@@ -421,8 +423,54 @@ class BibleGenerateTests(unittest.TestCase):
         # Defaults first; the rooftop matches the approved hallway; the winter look edits the default sheet.
         self.assertTrue(calls[-1][0].startswith("The same person as reference image 1"))
         self.assertEqual(calls[-1][1], [girl["image"]])
+        # Places only share the look: no place is edited from another one.
         rooftop_call = next(c for c in calls if "flat roof" in c[0])
-        self.assertEqual(rooftop_call[1], [hall["image"]])
+        self.assertEqual(rooftop_call[1], [])
         self.assertTrue(roof["image"] and girl["variants"][1]["images"][0]["status"] == "approved")
         with self.assertRaises(bibles.BibleError):
             pipeline.generate_bible_assets("spring_rain")
+
+
+class BibleRenderSettingsTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        patcher = patch.object(bibles, "BIBLES_DIR", Path(self.tmp.name) / "bibles")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        saved = pipeline._wgp
+        self.addCleanup(lambda: setattr(pipeline, "_wgp", saved))
+        defs = {"cloud_fal_flux_dev_lora": {"cloud": {"provider": "fal", "defaults": {
+                    "num_inference_steps": 28, "guidance_scale": 3.5}}},
+                "cloud_fal_seedream_4": {"cloud": {"image_field": "image_urls", "max_images_in": 10}}}
+        pipeline._wgp = SimpleNamespace(save_path=self.tmp.name, get_model_def=defs.get)
+
+    def test_each_model_renders_with_its_own_settings_and_reference_support(self):
+        self.assertEqual(pipeline.image_model_defaults("cloud_fal_flux_dev_lora"),
+                         {"num_inference_steps": 28, "guidance_scale": 3.5})
+        self.assertEqual(pipeline.image_model_reference_limit("cloud_fal_flux_dev_lora"), 0)
+        self.assertEqual(pipeline.image_model_reference_limit("cloud_fal_seedream_4"), 10)
+
+    def test_a_text_only_model_gets_no_reference_and_no_reference_wording(self):
+        upload = os.path.join(self.tmp.name, "sheet.png")
+        with open(upload, "wb") as handle:
+            handle.write(b"png")
+        bible = bibles.save_bible({"name": "Spring Rain", "world": {"look": "Rainy neon haze."}, "characters": [
+            {**GIRL, "variants": [{"id": "default"}, {"id": "winter", "label": "Winter", "description": "camel coat"}]}]})
+        girl = bible["characters"][0]["id"]
+        bibles.add_image("spring_rain", girl, "default", upload)
+        _, slot = bibles.start_render("spring_rain", girl, "winter")
+        sent = {}
+
+        def submit(gen_params, **kwargs):
+            sent.update(gen_params)
+            return []
+
+        with patch.object(pipeline, "_submit_and_wait", side_effect=submit):
+            pipeline._render_bible_slot("spring_rain", girl, "winter", slot,
+                                        image_model="cloud_fal_flux_dev_lora", image_params={})
+        self.assertEqual(sent["image_refs"], [])
+        self.assertIn("a young person aged 17", sent["prompt"])
+        self.assertNotIn("reference image", sent["prompt"])
+        self.assertNotIn("Rainy neon haze", sent["prompt"])  # the look is for places and shots
+        self.assertEqual((sent["num_inference_steps"], sent["guidance_scale"]), (28, 3.5))

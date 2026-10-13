@@ -19,7 +19,7 @@ export interface DirectorBibleSummary {
 export interface BibleImage {
   id: string
   file: string | null
-  status: 'rendering' | 'candidate' | 'approved' | 'failed'
+  status: 'queued' | 'rendering' | 'candidate' | 'approved' | 'failed'
   error: string
   created_at: string
 }
@@ -177,4 +177,21 @@ export async function askBibleAssistant(bibleId: string, draft: DirectorBible,
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ bible: draft, messages }),
   }), 'The assistant did not answer')
+}
+
+export interface BibleRender {
+  bible_id: string
+  bible_name: string
+  kind: BibleKind
+  element: string
+  look: string
+  slot: string
+  status: 'queued' | 'rendering'
+  created_at: string
+}
+
+/** Queued and running bible renders, for the generation queue. */
+export async function fetchBibleRenders(): Promise<BibleRender[]> {
+  return (await json<{ renders: BibleRender[] }>(await fetch(`${BASE}/api/v1/director/bibles/renders`),
+    'Could not load bible renders')).renders
 }

@@ -1,20 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
-import {
-  ArrowDown,
-  ArrowUp,
-  Check,
-  ChevronDown,
-  Clock,
-  ListVideo,
-  Loader2,
-  Pause,
-  Pencil,
-  Play,
-  Square,
-  Trash2,
-  X,
-} from 'lucide-react'
+import { ArrowDown, ArrowUp, BookOpen, Check, ChevronDown, Clock, ListVideo, Loader2, Pause, Pencil, Play, Square, Trash2, X } from 'lucide-react'
 import { useStore } from '../stores/useStore'
+import { fetchBibleRenders, type BibleRender } from '../api/directorBibles'
 import { formatEtaDuration } from '../lib/format'
 import { PROMPT_ENHANCEMENT_ACTIVITY } from '../lib/promptEnhancementActivity'
 import { EnhancedJobReview } from './EnhancedJobReview'
@@ -68,6 +55,7 @@ export function GlobalQueuePopover({
   const stopPipeline = useStore(state => state.stopPipeline)
   const setSidebarOpen = useStore(state => state.setSidebarOpen)
   const setSettingsOpen = useStore(state => state.setSettingsOpen)
+  const setSidebarMode = useStore(state => state.setSidebarMode)
 
   const studioJobs = useMemo(
     () => {
@@ -99,7 +87,19 @@ export function GlobalQueuePopover({
       && (!entry.pipeline_id || entry.pipeline_id === pipelineId)
     )),
   )
+  // Bible renders run server-side: poll often while some run or the panel is open.
+  const [bibleRenders, setBibleRenders] = useState<BibleRender[]>([])
+  const bibleBusy = bibleRenders.length > 0
+  useEffect(() => {
+    let live = true
+    const load = () => fetchBibleRenders().then(r => { if (live) setBibleRenders(r) }).catch(() => undefined)
+    void load()
+    const timer = window.setInterval(load, open || bibleBusy ? 3000 : 15000)
+    return () => { live = false; window.clearInterval(timer) }
+  }, [open, bibleBusy])
+
   const totalCount = studioJobs.filter(job => ACTIVE_JOB_STATUSES.has(job.status) || job.status === 'failed').length
+    + bibleRenders.length
     + pendingDirectorCount
     + directorEntries.filter(entry => entry.status === 'failed').length
     + (activePipeline && !activePipelineIsQueued ? 1 : 0)
@@ -107,6 +107,7 @@ export function GlobalQueuePopover({
   useEffect(() => {
     void loadDirectorQueue()
   }, [loadDirectorQueue])
+
 
   useEffect(() => {
     if (!directorQueue?.running) return
@@ -477,6 +478,32 @@ export function GlobalQueuePopover({
               </section>
             )}
 
+            {bibleRenders.length > 0 && (
+              <section aria-label="Bible renders" className="space-y-1.5">
+                <div className="flex items-center gap-1.5 px-1 text-[10px] font-medium uppercase tracking-wider text-text-muted">
+                  <BookOpen size={11} /> Bible renders
+                  <span className="normal-case tracking-normal">· {bibleRenders.length}</span>
+                </div>
+                <div className="space-y-1">
+                  {bibleRenders.map(render => (
+                    <button key={render.slot} type="button" onClick={() => { setOpen(false); setSidebarMode('bibles') }}
+                      title="Open the Bibles tab"
+                      className="flex w-full items-center gap-2 rounded-lg border border-border bg-bg-tertiary p-2 text-left hover:bg-bg-hover">
+                      {render.status === 'rendering'
+                        ? <Loader2 size={11} className="shrink-0 animate-spin text-accent-blue" />
+                        : <Clock size={11} className="shrink-0 text-text-muted" />}
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-[10px] text-text-secondary">{render.element} · {render.look}</div>
+                        <div className="truncate text-[9px] text-text-muted">
+                          {render.bible_name} · {render.kind} · {render.status === 'rendering' ? 'Rendering' : 'Queued'}
+                        </div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </section>
+            )}
+
             {completedCount > 0 && <section aria-label="Completed jobs" className="space-y-1.5 border-t border-border pt-2">
               <div className="flex items-center justify-between gap-2 px-1">
                 <button type="button" aria-expanded={completedOpen} aria-controls={completedId}
@@ -521,7 +548,8 @@ export function GlobalQueuePopover({
             </section>}
             {clearError && <p role="alert" className="px-1 text-xs text-indicator-warning">{clearError}</p>}
 
-            {!activePipeline && studioJobs.length === 0 && directorEntries.length === 0 && completedCount === 0 && (
+            {!activePipeline && studioJobs.length === 0 && directorEntries.length === 0 && completedCount === 0
+              && bibleRenders.length === 0 && (
               <div className="flex min-h-36 flex-col items-center justify-center gap-2 px-6 text-center">
                 <ListVideo size={28} className="text-text-muted/60" />
                 <div className="text-xs font-medium text-text-secondary">Queue is empty</div>

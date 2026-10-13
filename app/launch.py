@@ -10971,6 +10971,13 @@ async def director_bible_create(request: Request):
     return {"bible": _bible_call(save_bible, body if isinstance(body, dict) else {})}
 
 
+@api.get("/api/v1/director/bibles/renders")
+def director_bible_renders():
+    """Queued and running bible renders, for the generation queue."""
+    from services.director.bibles import active_renders
+    return {"renders": active_renders()}
+
+
 @api.get("/api/v1/director/bibles/{bible_id}")
 def director_bible_get(bible_id: str):
     from services.director.bibles import get_bible

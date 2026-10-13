@@ -6349,6 +6349,37 @@ def _apply_bible(pid: str, params: dict) -> str:
     return bibles.world_block(bible, props=params.get("bible_props"))
 
 
+_SETTINGS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "settings")
+
+
+def image_model_defaults(image_model: str) -> dict:
+    """The sampler settings an image model is meant to run with (cloud defaults, else its saved settings).
+
+    Director renders outside a project (bible images) have no UI parameters;
+    Klein's 8 steps at guidance 1 leave FLUX.1 dev (28 steps, 3.5) blurred.
+    """
+    get_model_def = getattr(_wgp, "get_model_def", None)
+    model_def = (get_model_def(image_model) if callable(get_model_def) else None) or {}
+    defaults = dict((model_def.get("cloud") or {}).get("defaults") or {})
+    if not defaults:
+        try:
+            with open(os.path.join(_SETTINGS_DIR, f"{image_model}_settings.json"), encoding="utf-8") as handle:
+                defaults = json.load(handle)
+        except (OSError, ValueError):
+            defaults = {}
+    return {key: defaults[key] for key in ("num_inference_steps", "guidance_scale") if key in defaults}
+
+
+def image_model_reference_limit(image_model: str) -> Optional[int]:
+    """How many reference images a model reads: 0 for a text-only one, None without a stated limit."""
+    get_model_def = getattr(_wgp, "get_model_def", None)
+    model_def = (get_model_def(image_model) if callable(get_model_def) else None) or {}
+    cloud = model_def.get("cloud")
+    if isinstance(cloud, dict):
+        return int(cloud.get("max_images_in") or 1) if cloud.get("image_field") else 0
+    return image_ref_profile(image_model)["max_refs"]
+
+
 def _render_bible_slot(bible_id: str, element_id: str, variant_id: str, slot: str, *, image_model: str,
                        image_params: dict, chain_from: Optional[list] = None) -> None:
     """Render one reserved bible slot now; the slot ends as a candidate (or approved) or a failure.
@@ -6359,14 +6390,16 @@ def _render_bible_slot(bible_id: str, element_id: str, variant_id: str, slot: st
     from services.director import bibles, casting
 
     try:
+        bibles.mark_rendering(bible_id, element_id, variant_id, slot)
         bible = bibles.get_bible(bible_id)
         if not bible:
             raise bibles.BibleError("Unknown bible")
         kind, element = bibles.find_element(bible, element_id)
         variant = bibles.find_variant(element, variant_id)
         refs = [str(path) for path in bibles.reference_paths(bible, element, variant, chain_from)]
-        budget = image_ref_profile(image_model)["max_refs"]
-        if budget:
+        # A text-only model never sees references: its prompt must not name any.
+        budget = image_model_reference_limit(image_model)
+        if budget is not None:
             refs = refs[:budget]
         from_default = variant["id"] != bibles.DEFAULT_VARIANT and bool(refs)
         prompt = casting.bible_image_prompt(
@@ -6374,9 +6407,12 @@ def _render_bible_slot(bible_id: str, element_id: str, variant_id: str, slot: st
             ref_label="Picture" if image_ref_profile(image_model)["label"] == "Picture" else "reference image",
             from_default=from_default, chained=len(refs) - (1 if from_default else 0),
         )
+        # Sheets and prop shots are neutral references; the cinematic look
+        # (depth of field, haze, rain) belongs to places and to the shots.
         look = (bible.get("world") or {}).get("look", "")
-        if look:
+        if look and kind == "location":
             prompt = f"{prompt} {look}"
+        image_params = {**image_model_defaults(image_model), **(image_params or {})}
         gen_params = {
             "model_type": image_model,
             "prompt": prompt,
@@ -6434,11 +6470,12 @@ def render_bible_image(bible_id: str, element_id: str, variant_id: str, *, image
 def generate_bible_assets(bible_id: str, *, image_model: str = "", image_params: Optional[dict] = None) -> dict:
     """Render every look that has no approved image yet, in the background.
 
-    Default looks go first; the first location is rendered alone and every
-    other location matches it (the same world). Then the other looks, each
-    edited from its default approved meanwhile. Every slot is reserved up
-    front, so the bible shows all renders as under way at once. Returns the
-    bible with its slots.
+    Default looks go first, then the other looks, each edited from its
+    default approved meanwhile. Places are not matched to one another: a
+    café and a police station share the look block, not an architecture
+    (match places one by one from the element when they belong together).
+    Every slot is reserved up front, so the bible shows all renders as
+    under way at once. Returns the bible with its slots.
     """
     from services.director import bibles
 
@@ -6448,19 +6485,15 @@ def generate_bible_assets(bible_id: str, *, image_model: str = "", image_params:
     pending = bibles.missing_images(bible)
     if not pending:
         raise bibles.BibleError("Every look already has an approved image")
-    first_location = next((e["id"] for e in bible.get("locations") or []), None)
     jobs = []
     for element, variant in pending:
         bible, slot = bibles.start_render(bible_id, element["id"], variant["id"])
-        chain = ([first_location] if element["kind"] == "location" and element["id"] != first_location
-                 and variant["id"] == bibles.DEFAULT_VARIANT else [])
-        jobs.append((element["id"], variant["id"], slot, chain))
+        jobs.append((element["id"], variant["id"], slot, []))
     image_model = image_model or "flux2_klein_9b"
 
     def run() -> None:
-        # Default looks first (the first location before the places that
-        # match it), then the other looks, edited from those defaults.
-        ordered = sorted(jobs, key=lambda job: (job[1] != bibles.DEFAULT_VARIANT, bool(job[3])))
+        # Default looks first, then the other looks, edited from those defaults.
+        ordered = sorted(jobs, key=lambda job: job[1] != bibles.DEFAULT_VARIANT)
         for element_id, variant_id, slot, chain in ordered:
             _render_bible_slot(bible_id, element_id, variant_id, slot, image_model=image_model,
                                image_params=image_params or {}, chain_from=chain)

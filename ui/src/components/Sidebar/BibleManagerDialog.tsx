@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { AlertTriangle, Check, ImagePlus, Loader2, Plus, Sparkles, Trash2, X } from 'lucide-react'
+import { AlertTriangle, Check, ChevronLeft, ChevronRight, Clock, ImagePlus, Loader2, Plus, Sparkles, Trash2, X } from 'lucide-react'
 import { useStore } from '../../stores/useStore'
 import { AppModeToggle, MaestroBrand } from '../AppModeNavigation'
 import { BibleChat } from './BibleChat'
@@ -26,10 +26,76 @@ const FIELDS: Record<BibleKind, Array<[keyof BibleElement, string, boolean]>> = 
 
 const pendingImages = (bible: DirectorBible) => (['characters', 'locations', 'props'] as const)
   .reduce((count, plural) => count + bible[plural].reduce((n, e) => n + e.variants
-    .filter(v => !v.images.some(i => i.status === 'approved' || i.status === 'rendering')).length, 0), 0)
+    .filter(v => !v.images.some(i => i.status === 'approved' || i.status === 'queued' || i.status === 'rendering')).length, 0), 0)
 const slug = (text: string) => text.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 32)
 const rendering = (bible: DirectorBible | null) => !!bible && (['characters', 'locations', 'props'] as const)
-  .some(plural => bible[plural].some(e => e.variants.some(v => v.images.some(i => i.status === 'rendering'))))
+  .some(plural => bible[plural].some(e => e.variants.some(v => v.images.some(i => i.status === 'queued' || i.status === 'rendering'))))
+
+const inProgress = (status: string) => status === 'queued' || status === 'rendering'
+
+/** One image of a look, full size: approve it, delete it, or step through the look's images. */
+function ImageViewer({ bible, element, variant, index, onIndex, onClose, onBible }: {
+  bible: DirectorBible
+  element: BibleElement
+  variant: BibleVariant
+  index: number
+  onIndex: (index: number) => void
+  onClose: () => void
+  onBible: (bible: DirectorBible) => void
+}) {
+  const images = variant.images.filter(i => i.file)
+  const image = images[Math.min(index, images.length - 1)]
+  const [busy, setBusy] = useState(false)
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+      if (e.key === 'ArrowRight') onIndex(Math.min(images.length - 1, index + 1))
+      if (e.key === 'ArrowLeft') onIndex(Math.max(0, index - 1))
+    }
+    window.addEventListener('keydown', key)
+    return () => window.removeEventListener('keydown', key)
+  }, [images.length, index, onClose, onIndex])
+  if (!image?.file) return null
+  const act = async (call: () => Promise<DirectorBible>, close = false) => {
+    setBusy(true)
+    try { onBible(await call()); if (close) onClose() } finally { setBusy(false) }
+  }
+  return (
+    <div className="fixed inset-0 z-[90] flex flex-col bg-black/90 p-4" role="dialog" aria-modal="true"
+      aria-label={`${element.name}, ${variant.label}`} onClick={e => { if (e.target === e.currentTarget) onClose() }}>
+      <div className="flex items-center gap-3 pb-3 text-[12px] text-white/90">
+        <span className="font-medium">{element.name}</span>
+        <span className="text-white/60">{variant.label} · {index + 1}/{images.length}</span>
+        {image.status === 'approved' && <span className="flex items-center gap-1 text-emerald-300"><Check size={12} /> Approved reference</span>}
+        <div className="ml-auto flex items-center gap-2">
+          {image.status !== 'approved' && (
+            <button disabled={busy} onClick={() => void act(() => approveBibleImage(bible.id, element.id, variant.id, image.id))}
+              className="flex items-center gap-1 rounded bg-emerald-600 px-2.5 py-1 text-[11px] text-white disabled:opacity-50">
+              <Check size={12} /> Approve
+            </button>
+          )}
+          <button disabled={busy} onClick={() => void act(() => deleteBibleImage(bible.id, element.id, variant.id, image.id), true)}
+            className="flex items-center gap-1 rounded border border-white/30 px-2.5 py-1 text-[11px] text-white/80 hover:text-white disabled:opacity-50">
+            <Trash2 size={12} /> Delete
+          </button>
+          <button onClick={onClose} aria-label="Close" className="text-white/70 hover:text-white"><X size={18} /></button>
+        </div>
+      </div>
+      <div className="relative flex min-h-0 flex-1 items-center justify-center">
+        {index > 0 && (
+          <button onClick={() => onIndex(index - 1)} aria-label="Previous image"
+            className="absolute left-0 rounded-full bg-white/10 p-2 text-white hover:bg-white/20"><ChevronLeft size={20} /></button>
+        )}
+        <img src={directorBibleImageUrl(bible.id, image.file)} alt={`${element.name} ${variant.label}`}
+          className="max-h-full max-w-full object-contain" />
+        {index < images.length - 1 && (
+          <button onClick={() => onIndex(index + 1)} aria-label="Next image"
+            className="absolute right-0 rounded-full bg-white/10 p-2 text-white hover:bg-white/20"><ChevronRight size={20} /></button>
+        )}
+      </div>
+    </div>
+  )
+}
 
 function Images({ bible, element, variant, onBible }: {
   bible: DirectorBible
@@ -38,29 +104,33 @@ function Images({ bible, element, variant, onBible }: {
   onBible: (bible: DirectorBible) => void
 }) {
   const [error, setError] = useState<string | null>(null)
+  const [viewing, setViewing] = useState<number | null>(null)
   const act = async (call: () => Promise<DirectorBible>) => {
     setError(null)
     try { onBible(await call()) } catch (e) { setError(e instanceof Error ? e.message : 'Failed') }
   }
   if (!variant.images.length) return <p className="text-[10px] text-text-muted">No image yet: render or upload one.</p>
+  const withFiles = variant.images.filter(i => i.file)
   return (
     <div className="space-y-1">
       <div className="flex flex-wrap gap-1.5">
         {variant.images.map(image => (
-          <div key={image.id} className={`relative w-24 aspect-video rounded overflow-hidden border ${
+          <div key={image.id} className={`relative w-28 aspect-video rounded overflow-hidden border ${
             image.status === 'approved' ? 'border-emerald-400' : 'border-border'} bg-bg-tertiary`}>
             {image.file
-              ? <button className="w-full h-full" title={image.status === 'approved' ? 'Approved reference' : 'Approve this image'}
-                  onClick={() => image.status !== 'approved' && void act(() => approveBibleImage(bible.id, element.id, variant.id, image.id))}>
+              ? <button className="w-full h-full" title="View full size"
+                  onClick={() => setViewing(withFiles.findIndex(i => i.id === image.id))}>
                   <img src={directorBibleImageUrl(bible.id, image.file)} alt={`${element.name} ${variant.label}`} className="w-full h-full object-cover" />
                 </button>
-              : <div className="w-full h-full flex items-center justify-center" title={image.error || image.status}>
+              : <div className="w-full h-full flex flex-col items-center justify-center gap-0.5 text-[9px] text-text-muted" title={image.error || image.status}>
                   {image.status === 'rendering'
-                    ? <Loader2 size={14} className="animate-spin text-text-muted" />
-                    : <AlertTriangle size={14} className="text-chip-red" />}
+                    ? <><Loader2 size={14} className="animate-spin" /> rendering</>
+                    : image.status === 'queued'
+                      ? <><Clock size={14} /> queued</>
+                      : <AlertTriangle size={14} className="text-chip-red" />}
                 </div>}
             {image.status === 'approved' && <Check size={12} className="absolute left-1 top-1 rounded bg-emerald-500 text-white" />}
-            {image.status !== 'rendering' && (
+            {!inProgress(image.status) && (
               <button aria-label="Delete image" onClick={() => void act(() => deleteBibleImage(bible.id, element.id, variant.id, image.id))}
                 className="absolute right-0.5 top-0.5 rounded bg-black/60 p-0.5 text-white/80 hover:text-white">
                 <X size={10} />
@@ -75,6 +145,10 @@ function Images({ bible, element, variant, onBible }: {
         </p>
       )}
       {error && <p className="text-[10px] text-chip-red">{error}</p>}
+      {viewing !== null && withFiles.length > 0 && (
+        <ImageViewer bible={bible} element={element} variant={variant} index={viewing} onIndex={setViewing}
+          onClose={() => setViewing(null)} onBible={onBible} />
+      )}
     </div>
   )
 }

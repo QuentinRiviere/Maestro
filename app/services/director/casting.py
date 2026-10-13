@@ -137,12 +137,35 @@ def planner_characters(cast: dict) -> list[dict]:
     ]
 
 
+# "23 years old", "23-year-old", "aged 23", "about 17", or a description opening on "17, ...".
+_AGE = re.compile(
+    r"\b(\d{1,2})\s*(?:-\s*)?(?:years?[\s-]*old|yo\b|ans\b)"
+    r"|\b(?:aged?|about|around|roughly)\s+(\d{1,2})\b"
+    r"|^\s*(\d{1,2})\s*[,;]",
+    re.IGNORECASE,
+)
+
+
+def _subject_lead(description: str) -> str:
+    """Who the sheet shows, first: image models read the start of a prompt hardest.
+
+    A long description that states the age late lets a model draw a
+    23-year-old as a child or a 49-year-old as a teenager.
+    """
+    match = _AGE.search(description or "")
+    if not match:
+        return "a person"
+    age = int(next(group for group in match.groups() if group))
+    return f"an adult aged {age}" if age >= 18 else f"a young person aged {age}"
+
+
 def character_sheet_prompt(character: dict, style: str = "") -> str:
     look = f" Rendered as: {style}." if style else ""
     return (
-        "Character reference sheet on a plain light-grey studio background: the same person shown twice side by "
-        "side, a front head-and-shoulders portrait on the left and a full-body front view on the right, neutral "
-        f"expression, even soft lighting, no text, no logo.{look} Person: {character['description']}"
+        f"Character reference sheet of {_subject_lead(character['description'])}, on a plain light-grey studio "
+        "background: the same person shown twice side by side, a front head-and-shoulders portrait on the left "
+        "and a full-body front view on the right, neutral expression, even soft lighting, sharp focus, no text, "
+        f"no logo.{look} Person: {character['description']}"
         + (f" Wearing: {character['wardrobe']}." if character.get("wardrobe") else "")
     )
 
@@ -150,8 +173,9 @@ def character_sheet_prompt(character: dict, style: str = "") -> str:
 def location_plate_prompt(location: dict, style: str = "") -> str:
     look = f" Rendered as: {style}." if style else ""
     return (
-        f"Empty establishing view of a film location, no people, no text overlay.{look} "
-        f"Location: {location['description']}"
+        "Empty establishing view of a film location: the place is deserted and every seat and desk is unoccupied, "
+        f"no text overlay.{look} Location: {location['description']}"
+        + (f" Layout: {location['notes']}." if location.get("notes") else "")
     )
 
 

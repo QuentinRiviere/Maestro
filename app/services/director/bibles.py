@@ -20,7 +20,6 @@ project records the bible id and revision it was made from.
 """
 from __future__ import annotations
 
-import calendar
 import copy
 import json
 import os
@@ -48,9 +47,11 @@ MAX_ELEMENTS = 24
 MAX_VARIANTS = 12
 MAX_IMAGES = 12
 DEFAULT_VARIANT = "default"
-IMAGE_STATES = ("rendering", "candidate", "approved", "failed")
-# A render still "rendering" after this long was cut by a restart.
-RENDER_STALE_SECONDS = 45 * 60
+IMAGE_STATES = ("queued", "rendering", "candidate", "approved", "failed")
+IN_PROGRESS = ("queued", "rendering")
+# Render slots owned by this process. A slot still queued or rendering that
+# is not in it was cut by a restart.
+_LIVE_SLOTS: set[str] = set()
 WORLD_FIELDS = ("logline", "story", "stakes", "twists", "tone", "narrative_style", "look", "rules", "forbidden")
 WORLD_LIMITS = {"story": 4000, "twists": 3000}
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
@@ -66,13 +67,6 @@ class BibleError(ValueError):
 
 def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-
-
-def _age(timestamp: Any) -> float:
-    try:
-        return time.time() - calendar.timegm(time.strptime(str(timestamp), "%Y-%m-%dT%H:%M:%SZ"))
-    except (TypeError, ValueError):
-        return 0.0
 
 
 def _folder(bible_id: str) -> Path:
@@ -106,7 +100,7 @@ def _images(raw: Any, folder: Path) -> list[dict]:
         status = item.get("status") if item.get("status") in IMAGE_STATES else "candidate"
         file = os.path.basename(str(item.get("file") or ""))
         error = _text(item.get("error"), 300)
-        if status == "rendering" and _age(item.get("created_at")) > RENDER_STALE_SECONDS:
+        if status in IN_PROGRESS and str(item.get("id") or "") not in _LIVE_SLOTS:
             status, error = "failed", "Interrupted"
         if status in ("candidate", "approved") and not (file and (folder / file).is_file()):
             continue
@@ -214,7 +208,7 @@ def missing_images(bible: dict) -> list[tuple[dict, dict]]:
         for element in bible.get(plural) or []:
             for variant in element.get("variants") or []:
                 images = variant.get("images") or []
-                if not any(i["status"] in ("approved", "rendering") for i in images):
+                if not any(i["status"] in ("approved", *IN_PROGRESS) for i in images):
                     pending.append((element, variant))
     return sorted(pending, key=lambda pair: pair[1]["id"] != DEFAULT_VARIANT)
 
@@ -420,16 +414,46 @@ def start_render(bible_id: str, element_id: str, variant_id: str) -> tuple[dict,
         _, element = find_element(bible, element_id)
         variant = find_variant(element, variant_id)
         slot = secrets.token_hex(4)
-        variant["images"].append({"id": slot, "file": None, "status": "rendering", "error": "",
+        _LIVE_SLOTS.add(slot)
+        variant["images"].append({"id": slot, "file": None, "status": "queued", "error": "",
                                   "created_at": _now()})
         return slot
     return _mutate(bible_id, change)
+
+
+def mark_rendering(bible_id: str, element_id: str, variant_id: str, slot: str) -> None:
+    """A queued slot starts rendering."""
+    def change(bible: dict) -> None:
+        _, element = find_element(bible, element_id)
+        image = next((i for i in find_variant(element, variant_id)["images"] if i["id"] == slot), None)
+        if image is not None and image["status"] == "queued":
+            image["status"] = "rendering"
+    _mutate(bible_id, change)
+
+
+def active_renders() -> list[dict]:
+    """Queued and running bible renders, oldest first, for the generation queue."""
+    renders = []
+    for summary in list_bibles():
+        bible = get_bible(summary["id"]) or {}
+        for plural in KINDS.values():
+            for element in bible.get(plural) or []:
+                for variant in element["variants"]:
+                    for image in variant["images"]:
+                        if image["status"] in IN_PROGRESS:
+                            renders.append({
+                                "bible_id": bible["id"], "bible_name": bible["name"], "kind": element["kind"],
+                                "element": element["name"], "look": variant["label"], "slot": image["id"],
+                                "status": image["status"], "created_at": image["created_at"],
+                            })
+    return sorted(renders, key=lambda render: (render["status"] != "rendering", render["created_at"]))
 
 
 def finish_render(bible_id: str, element_id: str, variant_id: str, slot: str, *,
                   source: str | None = None, error: str = "") -> dict:
     """Turn a rendering slot into a candidate (the first image is approved) or a failure."""
     def change(bible: dict) -> None:
+        _LIVE_SLOTS.discard(slot)
         _, element = find_element(bible, element_id)
         variant = find_variant(element, variant_id)
         image = next((i for i in variant["images"] if i["id"] == slot), None)
