@@ -1554,12 +1554,19 @@ def _download_model_files_cached(model_type: str, entry: dict | None = None):
         before = cache.snapshot()
         phase("downloading")
         _download_model_files(model_type)
-        phase("publishing_cache")
+        after = cache.snapshot()
+    phase("done")
+
+    # The weights are usable now; uploading them only speeds up the next pod,
+    # so it must not keep the generation that asked for them waiting.
+    def _publish() -> None:
         try:
-            cache.publish(model_type, before)
-        except CheckpointCacheError as exc:
+            published = cache.publish(model_type, before, after)
+            print(f"[Worker] R2 cache published {published} new file(s) for {model_type}")
+        except Exception as exc:
             print(f"[Worker] R2 cache publish failed for {model_type}: {exc}")
-        phase("done")
+
+    threading.Thread(target=_publish, daemon=True, name=f"r2-publish-{model_type}").start()
 
 
 @api.post("/api/v1/models/{model_type}/download")

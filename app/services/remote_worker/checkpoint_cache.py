@@ -32,6 +32,10 @@ log = logging.getLogger("maestro.remote_worker.cache")
 
 _SKIP_SUFFIXES = (".part", ".lock", ".incomplete", ".tmp")
 Runner = Callable[..., subprocess.CompletedProcess]
+# A publish that drops below this rate is abandoned: the cache only saves
+# time, and a stalled upload must never hold a generation hostage.
+_MIN_UPLOAD_BYTES_PER_S = 15_000_000
+_MIN_UPLOAD_TIMEOUT_S = 300
 
 
 class CheckpointCacheError(RuntimeError):
@@ -98,27 +102,31 @@ class R2CheckpointCache:
         env.setdefault("AWS_REGION", "auto")
         return env
 
-    def _s5(self, *args: str, check: bool = True) -> subprocess.CompletedProcess:
-        result = self._runner(
-            [self._s5cmd, "--endpoint-url", self._endpoint_url, *args],
-            capture_output=True,
-            text=True,
-            env=self._env(),
-        )
+    def _s5(self, *args: str, check: bool = True, timeout: float | None = None) -> subprocess.CompletedProcess:
+        try:
+            result = self._runner(
+                [self._s5cmd, "--endpoint-url", self._endpoint_url, *args],
+                capture_output=True,
+                text=True,
+                env=self._env(),
+                **({"timeout": timeout} if timeout else {}),
+            )
+        except subprocess.TimeoutExpired as error:
+            raise CheckpointCacheError(f"s5cmd {args[0]} timed out after {int(error.timeout)}s") from error
         if check and result.returncode != 0:
             raise CheckpointCacheError(
                 f"s5cmd {args[0]} failed ({result.returncode}): {(result.stderr or '').strip()[:500]}"
             )
         return result
 
-    def _run_batch(self, lines: list[str]) -> None:
+    def _run_batch(self, lines: list[str], timeout: float | None = None) -> None:
         if not lines:
             return
         with tempfile.NamedTemporaryFile("w", suffix=".s5cmd", delete=False) as handle:
             handle.write("\n".join(lines) + "\n")
             batch = handle.name
         try:
-            self._s5("run", batch)
+            self._s5("run", batch, timeout=timeout)
         finally:
             os.unlink(batch)
 
@@ -226,10 +234,12 @@ class R2CheckpointCache:
         self,
         model_type: str,
         before: tuple[Snapshot, dict[tuple[str, str], str]],
+        after: tuple[Snapshot, dict[tuple[str, str], str]] | None = None,
     ) -> int:
-        """Upload files that appeared since ``before``; update the manifest."""
+        """Upload files that appeared between ``before`` and ``after`` (default:
+        now); update the manifest."""
         before_files, before_links = before
-        after_files, after_links = self.snapshot()
+        after_files, after_links = after if after is not None else self.snapshot()
         old_files, old_links = self.read_manifest(model_type)
 
         new_files = [
@@ -242,10 +252,11 @@ class R2CheckpointCache:
             for (root, path), target in after_links.items()
             if (root, path) not in before_links
         ]
+        upload_bytes = sum(entry.size for entry in new_files)
         self._run_batch([
             f'cp "{self._local(entry.root, entry.path)}" "{self._remote(entry.root, entry.path)}"'
             for entry in new_files
-        ])
+        ], timeout=max(_MIN_UPLOAD_TIMEOUT_S, upload_bytes / _MIN_UPLOAD_BYTES_PER_S))
         if new_files or new_links or not old_files:
             merged_files = {(e.root, e.path): e for e in old_files}
             merged_files.update({(e.root, e.path): e for e in new_files})

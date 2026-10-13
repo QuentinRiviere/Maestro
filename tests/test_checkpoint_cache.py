@@ -27,6 +27,7 @@ class FakeS5:
     def __init__(self, root):
         self.root = root
         self.commands = []
+        self.timeouts = []
         self.drop_on_run = set()  # remote paths silently not copied (exit 0)
 
     def _path(self, url):
@@ -42,7 +43,8 @@ class FakeS5:
         os.makedirs(os.path.dirname(destination), exist_ok=True)
         shutil.copyfile(source, destination)
 
-    def __call__(self, argv, capture_output=True, text=True, env=None):
+    def __call__(self, argv, capture_output=True, text=True, env=None, timeout=None):
+        self.timeouts.append(timeout)
         assert argv[1] == "--endpoint-url"
         assert env["AWS_ACCESS_KEY_ID"] == "kid"
         command, args = argv[3], argv[4:]
@@ -107,6 +109,8 @@ class CheckpointCacheTests(unittest.TestCase):
         before = first.snapshot()
         self._download(first_roots)
         self.assertEqual(first.publish("minimax_h3", before), 3)
+        # The upload is bounded so a stalled R2 transfer cannot hang the worker.
+        self.assertIn(300, self.s5.timeouts)
 
         second, roots = self._pod("pod2")
         self.assertEqual(second.hydrate("minimax_h3"), 3)
