@@ -11046,6 +11046,7 @@ async def director_bible_generate(bible_id: str, request: Request):
     bible = _bible_call(
         generate_bible_assets, bible_id, image_model=str(body.get("image_model") or ""),
         image_params=body.get("image_params") if isinstance(body.get("image_params"), dict) else {},
+        every_look=bool(body.get("every_look")),
     )
     return {"bible": bible}
 

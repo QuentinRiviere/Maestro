@@ -201,14 +201,20 @@ def normalize_bible(raw: Any, folder: Path) -> dict:
     return bible
 
 
-def missing_images(bible: dict) -> list[tuple[dict, dict]]:
-    """(element, look) pairs with no approved image and no render under way, default looks first."""
+def missing_images(bible: dict, *, every_look: bool = False) -> list[tuple[dict, dict]]:
+    """(element, look) pairs to render, default looks first.
+
+    Looks with no approved image and no render under way; with
+    ``every_look``, every look without a render under way (a new candidate
+    next to its approved image).
+    """
     pending = []
+    skip = IN_PROGRESS if every_look else ("approved", *IN_PROGRESS)
     for plural in KINDS.values():
         for element in bible.get(plural) or []:
             for variant in element.get("variants") or []:
                 images = variant.get("images") or []
-                if not any(i["status"] in ("approved", *IN_PROGRESS) for i in images):
+                if not any(i["status"] in skip for i in images):
                     pending.append((element, variant))
     return sorted(pending, key=lambda pair: pair[1]["id"] != DEFAULT_VARIANT)
 

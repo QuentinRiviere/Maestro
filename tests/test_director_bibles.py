@@ -474,3 +474,17 @@ class BibleRenderSettingsTests(unittest.TestCase):
         self.assertNotIn("reference image", sent["prompt"])
         self.assertNotIn("Rainy neon haze", sent["prompt"])  # the look is for places and shots
         self.assertEqual((sent["num_inference_steps"], sent["guidance_scale"]), (28, 3.5))
+
+
+def test_regenerate_all_adds_a_candidate_to_every_idle_look():
+    with tempfile.TemporaryDirectory() as tmp, patch.object(bibles, "BIBLES_DIR", Path(tmp) / "bibles"):
+        upload = os.path.join(tmp, "sheet.png")
+        with open(upload, "wb") as handle:
+            handle.write(b"png")
+        bible = bibles.save_bible({"name": "Spring Rain", "characters": [GIRL], "locations": [HALL]})
+        girl, hall = bible["characters"][0]["id"], bible["locations"][0]["id"]
+        bibles.add_image("spring_rain", girl, "default", upload)
+        bibles.start_render("spring_rain", hall, "default")
+        bible = bibles.get_bible("spring_rain")
+        assert bibles.missing_images(bible) == []
+        assert [e["id"] for e, _ in bibles.missing_images(bible, every_look=True)] == [girl]

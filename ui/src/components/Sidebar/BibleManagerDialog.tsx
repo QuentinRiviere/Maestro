@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { AlertTriangle, Check, ChevronLeft, ChevronRight, Clock, ImagePlus, Loader2, Plus, Sparkles, Trash2, X } from 'lucide-react'
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
+import { AlertTriangle, Check, ChevronLeft, ChevronRight, Clock, ImagePlus, Loader2, Plus, RefreshCw, Sparkles, Trash2, X } from 'lucide-react'
 import { useStore } from '../../stores/useStore'
 import { AppModeToggle, MaestroBrand } from '../AppModeNavigation'
 import { BibleChat } from './BibleChat'
+import { useConfirm } from './ConfirmDialog'
 import {
   approveBibleImage, BIBLE_PLURAL, createDirectorBible, deleteBibleImage, deleteDirectorBible,
   directorBibleImageUrl, fetchDirectorBible, fetchDirectorBibles, generateBibleAssets, renderBibleImage, updateDirectorBible,
@@ -27,9 +28,15 @@ const FIELDS: Record<BibleKind, Array<[keyof BibleElement, string, boolean]>> = 
 const pendingImages = (bible: DirectorBible) => (['characters', 'locations', 'props'] as const)
   .reduce((count, plural) => count + bible[plural].reduce((n, e) => n + e.variants
     .filter(v => !v.images.some(i => i.status === 'approved' || i.status === 'queued' || i.status === 'rendering')).length, 0), 0)
+const lookCount = (bible: DirectorBible) => (['characters', 'locations', 'props'] as const)
+  .reduce((count, plural) => count + bible[plural].reduce((n, e) => n + e.variants.length, 0), 0)
 const slug = (text: string) => text.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 32)
 const rendering = (bible: DirectorBible | null) => !!bible && (['characters', 'locations', 'props'] as const)
   .some(plural => bible[plural].some(e => e.variants.some(v => v.images.some(i => i.status === 'queued' || i.status === 'rendering'))))
+
+type Ask = ReturnType<typeof useConfirm>['ask']
+const AskContext = createContext<Ask>(({ run }) => void run())
+const DELETE_IMAGE_NOTE = 'The image leaves this look. Projects that already used it keep their own copy.'
 
 const inProgress = (status: string) => status === 'queued' || status === 'rendering'
 
@@ -46,6 +53,7 @@ function ImageViewer({ bible, element, variant, index, onIndex, onClose, onBible
   const images = variant.images.filter(i => i.file)
   const image = images[Math.min(index, images.length - 1)]
   const [busy, setBusy] = useState(false)
+  const ask = useContext(AskContext)
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose()
@@ -74,7 +82,10 @@ function ImageViewer({ bible, element, variant, index, onIndex, onClose, onBible
               <Check size={12} /> Approve
             </button>
           )}
-          <button disabled={busy} onClick={() => void act(() => deleteBibleImage(bible.id, element.id, variant.id, image.id), true)}
+          <button disabled={busy} onClick={() => ask({
+            title: 'Delete this image?', message: DELETE_IMAGE_NOTE, confirmLabel: 'Delete', danger: true,
+            run: () => act(() => deleteBibleImage(bible.id, element.id, variant.id, image.id), true),
+          })}
             className="flex items-center gap-1 rounded border border-white/30 px-2.5 py-1 text-[11px] text-white/80 hover:text-white disabled:opacity-50">
             <Trash2 size={12} /> Delete
           </button>
@@ -105,6 +116,7 @@ function Images({ bible, element, variant, onBible }: {
 }) {
   const [error, setError] = useState<string | null>(null)
   const [viewing, setViewing] = useState<number | null>(null)
+  const ask = useContext(AskContext)
   const act = async (call: () => Promise<DirectorBible>) => {
     setError(null)
     try { onBible(await call()) } catch (e) { setError(e instanceof Error ? e.message : 'Failed') }
@@ -131,7 +143,10 @@ function Images({ bible, element, variant, onBible }: {
                 </div>}
             {image.status === 'approved' && <Check size={12} className="absolute left-1 top-1 rounded bg-emerald-500 text-white" />}
             {!inProgress(image.status) && (
-              <button aria-label="Delete image" onClick={() => void act(() => deleteBibleImage(bible.id, element.id, variant.id, image.id))}
+              <button aria-label="Delete image" onClick={() => ask({
+                title: 'Delete this image?', message: DELETE_IMAGE_NOTE, confirmLabel: 'Delete', danger: true,
+                run: () => act(() => deleteBibleImage(bible.id, element.id, variant.id, image.id)),
+              })}
                 className="absolute right-0.5 top-0.5 rounded bg-black/60 p-0.5 text-white/80 hover:text-white">
                 <X size={10} />
               </button>
@@ -169,6 +184,7 @@ function ElementCard({ bible, element, saved, onChange, onRemove, onBible }: {
   const [error, setError] = useState<string | null>(null)
   const upload = useRef<HTMLInputElement>(null)
   const variant = element.variants.find(v => v.id === variantId) ?? element.variants[0]
+  const ask = useContext(AskContext)
   const others = (element.kind === 'character' ? [] : [...bible.locations, ...bible.props])
     .filter(e => e.id !== element.id && e.image)
 
@@ -191,7 +207,11 @@ function ElementCard({ bible, element, saved, onChange, onRemove, onBible }: {
         <input className={`${input} font-medium`} value={element.name} aria-label="Name"
           onChange={e => onChange({ ...element, name: e.target.value })} />
         <span className="shrink-0 text-[10px] text-text-muted">{element.tag}</span>
-        <button onClick={onRemove} aria-label="Remove element" className="shrink-0 text-text-muted hover:text-chip-red"><Trash2 size={12} /></button>
+        <button aria-label="Remove element" className="shrink-0 text-text-muted hover:text-chip-red"
+          onClick={() => ask({
+            title: `Remove ${element.name || 'this element'}?`, confirmLabel: 'Remove', danger: true,
+            message: 'It leaves the draft with its looks and images; Save makes it final.', run: onRemove,
+          })}><Trash2 size={12} /></button>
       </div>
       <div className="grid grid-cols-2 gap-1.5">
         {FIELDS[element.kind].map(([field, title, wide]) => (
@@ -284,7 +304,7 @@ function BibleManagerPanel({ initialId, onClose }: { initialId?: string; onClose
   const [tab, setTab] = useState<BibleKind | 'world'>('character')
   const [newName, setNewName] = useState('')
   const [saving, setSaving] = useState(false)
-  const [confirmDelete, setConfirmDelete] = useState(false)
+  const { ask, dialog: confirmDialog } = useConfirm()
   const [error, setError] = useState<string | null>(null)
   const dirty = !!draft && !!bible && JSON.stringify(draft) !== JSON.stringify(bible)
 
@@ -340,6 +360,20 @@ function BibleManagerPanel({ initialId, onClose }: { initialId?: string; onClose
     refreshList()
   }
 
+  const regenerateAll = async () => {
+    if (!draft) return
+    setError(null)
+    try {
+      const saved = dirty ? await updateDirectorBible(draft) : draft
+      const next = await generateBibleAssets(saved.id, imageModel, true)
+      setBible(next)
+      setDraft(next)
+      refreshList()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not start the generation')
+    }
+  }
+
   const save = async () => {
     if (!draft) return
     setSaving(true)
@@ -368,9 +402,7 @@ function BibleManagerPanel({ initialId, onClose }: { initialId?: string; onClose
   }
   const remove = async () => {
     if (!bible) return
-    if (!confirmDelete) { setConfirmDelete(true); return }
     await deleteDirectorBible(bible.id).catch(e => setError(e instanceof Error ? e.message : 'Delete failed'))
-    setConfirmDelete(false)
     setSelected('')
     refreshList()
   }
@@ -379,11 +411,12 @@ function BibleManagerPanel({ initialId, onClose }: { initialId?: string; onClose
   const setElements = (kind: BibleKind, next: BibleElement[]) => draft && setDraft({ ...draft, [BIBLE_PLURAL[kind]]: next })
 
   return (
+    <AskContext.Provider value={ask}>
       <div className="w-full h-full flex bg-bg-secondary overflow-hidden">
         <aside className="w-48 shrink-0 border-r border-border p-2.5 space-y-2 overflow-y-auto">
           <h2 className="text-sm font-medium text-text-primary">Bibles</h2>
           {list.map(item => (
-            <button key={item.id} onClick={() => { setSelected(item.id); setConfirmDelete(false) }}
+            <button key={item.id} onClick={() => setSelected(item.id)}
               className={`w-full text-left rounded px-2 py-1.5 text-[11px] ${item.id === selected ? 'bg-bg-hover text-text-primary' : 'text-text-secondary hover:bg-bg-hover'}`}>
               <span className="block truncate">{item.name}</span>
               <span className="block text-[9px] text-text-muted">
@@ -410,8 +443,26 @@ function BibleManagerPanel({ initialId, onClose }: { initialId?: string; onClose
             {isRendering && <span className="flex items-center gap-1 text-[10px] text-text-muted"><Loader2 size={10} className="animate-spin" /> rendering</span>}
             <div className="ml-auto flex items-center gap-2">
               {draft && (
-                <button onClick={() => void remove()} className={`text-[10px] ${confirmDelete ? 'text-chip-red' : 'text-text-muted hover:text-chip-red'}`}>
-                  {confirmDelete ? 'Click again to delete' : 'Delete'}
+                <button className="text-[10px] text-text-muted hover:text-chip-red"
+                  onClick={() => ask({
+                    title: `Delete the bible "${draft.name}"?`, confirmLabel: 'Delete bible', danger: true,
+                    message: 'Its characters, places, props, looks and images are deleted. Projects already made from it keep their copies.',
+                    run: remove,
+                  })}>
+                  Delete
+                </button>
+              )}
+              {draft && (
+                <button disabled={isRendering || !lookCount(draft)}
+                  title={isRendering ? 'Wait for the renders under way' : `Render a new candidate of every look with ${imageModel}`}
+                  onClick={() => ask({
+                    title: 'Regenerate every look?', confirmLabel: 'Regenerate all',
+                    message: <>A new candidate for each of the {lookCount(draft)} looks, rendered with <b>{imageModel}</b>
+                      {dirty ? ', after saving your changes' : ''}. Approved images stay the references until you approve a new one.</>,
+                    run: regenerateAll,
+                  })}
+                  className="flex items-center gap-1 rounded border border-border px-2.5 py-1 text-[11px] text-text-secondary hover:text-text-primary disabled:opacity-40">
+                  <RefreshCw size={10} /> Regenerate all
                 </button>
               )}
               {draft && (
@@ -482,6 +533,8 @@ function BibleManagerPanel({ initialId, onClose }: { initialId?: string; onClose
             pendingImages={pendingImages(draft)} imageModel={imageModel} rendering={isRendering} />
         )}
       </div>
+      {confirmDialog}
+    </AskContext.Provider>
   )
 }
 

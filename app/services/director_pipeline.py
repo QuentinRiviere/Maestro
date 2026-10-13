@@ -6467,8 +6467,12 @@ def render_bible_image(bible_id: str, element_id: str, variant_id: str, *, image
     return bible
 
 
-def generate_bible_assets(bible_id: str, *, image_model: str = "", image_params: Optional[dict] = None) -> dict:
-    """Render every look that has no approved image yet, in the background.
+def generate_bible_assets(bible_id: str, *, image_model: str = "", image_params: Optional[dict] = None,
+                          every_look: bool = False) -> dict:
+    """Render every look that has no approved image yet (``every_look``: every look), in the background.
+
+    With ``every_look`` each look gets a new candidate next to its approved
+    image, which stays the reference until another one is approved.
 
     Default looks go first, then the other looks, each edited from its
     default approved meanwhile. Places are not matched to one another: a
@@ -6482,9 +6486,10 @@ def generate_bible_assets(bible_id: str, *, image_model: str = "", image_params:
     bible = bibles.get_bible(bible_id)
     if not bible:
         raise bibles.BibleError("Unknown bible")
-    pending = bibles.missing_images(bible)
+    pending = bibles.missing_images(bible, every_look=every_look)
     if not pending:
-        raise bibles.BibleError("Every look already has an approved image")
+        raise bibles.BibleError("Every look is already rendering" if every_look
+                                else "Every look already has an approved image")
     jobs = []
     for element, variant in pending:
         bible, slot = bibles.start_render(bible_id, element["id"], variant["id"])
