@@ -59,7 +59,9 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: docker/remote-worker
-          push: true
+          # zstd layers unpack several times faster than gzip on the pod,
+          # where unpacking ~20 GB is most of a cold image pull.
+          outputs: type=image,push=true,compression=zstd,compression-level=3,force-compression=true,oci-mediatypes=true
           tags: |
             ${{ steps.meta.outputs.image }}:latest
             ${{ steps.meta.outputs.image }}:deps-${{ steps.meta.outputs.deps }}
@@ -97,7 +99,9 @@ jobs:
           context: .
           file: docker/cache-warmer/Dockerfile
           platforms: linux/amd64
-          push: true
+          # zstd layers unpack several times faster than gzip on the pod,
+          # where unpacking ~20 GB is most of a cold image pull.
+          outputs: type=image,push=true,compression=zstd,compression-level=3,force-compression=true,oci-mediatypes=true
           tags: |
             ${{ steps.meta.outputs.image }}:cpu
             ${{ steps.meta.outputs.image }}:cpu-${{ steps.meta.outputs.deps }}

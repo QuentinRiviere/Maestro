@@ -70,12 +70,19 @@ RUN mkdir -p /src/sageattention /wheels \
 # ---------------------------------------------------------------------------
 # Stage 2: the worker image.
 # ---------------------------------------------------------------------------
-FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04
+# Plain Ubuntu, not a CUDA image: the cu128 torch wheels bring their own
+# CUDA runtime, cuBLAS, cuDNN, NCCL... as pip packages, so the CUDA base only
+# duplicated them (over a GB of the image). The driver comes from the host
+# through the NVIDIA container runtime, which the two variables below ask for.
+FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    UV_NO_CACHE=1
+    UV_NO_CACHE=1 \
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility,video \
+    LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
@@ -102,6 +109,13 @@ RUN python3 -m venv "$VIRTUAL_ENV" \
 COPY requirements.txt /opt/maestro/requirements.txt
 RUN uv pip install -r /opt/maestro/requirements.txt --index-strategy unsafe-best-match \
  && sha256sum /opt/maestro/requirements.txt | cut -d' ' -f1 > /opt/maestro/requirements.sha256
+
+# Libraries that load CUDA without going through torch (onnxruntime-gpu,
+# compiled extensions) find the pip-installed CUDA libraries system-wide.
+RUN find "$VIRTUAL_ENV" -path '*/site-packages/nvidia/*/lib' -type d > /etc/ld.so.conf.d/maestro-cuda.conf \
+ && ldconfig \
+ && ldconfig -p | grep -q libcudnn.so.9 \
+ && ldconfig -p | grep -q libcublasLt.so.12
 
 # Attention kernels. Both are ABI-bound to torch 2.10 + CUDA 12.8 + CPython
 # 3.10, so they are installed last with --no-deps and never move torch.
