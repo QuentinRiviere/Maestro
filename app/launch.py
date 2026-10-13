@@ -15,6 +15,13 @@ Environment variables:
 
 import gc
 import sys
+
+# Run as a script this module is ``__main__``; a later ``import launch`` would
+# execute it a second time (a second remote-worker watchdog that sees no
+# active job stops the GPU mid-render). Make both names the same module.
+if __name__ == "__main__":
+    sys.modules.setdefault("launch", sys.modules[__name__])
+
 import torch
 import os
 import glob
