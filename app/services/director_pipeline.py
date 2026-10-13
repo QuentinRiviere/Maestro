@@ -4765,6 +4765,11 @@ def _submit_and_wait(
                             or j.get("message")
                             or "Generating..."
                         )
+                    elif j.get("phase") == "Remote worker" and j.get("message"):
+                        # Booting the GPU worker or fetching its weights
+                        # ("Pulling minimax_h3 from the R2 cache · 12.3 /
+                        # 41.0 GB") is what the shot is waiting for.
+                        p["progress"]["message"] = j["message"]
                     eta_updated_at = j.get("eta_updated_at")
                     try:
                         eta_age = max(0.0, time.time() - float(eta_updated_at))
