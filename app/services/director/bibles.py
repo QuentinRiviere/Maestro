@@ -1,11 +1,17 @@
-"""Bibles: the approved people, places and look of a series, reused across projects.
+"""Bibles: the approved people, places, props and look of a series, reused across projects.
 
 A Director cast belongs to one project: its images live in that project's
 output folder and the next episode casts again from scratch, so faces, sets
 and the visual style drift between episodes. A bible keeps them once: the
-characters and locations (descriptions and reference images), the style
-contract and the world rules. Every episode of a series, or every mini-scene
-of a short film, starts from the same bible.
+characters, locations and props (descriptions and reference images), the
+style contract and the world rules. Every episode of a series, or every
+mini-scene of a short film, starts from the same bible.
+
+Elements have looks (variants): the default one, and others such as an
+outfit, a wet version or an open window. Each variant holds candidate images
+and at most one approved image, which is its reference. Approved images seed
+the next ones: a new outfit is edited from the approved default sheet, a new
+place from the approved places it belongs with.
 
 A bible is one folder: ``settings/director_bibles/<id>/bible.json`` and its
 image files, so it does not depend on any project's output folder. Applying a
@@ -14,28 +20,42 @@ project records the bible id and revision it was made from.
 """
 from __future__ import annotations
 
+import calendar
 import copy
 import json
 import os
 import re
+import secrets
 import shutil
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from services.director import casting
-
 BIBLES_DIR = Path(__file__).resolve().parents[2] / "settings" / "director_bibles"
 BIBLE_FILE = "bible.json"
-# A series keeps more people and places than one project casts.
-MAX_CHARACTERS = 24
-MAX_LOCATIONS = 24
+KINDS = {"character": "characters", "location": "locations", "prop": "props"}
+# Text fields of each kind, with their length limit.
+FIELDS = {
+    "character": {"role": 120, "descriptor": 80, "description": 700, "wardrobe": 400},
+    "location": {"description": 700, "notes": 600},
+    "prop": {"descriptor": 80, "description": 700, "notes": 600},
+}
+# A series keeps more people, places and props than one project casts.
+MAX_ELEMENTS = 24
+MAX_VARIANTS = 12
+MAX_IMAGES = 12
+DEFAULT_VARIANT = "default"
+IMAGE_STATES = ("rendering", "candidate", "approved", "failed")
+# A render still "rendering" after this long was cut by a restart.
+RENDER_STALE_SECONDS = 45 * 60
 WORLD_FIELDS = ("logline", "tone", "rules", "forbidden")
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
-_LOCK = threading.Lock()
+_LOCK = threading.RLock()
 _SLUG = re.compile(r"[^a-z0-9]+")
 _ID = re.compile(r"[a-z0-9_]{1,40}")
+_KEY = re.compile(r"[a-z0-9_-]{1,40}")
 
 
 class BibleError(ValueError):
@@ -44,6 +64,13 @@ class BibleError(ValueError):
 
 def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _age(timestamp: Any) -> float:
+    try:
+        return time.time() - calendar.timegm(time.strptime(str(timestamp), "%Y-%m-%dT%H:%M:%SZ"))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _folder(bible_id: str) -> Path:
@@ -56,17 +83,102 @@ def _text(value: Any, limit: int) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()[:limit]
 
 
-def _entries(raw: Any, kind: str, limit: int) -> list[dict]:
-    """Bible entries in the cast shape, names unique (the first one wins)."""
-    plural = "characters" if kind == "character" else "locations"
-    normalized = casting.normalize_cast({plural: raw or []}, max_characters=limit, max_locations=limit)[plural]
-    seen, entries = set(), []
-    for entry in normalized:
-        key = entry["name"].casefold()
-        if key not in seen:
-            seen.add(key)
-            entries.append(entry)
-    return entries
+def _slug(value: str, limit: int = 24) -> str:
+    return _SLUG.sub("_", str(value or "").lower()).strip("_")[:limit]
+
+
+def _key(value: Any, fallback: str) -> str:
+    value = str(value or "").strip().lower()
+    return value if _KEY.fullmatch(value) else fallback
+
+
+# ── normalization ──────────────────────────────────────────────────────────
+
+
+def _images(raw: Any, folder: Path) -> list[dict]:
+    """Candidate images of one variant; files must exist, one approved at most (the last)."""
+    images: list[dict] = []
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict):
+            continue
+        status = item.get("status") if item.get("status") in IMAGE_STATES else "candidate"
+        file = os.path.basename(str(item.get("file") or ""))
+        error = _text(item.get("error"), 300)
+        if status == "rendering" and _age(item.get("created_at")) > RENDER_STALE_SECONDS:
+            status, error = "failed", "Interrupted"
+        if status in ("candidate", "approved") and not (file and (folder / file).is_file()):
+            continue
+        images.append({
+            "id": _key(item.get("id"), secrets.token_hex(4)),
+            "file": file or None,
+            "status": status,
+            "error": error,
+            "created_at": str(item.get("created_at") or _now()),
+        })
+    approved = [i for i, image in enumerate(images) if image["status"] == "approved"]
+    for index in approved[:-1]:
+        images[index]["status"] = "candidate"
+    return images[-MAX_IMAGES:] if len(images) > MAX_IMAGES else images
+
+
+def _variants(raw: dict, folder: Path) -> list[dict]:
+    variants = []
+    seen = set()
+    for item in raw.get("variants") if isinstance(raw.get("variants"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        variant_id = _key(item.get("id"), _slug(item.get("label") or "", 32) or secrets.token_hex(3))
+        if variant_id in seen:
+            continue
+        seen.add(variant_id)
+        variants.append({
+            "id": variant_id,
+            "label": _text(item.get("label"), 60) or ("Default" if variant_id == DEFAULT_VARIANT else variant_id),
+            "description": _text(item.get("description"), 600),
+            "images": _images(item.get("images"), folder),
+        })
+    if DEFAULT_VARIANT not in seen:
+        # A step-1 entry (or a project cast) carries one approved image.
+        legacy = os.path.basename(str(raw.get("image") or ""))
+        images = [{"file": legacy, "status": "approved"}] if legacy else []
+        variants.insert(0, {"id": DEFAULT_VARIANT, "label": "Default", "description": "",
+                            "images": _images(images, folder)})
+    else:
+        variants.sort(key=lambda v: v["id"] != DEFAULT_VARIANT)
+    return variants[:MAX_VARIANTS]
+
+
+def _element(raw: Any, kind: str, folder: Path) -> dict | None:
+    if not isinstance(raw, dict):
+        return None
+    name = _text(raw.get("name"), 60)
+    if not name:
+        return None
+    element = {
+        "id": _key(raw.get("id"), f"{kind[:4]}_{_slug(name, 20) or 'x'}_{secrets.token_hex(2)}"),
+        "kind": kind,
+        "name": name,
+        "tag": "@" + (_slug(str(raw.get("tag") or "").lstrip("@"), 32) or _slug(name, 32) or kind),
+    }
+    for field, limit in FIELDS[kind].items():
+        element[field] = _text(raw.get(field), limit)
+    if kind == "character":
+        element["voice_character_id"] = _text(raw.get("voice_character_id"), 80)
+    element["variants"] = _variants(raw, folder)
+    element["image"] = approved_image(element)
+    return element
+
+
+def _elements(raw: Any, kind: str, folder: Path) -> list[dict]:
+    elements, names, ids = [], set(), set()
+    for item in raw if isinstance(raw, list) else []:
+        element = _element(item, kind, folder)
+        if not element or element["name"].casefold() in names or element["id"] in ids:
+            continue
+        names.add(element["name"].casefold())
+        ids.add(element["id"])
+        elements.append(element)
+    return elements[:MAX_ELEMENTS]
 
 
 def _world(raw: Any) -> dict:
@@ -74,22 +186,36 @@ def _world(raw: Any) -> dict:
     return {field: _text(raw.get(field), 2000) for field in WORLD_FIELDS}
 
 
-def normalize_bible(raw: Any) -> dict:
+def normalize_bible(raw: Any, folder: Path) -> dict:
     """The stored fields of a bible, bounded; ids and timestamps are kept as given."""
     raw = raw if isinstance(raw, dict) else {}
     name = _text(raw.get("name"), 80)
     if not name:
         raise BibleError("A bible needs a name")
     style = raw.get("style")
-    return {
+    bible = {
         "id": str(raw.get("id") or ""),
         "name": name,
         "description": _text(raw.get("description"), 600),
         "style": copy.deepcopy(style) if isinstance(style, dict) and style else None,
         "world": _world(raw.get("world")),
-        "characters": _entries(raw.get("characters"), "character", MAX_CHARACTERS),
-        "locations": _entries(raw.get("locations"), "location", MAX_LOCATIONS),
     }
+    for kind, plural in KINDS.items():
+        bible[plural] = _elements(raw.get(plural), kind, folder)
+    return bible
+
+
+def approved_image(element: dict, variant_id: str = DEFAULT_VARIANT) -> str | None:
+    """The approved image of a variant (of the default one when it has none)."""
+    for wanted in dict.fromkeys([variant_id, DEFAULT_VARIANT]):
+        variant = next((v for v in element.get("variants") or [] if v["id"] == wanted), None)
+        image = next((i["file"] for i in (variant or {}).get("images") or [] if i["status"] == "approved"), None)
+        if image:
+            return image
+    return None
+
+
+# ── storage ────────────────────────────────────────────────────────────────
 
 
 def _read(bible_id: str) -> dict | None:
@@ -108,17 +234,16 @@ def _write(bible: dict) -> None:
     os.replace(temporary, target)
 
 
-def _drop_missing_images(bible: dict) -> None:
-    """An entry only names an image its bible folder holds."""
-    folder = _folder(bible["id"])
-    for plural in ("characters", "locations"):
-        for entry in bible[plural]:
-            image = os.path.basename(entry.get("image") or "")
-            entry["image"] = image if image and (folder / image).is_file() else None
+def _stamp(bible: dict, previous: dict) -> dict:
+    now = _now()
+    bible["revision"] = int(previous.get("revision") or 0) + 1
+    bible["created_at"] = previous.get("created_at") or now
+    bible["updated_at"] = now
+    return bible
 
 
 def _new_id(name: str) -> str:
-    base = _SLUG.sub("_", name.lower()).strip("_")[:32] or "bible"
+    base = _slug(name, 32) or "bible"
     candidate, suffix = base, 2
     while (BIBLES_DIR / candidate).exists():
         candidate = f"{base[:32]}_{suffix}"
@@ -137,36 +262,58 @@ def list_bibles() -> list[dict]:
             summaries.append({
                 "id": bible["id"], "name": bible["name"], "description": bible.get("description", ""),
                 "revision": bible.get("revision", 1), "updated_at": bible.get("updated_at", ""),
-                "characters": [c["name"] for c in bible.get("characters") or []],
-                "locations": [l["name"] for l in bible.get("locations") or []],
+                **{plural: [e["name"] for e in bible.get(plural) or []] for plural in KINDS.values()},
             })
     return sorted(summaries, key=lambda item: item["updated_at"], reverse=True)
 
 
 def get_bible(bible_id: str) -> dict | None:
-    return _read(bible_id)
+    bible = _read(bible_id)
+    if bible is None:
+        return None
+    # Bibles saved before props and variants existed read as the current shape.
+    normalized = normalize_bible(bible, _folder(bible_id))
+    for key in ("id", "revision", "created_at", "updated_at"):
+        normalized[key] = bible.get(key)
+    return normalized
 
 
 def save_bible(raw: dict, *, bible_id: str | None = None) -> dict:
-    """Create (no id) or overwrite (given id) a bible's fields; every save is a new revision."""
-    bible = normalize_bible(raw)
+    """Create (no id) or update (given id) a bible's text; every save is a new revision.
+
+    Images belong to the bible, not to the client's copy: an update keeps
+    each element's stored images per variant (matched by element and variant
+    id), so a render finishing during an edit is never lost. New elements and
+    variants start without images.
+    """
     with _LOCK:
         if bible_id is None:
             BIBLES_DIR.mkdir(parents=True, exist_ok=True)
-            bible["id"] = _new_id(bible["name"])
+            bible_id = _new_id(_text((raw or {}).get("name"), 80))
             previous: dict = {}
+            folder = _folder(bible_id)
+            folder.mkdir(parents=True, exist_ok=True)
+            bible = normalize_bible(raw, folder)
+            for plural in KINDS.values():
+                for element in bible[plural]:
+                    for variant in element["variants"]:
+                        variant["images"] = []
+                    element["image"] = None
         else:
-            previous = _read(bible_id) or {}
+            previous = get_bible(bible_id) or {}
             if not previous:
                 raise BibleError("Unknown bible")
-            bible["id"] = bible_id
-        now = _now()
-        bible["revision"] = int(previous.get("revision") or 0) + 1
-        bible["created_at"] = previous.get("created_at") or now
-        bible["updated_at"] = now
-        _folder(bible["id"]).mkdir(parents=True, exist_ok=True)
-        _drop_missing_images(bible)
-        _write(bible)
+            folder = _folder(bible_id)
+            bible = normalize_bible(raw, folder)
+            stored = {e["id"]: e for plural in KINDS.values() for e in previous.get(plural) or []}
+            for plural in KINDS.values():
+                for element in bible[plural]:
+                    before = {v["id"]: v for v in (stored.get(element["id"]) or {}).get("variants") or []}
+                    for variant in element["variants"]:
+                        variant["images"] = copy.deepcopy((before.get(variant["id"]) or {}).get("images") or [])
+                    element["image"] = approved_image(element)
+        bible["id"] = bible_id
+        _write(_stamp(bible, previous))
     return bible
 
 
@@ -188,15 +335,154 @@ def image_path(bible_id: str, name: str) -> Path | None:
     return path if path.is_file() else None
 
 
-def _import_image(folder: Path, source: str, prefix: str) -> str | None:
+# ── elements, variants and images ──────────────────────────────────────────
+
+
+def find_element(bible: dict, element_id: str) -> tuple[str, dict]:
+    for kind, plural in KINDS.items():
+        for element in bible.get(plural) or []:
+            if element["id"] == element_id:
+                return kind, element
+    raise BibleError("Unknown element")
+
+
+def find_variant(element: dict, variant_id: str) -> dict:
+    variant = next((v for v in element["variants"] if v["id"] == variant_id), None)
+    if variant is None:
+        raise BibleError("Unknown variant")
+    return variant
+
+
+def _mutate(bible_id: str, change: Callable[[dict], Any]) -> tuple[dict, Any]:
+    """Apply ``change`` to the stored bible and save it as a new revision."""
+    with _LOCK:
+        bible = get_bible(bible_id)
+        if not bible:
+            raise BibleError("Unknown bible")
+        previous = dict(bible)
+        result = change(bible)
+        for plural in KINDS.values():
+            for element in bible[plural]:
+                element["image"] = approved_image(element)
+        _write(_stamp(bible, previous))
+    return bible, result
+
+
+def _import_image(folder: Path, source: str | os.PathLike, prefix: str) -> str | None:
+    source = str(source or "")
     if not source or not os.path.isfile(source):
         return None
     suffix = os.path.splitext(source)[1].lower()
     if suffix not in IMAGE_SUFFIXES:
         return None
-    name = f"{prefix}_{int(time.time() * 1000)}{suffix}"
+    name = f"{prefix}_{int(time.time() * 1000)}_{secrets.token_hex(2)}{suffix}"
     shutil.copyfile(source, folder / name)
     return name
+
+
+def _image_prefix(element: dict, variant_id: str) -> str:
+    return "_".join(filter(None, [element["kind"][:4], _slug(element["name"], 20),
+                                  None if variant_id == DEFAULT_VARIANT else _slug(variant_id, 16)]))
+
+
+def add_image(bible_id: str, element_id: str, variant_id: str, source: str) -> dict:
+    """Add a file (an upload) as a candidate; the first image of a variant is approved."""
+    def change(bible: dict) -> None:
+        _, element = find_element(bible, element_id)
+        variant = find_variant(element, variant_id)
+        name = _import_image(_folder(bible_id), source, _image_prefix(element, variant_id))
+        if not name:
+            raise BibleError("Not an image file")
+        approved = any(i["status"] == "approved" for i in variant["images"])
+        variant["images"].append({"id": secrets.token_hex(4), "file": name,
+                                  "status": "candidate" if approved else "approved",
+                                  "error": "", "created_at": _now()})
+    return _mutate(bible_id, change)[0]
+
+
+def start_render(bible_id: str, element_id: str, variant_id: str) -> tuple[dict, str]:
+    """Reserve a rendering slot in a variant; returns the bible and the slot id."""
+    def change(bible: dict) -> str:
+        _, element = find_element(bible, element_id)
+        variant = find_variant(element, variant_id)
+        slot = secrets.token_hex(4)
+        variant["images"].append({"id": slot, "file": None, "status": "rendering", "error": "",
+                                  "created_at": _now()})
+        return slot
+    return _mutate(bible_id, change)
+
+
+def finish_render(bible_id: str, element_id: str, variant_id: str, slot: str, *,
+                  source: str | None = None, error: str = "") -> dict:
+    """Turn a rendering slot into a candidate (the first image is approved) or a failure."""
+    def change(bible: dict) -> None:
+        _, element = find_element(bible, element_id)
+        variant = find_variant(element, variant_id)
+        image = next((i for i in variant["images"] if i["id"] == slot), None)
+        if image is None:
+            return
+        name = _import_image(_folder(bible_id), source, _image_prefix(element, variant_id)) if source else None
+        if not name:
+            image.update(status="failed", error=_text(error or "The render produced no image", 300))
+            return
+        approved = any(i["status"] == "approved" for i in variant["images"])
+        image.update(file=name, status="candidate" if approved else "approved", error="")
+    return _mutate(bible_id, change)[0]
+
+
+def approve_image(bible_id: str, element_id: str, variant_id: str, image_id: str) -> dict:
+    def change(bible: dict) -> None:
+        _, element = find_element(bible, element_id)
+        variant = find_variant(element, variant_id)
+        chosen = next((i for i in variant["images"] if i["id"] == image_id and i["file"]), None)
+        if chosen is None:
+            raise BibleError("Unknown image")
+        for image in variant["images"]:
+            if image["status"] == "approved":
+                image["status"] = "candidate"
+        chosen["status"] = "approved"
+    return _mutate(bible_id, change)[0]
+
+
+def delete_image(bible_id: str, element_id: str, variant_id: str, image_id: str) -> dict:
+    """Drop one image; its file is kept, an older project may still use a copy of it."""
+    def change(bible: dict) -> None:
+        _, element = find_element(bible, element_id)
+        variant = find_variant(element, variant_id)
+        before = len(variant["images"])
+        variant["images"] = [i for i in variant["images"] if i["id"] != image_id]
+        if len(variant["images"]) == before:
+            raise BibleError("Unknown image")
+    return _mutate(bible_id, change)[0]
+
+
+def reference_paths(bible: dict, element: dict, variant: dict, chain_from: list[str] | None = None) -> list[Path]:
+    """Approved images a new render of ``variant`` is edited from, most important first.
+
+    A non-default look starts from the element's approved default (same person
+    or place, changed as the variant says); ``chain_from`` names elements whose
+    approved default the new image must match (the same building, the same
+    world). Without either, the render starts from text alone.
+    """
+    folder = _folder(bible["id"])
+    files: list[str] = []
+    if variant["id"] != DEFAULT_VARIANT:
+        files.append(approved_image(element) or "")
+    for element_id in chain_from or []:
+        try:
+            _, other = find_element(bible, element_id)
+        except BibleError:
+            continue
+        if other["id"] != element["id"]:
+            files.append(approved_image(other) or "")
+    paths = []
+    for name in dict.fromkeys(f for f in files if f):
+        if (folder / name).is_file():
+            paths.append(folder / name)
+    return paths
+
+
+# ── projects ───────────────────────────────────────────────────────────────
 
 
 def add_cast(cast: dict, image_dirs: list[str], *, bible_id: str | None = None, name: str = "",
@@ -204,58 +490,95 @@ def add_cast(cast: dict, image_dirs: list[str], *, bible_id: str | None = None, 
     """Save a project's cast (and style) into a new or an existing bible.
 
     ``image_dirs`` are the folders the cast images are looked up in (the
-    project's output folder first). Entries of an existing bible with the same
-    name are replaced; the others are kept. The style is only set when the
-    bible has none yet.
+    project's output folder first). An entry with the name of an element of
+    the same kind updates its text and adds its image as a candidate of the
+    default look (approved when the look has none); other entries become new
+    elements. The style is only set when the bible has none yet.
     """
-    cast = casting.normalize_cast(cast, max_characters=MAX_CHARACTERS, max_locations=MAX_LOCATIONS)
     if bible_id:
-        bible = get_bible(bible_id)
-        if not bible:
+        if not get_bible(bible_id):
             raise BibleError("Unknown bible")
     else:
-        bible = save_bible({"name": name or "Untitled bible", "style": style})
-    folder = _folder(bible["id"])
-    for plural, kind in (("characters", "char"), ("locations", "loc")):
-        merged = {entry["name"].casefold(): entry for entry in bible.get(plural) or []}
-        for entry in cast[plural]:
-            entry = dict(entry)
-            image = os.path.basename(entry.get("image") or "")
-            source = next((os.path.join(d, image) for d in image_dirs if d and image
-                           and os.path.isfile(os.path.join(d, image))), "")
-            slug = _SLUG.sub("_", entry["name"].lower()).strip("_")[:24] or kind
-            entry["image"] = _import_image(folder, source, f"{kind}_{slug}")
-            merged[entry["name"].casefold()] = entry
-        bible[plural] = list(merged.values())
-    if style and not bible.get("style"):
-        bible["style"] = style
-    return save_bible(bible, bible_id=bible["id"])
+        bible_id = save_bible({"name": name or "Untitled bible", "style": style})["id"]
+
+    def change(bible: dict) -> None:
+        folder = _folder(bible_id)
+        for kind, plural in (("character", "characters"), ("location", "locations")):
+            by_name = {e["name"].casefold(): e for e in bible[plural]}
+            for entry in (cast or {}).get(plural) or []:
+                incoming = _element({k: v for k, v in entry.items() if k not in ("image", "variants")}, kind, folder)
+                if incoming is None:
+                    continue
+                element = by_name.get(incoming["name"].casefold())
+                if element is None:
+                    if len(bible[plural]) >= MAX_ELEMENTS:
+                        continue
+                    element = incoming
+                    bible[plural].append(element)
+                    by_name[element["name"].casefold()] = element
+                else:
+                    for field in FIELDS[kind]:
+                        element[field] = incoming[field] or element[field]
+                image = os.path.basename(str(entry.get("image") or ""))
+                source = next((os.path.join(d, image) for d in image_dirs
+                               if d and image and os.path.isfile(os.path.join(d, image))), "")
+                stored = _import_image(folder, source, _image_prefix(element, DEFAULT_VARIANT))
+                if stored:
+                    variant = find_variant(element, DEFAULT_VARIANT)
+                    approved = any(i["status"] == "approved" for i in variant["images"])
+                    variant["images"].append({"id": secrets.token_hex(4), "file": stored,
+                                              "status": "candidate" if approved else "approved",
+                                              "error": "", "created_at": _now()})
+        if style and not bible.get("style"):
+            bible["style"] = copy.deepcopy(style)
+    return _mutate(bible_id, change)[0]
 
 
-def _chosen(entries: list[dict], names: Any) -> list[dict]:
+def _chosen(elements: list[dict], names: Any) -> list[dict]:
     if not isinstance(names, list) or not names:
-        return list(entries)
+        return list(elements)
     wanted = {str(n).strip().casefold() for n in names if str(n).strip()}
-    return [entry for entry in entries if entry["name"].casefold() in wanted]
+    return [e for e in elements if e["name"].casefold() in wanted or e["id"] in wanted or e["tag"] in wanted]
 
 
-def project_cast(bible: dict, out_dir: str, *, characters: Any = None, locations: Any = None) -> dict:
+def _look(element: dict, variants: Any) -> dict:
+    """The variant an episode asked for (by element name, id or tag), else the default."""
+    variants = variants if isinstance(variants, dict) else {}
+    wanted = next((str(variants[key]) for key in (element["name"], element["id"], element["tag"])
+                   if key in variants), DEFAULT_VARIANT)
+    wanted = wanted.strip().lower()
+    return next((v for v in element["variants"] if v["id"] == wanted or v["label"].lower() == wanted),
+                element["variants"][0])
+
+
+def project_cast(bible: dict, out_dir: str, *, characters: Any = None, locations: Any = None,
+                 variants: Any = None) -> dict:
     """The cast of one project made from a bible, its images copied into ``out_dir``.
 
     The Director keeps cast images as file names in the project's output
     folder; copying them keeps every cast path (planning, review, saved
     projects, Open & Edit) unchanged. ``characters`` and ``locations`` pick
-    entries by name; none picks every entry.
+    elements (by name, id or tag; none picks all); ``variants`` maps an
+    element to the look this project uses. A character's look replaces its
+    wardrobe; a location's look is added to its description.
     """
     folder = _folder(bible["id"])
     os.makedirs(out_dir, exist_ok=True)
     cast: dict[str, list] = {"characters": [], "locations": []}
-    for plural, names in (("characters", characters), ("locations", locations)):
-        for entry in _chosen(bible.get(plural) or [], names):
-            entry = dict(entry)
-            image = entry.get("image")
+    for kind, plural, names in (("character", "characters", characters), ("location", "locations", locations)):
+        for element in _chosen(bible.get(plural) or [], names):
+            look = _look(element, variants)
+            entry = {field: element.get(field, "") for field in ("name", "role", "descriptor", "description",
+                                                                 "wardrobe") if field in element}
+            entry.update(bible_element=element["id"], bible_variant=look["id"], tag=element["tag"])
+            if look["id"] != DEFAULT_VARIANT and look["description"]:
+                if kind == "character":
+                    entry["wardrobe"] = look["description"]
+                else:
+                    entry["description"] = f"{element['description']} In this scene: {look['description']}"
+            image = approved_image(element, look["id"])
             if image and (folder / image).is_file():
-                copied = f"bible_{bible['id']}_r{bible.get('revision', 1)}_{image}"
+                copied = f"bible_{bible['id']}_{image}"
                 target = os.path.join(out_dir, copied)
                 if not os.path.isfile(target):
                     shutil.copyfile(folder / image, target)
@@ -266,8 +589,12 @@ def project_cast(bible: dict, out_dir: str, *, characters: Any = None, locations
     return cast
 
 
-def world_block(bible: dict) -> str:
-    """The bible's world rules as a planner block ("" when it has none)."""
+def world_block(bible: dict, *, props: Any = None) -> str:
+    """The bible's world rules and recurring props as a planner block ("" when it has none).
+
+    Props are described word for word, so every shot that shows one names
+    the same object (``props`` picks them like ``project_cast`` does).
+    """
     world = bible.get("world") or {}
     lines = [
         f"{label}: {world[field]}"
@@ -275,6 +602,13 @@ def world_block(bible: dict) -> str:
                              ("rules", "World rules"), ("forbidden", "Never"))
         if world.get(field)
     ]
+    chosen = _chosen(bible.get("props") or [], props)
+    if chosen:
+        lines.append("Recurring props (describe each exactly like this whenever it appears):")
+        lines += [
+            f"- {p['name']}: {p['description']}" + (f" ({p['notes']})" if p.get("notes") else "")
+            for p in chosen
+        ]
     if not lines:
         return ""
     return f"Series bible \"{bible['name']}\" (every episode follows it):\n" + "\n".join(lines)

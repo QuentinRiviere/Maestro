@@ -155,6 +155,45 @@ def location_plate_prompt(location: dict, style: str = "") -> str:
     )
 
 
+def prop_shot_prompt(prop: dict, style: str = "") -> str:
+    look = f" Rendered as: {style}." if style else ""
+    return (
+        "Prop reference photograph: the object alone on a plain mid-grey studio table, soft even light, true "
+        f"proportions and contact shadow, no people, no hands, no text.{look} Object: {prop['description']}"
+        + (f" Details: {prop['notes']}." if prop.get("notes") else "")
+    )
+
+
+def bible_image_prompt(kind: str, element: dict, variant: dict, style: str = "", *,
+                       ref_label: str = "", from_default: bool = False, chained: int = 0) -> str:
+    """The prompt of one bible image: the element's sheet, plate or prop shot, in one of its looks.
+
+    ``from_default``: reference 1 is the approved default look, which the
+    render must keep except for what the variant changes. ``chained``: how
+    many approved elements of the same world follow as references.
+    """
+    entry = dict(element)
+    change = variant.get("description") or ""
+    if change and kind == "character":
+        entry["wardrobe"] = change
+    elif change:
+        entry["description"] = f"{element['description']} State: {change}"
+    body = (character_sheet_prompt(entry, style) if kind == "character"
+            else location_plate_prompt(entry, style) if kind == "location"
+            else prop_shot_prompt(entry, style))
+    label = ref_label or "reference image"
+    subject = {"character": "person", "location": "place", "prop": "object"}[kind]
+    leads = []
+    if from_default:
+        leads.append(f"The same {subject} as {label} 1: keep identity, proportions, materials and every detail "
+                     f"exactly; change only this: {change or 'nothing'}.")
+    if chained:
+        first = 2 if from_default else 1
+        names = ", ".join(f"{label} {first + i}" for i in range(chained))
+        leads.append(f"Same world as {names}: match their architecture, materials, palette, period and light.")
+    return " ".join(leads + [body])
+
+
 def style_phrase(contract: dict | None) -> str:
     """A short description of the medium for image prompts."""
     contract = contract if isinstance(contract, dict) else {}

@@ -11004,6 +11004,57 @@ def director_bible_image(bible_id: str, name: str):
     return FileResponse(str(path))
 
 
+_BIBLE_IMAGE = "/api/v1/director/bibles/{bible_id}/elements/{element_id}/variants/{variant_id}"
+
+
+@api.post(_BIBLE_IMAGE + "/render")
+async def director_bible_render(bible_id: str, element_id: str, variant_id: str, request: Request):
+    """Render a candidate image of one element's look (it renders in the background)."""
+    from services.director_pipeline import render_bible_image
+    body = await request.json() if request.headers.get("content-length", "0") != "0" else {}
+    body = body if isinstance(body, dict) else {}
+    bible = _bible_call(
+        render_bible_image, bible_id, element_id, variant_id,
+        image_model=str(body.get("image_model") or ""),
+        image_params=body.get("image_params") if isinstance(body.get("image_params"), dict) else {},
+        chain_from=[str(e) for e in body.get("chain_from") or []][:4],
+    )
+    return {"bible": bible}
+
+
+@api.post(_BIBLE_IMAGE + "/upload")
+async def director_bible_upload(bible_id: str, element_id: str, variant_id: str, request: Request,
+                                file: UploadFile = File(...)):
+    """Add your own image to one element's look."""
+    from services.director.bibles import IMAGE_SUFFIXES, add_image
+    cl = request.headers.get("content-length")
+    if cl and cl.isdigit() and int(cl) > 50 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Image too large (max 50 MB)")
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in IMAGE_SUFFIXES:
+        raise HTTPException(status_code=400, detail="Upload a PNG, JPEG or WebP image")
+    import shutil
+    import tempfile
+    with tempfile.TemporaryDirectory() as folder:
+        path = os.path.join(folder, f"upload{ext}")
+        with open(path, "wb") as handle:
+            shutil.copyfileobj(file.file, handle)
+        bible = _bible_call(add_image, bible_id, element_id, variant_id, path)
+    return {"bible": bible}
+
+
+@api.post(_BIBLE_IMAGE + "/images/{image_id}/approve")
+def director_bible_approve(bible_id: str, element_id: str, variant_id: str, image_id: str):
+    from services.director.bibles import approve_image
+    return {"bible": _bible_call(approve_image, bible_id, element_id, variant_id, image_id)}
+
+
+@api.delete(_BIBLE_IMAGE + "/images/{image_id}")
+def director_bible_image_delete(bible_id: str, element_id: str, variant_id: str, image_id: str):
+    from services.director.bibles import delete_image
+    return {"bible": _bible_call(delete_image, bible_id, element_id, variant_id, image_id)}
+
+
 @api.post("/api/v1/director/pipeline/{pid}/bible")
 async def director_pipeline_save_to_bible(pid: str, request: Request):
     """Save a project's cast and style into a new bible, or merge them into one."""

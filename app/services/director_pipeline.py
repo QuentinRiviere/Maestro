@@ -6285,6 +6285,7 @@ def _apply_bible(pid: str, params: dict) -> str:
         params["_director_cast"] = bibles.project_cast(
             bible, out_dir,
             characters=params.get("bible_characters"), locations=params.get("bible_locations"),
+            variants=params.get("bible_variants"),
         )
         params["_director_bible_revision"] = bible.get("revision", 1)
         if bible.get("style") and not isinstance(params.get("_director_style_contract"), dict):
@@ -6294,7 +6295,71 @@ def _apply_bible(pid: str, params: dict) -> str:
     _update_pipeline(pid, bible={"id": bible["id"], "name": bible["name"],
                                  "revision": params.get("_director_bible_revision")})
     print(f"[Pipeline {pid}] Bible {bible['id']} r{params.get('_director_bible_revision')}")
-    return bibles.world_block(bible)
+    return bibles.world_block(bible, props=params.get("bible_props"))
+
+
+def render_bible_image(bible_id: str, element_id: str, variant_id: str, *, image_model: str = "",
+                       image_params: Optional[dict] = None, chain_from: Optional[list] = None) -> dict:
+    """Render a candidate image of one bible element's look, in the background.
+
+    A non-default look is edited from the approved default; ``chain_from``
+    adds approved elements the image must match (same building, same world).
+    Returns the bible with the new "rendering" slot; the slot becomes a
+    candidate (approved when the look had none) or a failure.
+    """
+    from services.director import bibles, casting
+
+    bible = bibles.get_bible(bible_id)
+    if not bible:
+        raise bibles.BibleError("Unknown bible")
+    kind, element = bibles.find_element(bible, element_id)
+    variant = bibles.find_variant(element, variant_id)
+    image_model = image_model or "flux2_klein_9b"
+    image_params = image_params or {}
+    refs = [str(path) for path in bibles.reference_paths(bible, element, variant, chain_from)]
+    budget = image_ref_profile(image_model)["max_refs"]
+    if budget:
+        refs = refs[:budget]
+    from_default = variant["id"] != bibles.DEFAULT_VARIANT and bool(refs)
+    prompt = casting.bible_image_prompt(
+        kind, element, variant, casting.style_phrase(bible.get("style")),
+        ref_label="Picture" if image_ref_profile(image_model)["label"] == "Picture" else "reference image",
+        from_default=from_default, chained=len(refs) - (1 if from_default else 0),
+    )
+    bible, slot = bibles.start_render(bible_id, element_id, variant_id)
+    gen_params = {
+        "model_type": image_model,
+        "prompt": prompt,
+        "image_refs": refs,
+        "image_mode": 1,
+        "image_prompt_type": "",
+        "num_inference_steps": image_params.get("num_inference_steps", 8),
+        "guidance_scale": image_params.get("guidance_scale", 1),
+        "video_prompt_type": _director_image_prompt_type(image_model, refs),
+        "resolution": image_params.get("resolution", "1280x720"),
+        "seed": -1,
+        "settings_version": 2.52,
+        "generation_mode": "image",
+        "repeat_generation": 1,
+        "negative_prompt": "",
+        "video_length": 1,
+    }
+    out_dir = os.path.join(_wgp.save_path, "_bible_renders")
+
+    def run() -> None:
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+            files = _submit_and_wait(gen_params, timeout_s=900, out_dir=out_dir)
+            source = files[0] if files and files[0] else ""
+            if source and not os.path.isabs(source):
+                source = os.path.join(out_dir, source)
+            bibles.finish_render(bible_id, element_id, variant_id, slot, source=source)
+        except Exception as error:  # the slot must not stay "rendering"
+            print(f"[Bible {bible_id}] Render of {element['name']} ({variant_id}) failed: {error}")
+            bibles.finish_render(bible_id, element_id, variant_id, slot, error=str(error))
+
+    threading.Thread(target=run, name=f"bible-render-{slot}", daemon=True).start()
+    return bible
 
 
 def _render_cast_image(pid: str, params: dict, kind: str, entry: dict, style: str) -> Optional[str]:
