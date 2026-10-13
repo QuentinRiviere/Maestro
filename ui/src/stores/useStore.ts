@@ -2806,6 +2806,8 @@ function findResolutionSelection(
   return null
 }
 
+// Last cast and storyboard images the media feed was refreshed for.
+let _directorFeedMediaKey = ''
 let _galleryRevision = 0
 let _galleryMetadataRevision = 0
 let _galleryMorePending = false
@@ -14356,6 +14358,19 @@ export const useStore = create<AppState>((set, get) => ({
             }))
             .filter(img => img.filename && img.filename.length > 0)
           set({ directorClipImages: images })
+        }
+
+        // Cast sheets and storyboard frames land in the workspace before any
+        // render phase; refresh the media feed whenever a new one appears,
+        // including regenerations during a review stop.
+        const mediaKey = [
+          ...(status.cast?.characters ?? []).map(entry => entry.image || ''),
+          ...(status.cast?.locations ?? []).map(entry => entry.image || ''),
+          ...(status.clip_images ?? []),
+        ].filter(Boolean).join('|')
+        if (mediaKey && mediaKey !== _directorFeedMediaKey) {
+          _directorFeedMediaKey = mediaKey
+          get().refreshOutputs()
         }
 
         // Handle phase transitions
