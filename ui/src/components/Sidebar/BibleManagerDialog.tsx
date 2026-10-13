@@ -35,7 +35,55 @@ function useReadsImages(modelType: string): boolean {
     return !model?.cloud_provider || !!model.cloud_reads_images
   })
 }
-const TEXT_ONLY_NOTE = 'cannot read an image: looks other than Default need an editing model (Seedream 4, Nano Banana, FLUX Kontext, Klein, Qwen-Image-Edit) to keep the same person or place.'
+const BIBLE_MODEL_KEY = 'maestro.bibleImageModel'
+const PREFERRED_BIBLE_MODELS = ['cloud_fal_seedream_4', 'cloud_replicate_seedream_4', 'cloud_fal_nano_banana']
+const readStoredModel = () => { try { return window.localStorage.getItem(BIBLE_MODEL_KEY) } catch { return null } }
+
+/** The image model bibles render with: picked on the Bibles page, apart from the Director's own model. */
+function useBibleImageModel(): [string, (model: string) => void] {
+  const directorModel = useStore(s => s.selectedModelPerMode.image || 'flux2_klein_9b')
+  const models = useStore(s => s.models)
+  const [picked, setPicked] = useState<string | null>(readStoredModel)
+  const reads = (id: string) => {
+    const model = models.find(m => m.model_type === id)
+    return !!model && (!model.cloud_provider || !!model.cloud_reads_images)
+  }
+  const fallback = reads(directorModel) ? directorModel
+    : PREFERRED_BIBLE_MODELS.find(id => models.some(m => m.model_type === id)) ?? directorModel
+  const pick = useCallback((model: string) => {
+    setPicked(model)
+    try { window.localStorage.setItem(BIBLE_MODEL_KEY, model) } catch { /* per-viewer convenience only */ }
+  }, [])
+  return [picked && models.some(m => m.model_type === picked) ? picked : fallback, pick]
+}
+const BibleModelContext = createContext('flux2_klein_9b')
+
+function BibleModelPicker({ value, onChange }: { value: string; onChange: (model: string) => void }) {
+  const models = useStore(s => s.models)
+  const enabledModels = useStore(s => s.enabledModels)
+  const nsfwMode = useStore(s => s.servicesConfig?.nsfw_mode ?? false)
+  const choices = models.filter(m => m.director?.image.compatible === true
+    && (enabledModels.has(m.model_type) || m.model_type === value) && (!m.nsfw_only || nsfwMode))
+  const editing = choices.filter(m => !m.cloud_provider || m.cloud_reads_images)
+  const textOnly = choices.filter(m => m.cloud_provider && !m.cloud_reads_images)
+  const current = models.find(m => m.model_type === value)
+  return (
+    <select value={value} onChange={e => onChange(e.target.value)} aria-label="Image model for bible renders"
+      title="Image model for bible renders. Looks other than Default need a model that reads images."
+      className="max-w-[14rem] bg-bg-tertiary border border-border rounded px-2 py-1 text-[11px] text-text-primary focus:outline-none focus:border-accent-blue">
+      {!choices.some(m => m.model_type === value) && <option value={value}>{current?.name ?? value}</option>}
+      <optgroup label="Reads images (every look)">
+        {editing.map(m => <option key={m.model_type} value={m.model_type}>{m.name}</option>)}
+      </optgroup>
+      {textOnly.length > 0 && (
+        <optgroup label="Text only (Default looks only)">
+          {textOnly.map(m => <option key={m.model_type} value={m.model_type}>{m.name}</option>)}
+        </optgroup>
+      )}
+    </select>
+  )
+}
+const TEXT_ONLY_NOTE = 'cannot read an image: looks other than Default need a model that reads images to keep the same person or place. Pick one (Seedream 4, Nano Banana, FLUX Kontext, Klein, Qwen-Image-Edit) in the model menu at the top of the page.'
 
 const lookCount = (bible: DirectorBible) => (['characters', 'locations', 'props'] as const)
   .reduce((count, plural) => count + bible[plural].reduce((n, e) => n + e.variants.length, 0), 0)
@@ -145,7 +193,7 @@ function Images({ bible, element, variant, onBible }: {
             {image.file
               ? <button className="w-full h-full" title="View full size"
                   onClick={() => setViewing(withFiles.findIndex(i => i.id === image.id))}>
-                  <img src={directorBibleImageUrl(bible.id, image.file)} alt={`${element.name} ${variant.label}`} className="w-full h-full object-cover" />
+                  <img src={directorBibleImageUrl(bible.id, image.file)} alt={`${element.name} ${variant.label}`} className="w-full h-full object-contain" />
                 </button>
               : <div className="w-full h-full flex flex-col items-center justify-center gap-0.5 text-[9px] text-text-muted" title={image.error || image.status}>
                   {image.status === 'rendering'
@@ -189,7 +237,7 @@ function ElementCard({ bible, element, saved, onChange, onRemove, onBible }: {
   onRemove: () => void
   onBible: (bible: DirectorBible) => void
 }) {
-  const imageModel = useStore(s => s.selectedModelPerMode.image || 'flux2_klein_9b')
+  const imageModel = useContext(BibleModelContext)
   const readsImages = useReadsImages(imageModel)
   const [variantId, setVariantId] = useState('default')
   const [newLook, setNewLook] = useState<{ label: string; description: string } | null>(null)
@@ -367,7 +415,7 @@ function BibleManagerPanel({ initialId, onClose }: { initialId?: string; onClose
     return () => window.clearInterval(timer)
   }, [isRendering, selected, applyServer])
 
-  const imageModel = useStore(s => s.selectedModelPerMode.image || 'flux2_klein_9b')
+  const [imageModel, setImageModel] = useBibleImageModel()
   const readsImages = useReadsImages(imageModel)
   // Generate saves the draft first: the server renders the stored bible.
   const generateAssets = async () => {
@@ -431,6 +479,7 @@ function BibleManagerPanel({ initialId, onClose }: { initialId?: string; onClose
 
   return (
     <AskContext.Provider value={ask}>
+    <BibleModelContext.Provider value={imageModel}>
       <div className="w-full h-full flex bg-bg-secondary overflow-hidden">
         <aside className="w-48 shrink-0 border-r border-border p-2.5 space-y-2 overflow-y-auto">
           <h2 className="text-sm font-medium text-text-primary">Bibles</h2>
@@ -461,6 +510,7 @@ function BibleManagerPanel({ initialId, onClose }: { initialId?: string; onClose
             {draft && <span className="text-[10px] text-text-muted">r{draft.revision}</span>}
             {isRendering && <span className="flex items-center gap-1 text-[10px] text-text-muted"><Loader2 size={10} className="animate-spin" /> rendering</span>}
             <div className="ml-auto flex items-center gap-2">
+              {draft && <BibleModelPicker value={imageModel} onChange={setImageModel} />}
               {draft && (
                 <button className="text-[10px] text-text-muted hover:text-chip-red"
                   onClick={() => ask({
@@ -554,6 +604,7 @@ function BibleManagerPanel({ initialId, onClose }: { initialId?: string; onClose
         )}
       </div>
       {confirmDialog}
+    </BibleModelContext.Provider>
     </AskContext.Provider>
   )
 }

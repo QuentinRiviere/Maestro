@@ -493,6 +493,10 @@ class BibleRenderSettingsTests(unittest.TestCase):
         self.assertNotIn("neon haze", prompt)  # the atmosphere is for places and shots
         self.assertNotIn("reference image", prompt)
         self.assertEqual((sent[0]["num_inference_steps"], sent[0]["guidance_scale"]), (28, 3.5))
+        # One person in a tall frame: no second, different person, and a face big enough for its eyes.
+        self.assertIn("alone, standing in a full-body front view", prompt)
+        self.assertNotIn("side by side", prompt)
+        self.assertEqual(sent[0]["resolution"], "1088x1920")
 
     def test_a_text_only_model_cannot_render_a_look(self):
         girl = self._bible()

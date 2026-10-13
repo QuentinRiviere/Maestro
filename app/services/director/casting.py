@@ -159,13 +159,20 @@ def _subject_lead(description: str) -> str:
     return f"an adult aged {age}" if age >= 18 else f"a young person aged {age}"
 
 
+# One person per sheet, in a tall frame: asked for two panels, text-only models
+# draw two different people, and a full figure in a wide frame leaves the face
+# a few dozen pixels tall, where the eyes come out garbled.
+SHEET_RESOLUTION = "1088x1920"
+
+
 def character_sheet_prompt(character: dict, style: str = "") -> str:
     look = f" Rendered as: {style}." if style else ""
     return (
-        f"Character reference sheet of {_subject_lead(character['description'])}, on a plain light-grey studio "
-        "background: the same person shown twice side by side, a front head-and-shoulders portrait on the left "
-        "and a full-body front view on the right, neutral expression, even soft lighting, sharp focus, no text, "
-        f"no logo.{look} Person: {character['description']}"
+        f"Character reference photograph of {_subject_lead(character['description'])}, alone, standing in a "
+        "full-body front view from head to shoes, centered in a tall portrait frame on a plain light-grey studio "
+        "background, looking straight at the lens. The face is sharp and well lit: both eyes symmetrical and "
+        "matching, round irises with natural catchlights. Neutral expression, even soft lighting, sharp focus, "
+        f"no text, no logo.{look} Person: {character['description']}"
         + (f" Wearing: {character['wardrobe']}." if character.get("wardrobe") else "")
     )
 

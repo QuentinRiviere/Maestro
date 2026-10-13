@@ -6433,7 +6433,8 @@ def _render_bible_slot(bible_id: str, element_id: str, variant_id: str, slot: st
             "num_inference_steps": image_params.get("num_inference_steps", 8),
             "guidance_scale": image_params.get("guidance_scale", 1),
             "video_prompt_type": _director_image_prompt_type(image_model, refs),
-            "resolution": image_params.get("resolution", "1280x720"),
+            "resolution": (casting.SHEET_RESOLUTION if kind == "character"
+                           else image_params.get("resolution", "1280x720")),
             "seed": -1,
             "settings_version": 2.52,
             "generation_mode": "image",
@@ -6555,7 +6556,9 @@ def _render_cast_image(pid: str, params: dict, kind: str, entry: dict, style: st
         "num_inference_steps": image_params.get("num_inference_steps", 8),
         "guidance_scale": image_params.get("guidance_scale", 1),
         "video_prompt_type": _director_image_prompt_type(image_model, []),
-        "resolution": image_params.get("resolution", "1280x720"),
+        # A sheet's framing is its own, whatever the project's aspect ratio.
+        "resolution": (casting.SHEET_RESOLUTION if kind == "character"
+                       else image_params.get("resolution", "1280x720")),
         "seed": -1,
         "settings_version": 2.52,
         "generation_mode": "image",
