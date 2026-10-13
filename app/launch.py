@@ -419,6 +419,10 @@ register_terminal_listener(_studio_job_archive.save)
 register_terminal_listener(lambda job, status: _generation_previews.clear(str(job.get("id") or "")))
 _studio_submission_lock = threading.RLock()
 _gen_lock = threading.Lock()
+# Hosted (cloud API) jobs that touch nothing local queue here instead, so a
+# cloud image never waits behind a GPU job, e.g. one waiting for the remote
+# worker to boot.
+_cloud_gen_lock = threading.Lock()
 # Director projects keep their parent job running between shots, so this also
 # holds the remote worker across a whole project. Cloud API jobs never use it.
 _remote_worker.pending_work = lambda: any(
@@ -26219,6 +26223,20 @@ def _is_cloud_model(model_type) -> bool:
     return bool((wgp.get_model_def(model_type) or {}).get("cloud"))
 
 
+def _uses_cloud_lane(job: dict) -> bool:
+    """A hosted job that needs no local model, so it skips the GPU queue.
+
+    Prompt enhancement loads the local LLM and a Viggle character frame runs
+    a local model: jobs with either keep the GPU lock.
+    """
+    params = job.get("params") or {}
+    return (
+        _is_cloud_model(params.get("model_type"))
+        and not isinstance(job.get("enhancement"), dict)
+        and not params.get("viggle_character")
+    )
+
+
 _CLOUD_UPLOAD_CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings", "cloud_lora_uploads.json")
 
 
@@ -26630,7 +26648,9 @@ def _run_generation(job_id: str, *, finalize: bool = True, _slot_owned: bool = F
 
     # Internal image preparation runs inside its parent's existing slot.
     # Keeping one job identity preserves cancellation and avoids a second queue.
-    with ExitStack() as media_resources, (nullcontext(True) if _slot_owned else generation_slot(_gen_lock, job)) as acquired:
+    cloud_lane = _uses_cloud_lane(job)
+    lock = _cloud_gen_lock if cloud_lane else _gen_lock
+    with ExitStack() as media_resources, (nullcontext(True) if _slot_owned else generation_slot(lock, job)) as acquired:
         if not acquired:
             return False
         try:
@@ -26739,7 +26759,7 @@ def _run_generation(job_id: str, *, finalize: bool = True, _slot_owned: bool = F
             # Browser clients never unload another job's active prompt model.
             # Only the worker holding the slot can finish the writing phase.
             from services import llm_service
-            if llm_service.is_loaded():
+            if not cloud_lane and llm_service.is_loaded():
                 llm_service.unload_model()
             if is_cancel_requested(job):
                 return False

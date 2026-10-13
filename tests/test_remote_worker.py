@@ -540,3 +540,12 @@ def test_worker_spec_requires_a_ram_and_cpu_floor():
     fleet = build_fleet_spec(settings)["configuration"]["resources"]
     assert run == fleet == {"gpu": "80GB..", "disk": "200GB..", "memory": "64GB..", "cpu": "8.."}
     assert "memory" not in build_run_spec(RemoteWorkerSettings.from_mapping({"memory": ""}))["configuration"]["resources"]
+
+
+def test_worker_wait_changes_the_job_message():
+    from services.remote_worker.job_forwarder import _worker_status_message
+
+    starting = {"state": "starting"}
+    assert _worker_status_message(starting, waited=5) == "Starting remote GPU worker…"
+    assert _worker_status_message(starting, waited=314) == "Starting remote GPU worker… · 5 min 10 s"
+    assert _worker_status_message(starting, waited=314) != _worker_status_message(starting, waited=325)

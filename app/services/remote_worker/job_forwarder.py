@@ -196,12 +196,13 @@ class RemoteJobForwarder:
         self._manager.job_started()
         try:
             update(phase="Remote worker", message="Waiting for the remote GPU worker…")
+            waiting_since = time.monotonic()
             status = self._manager.ensure_ready(
                 model_type,
                 should_abort=is_cancelled,
                 on_update=lambda s: update(
                     phase="Remote worker",
-                    message=_worker_status_message(s),
+                    message=_worker_status_message(s, waited=time.monotonic() - waiting_since),
                 ),
             )
             if is_cancelled():
@@ -425,7 +426,26 @@ def format_progress(progress: Mapping[str, Any] | None) -> str:
     return text + (f" · {rate:.0f} MB/s" if rate >= 1 else "")
 
 
-def _worker_status_message(status: Mapping[str, Any]) -> str:
+# Waits shown in the job message, rounded to this step.
+WAIT_SHOWN_AFTER_SECONDS = 10
+WAIT_STEP_SECONDS = 10
+
+
+def _worker_status_message(status: Mapping[str, Any], waited: float | None = None) -> str:
+    """The worker's startup state, with how long the job has waited for it.
+
+    The wait changes the message every few seconds: Director callers treat an
+    unchanged job message as no progress, and a slow image pull is one long
+    step that would otherwise read as a stalled job.
+    """
+    message = _worker_state_message(status)
+    if waited is None or waited < WAIT_SHOWN_AFTER_SECONDS:
+        return message
+    seconds = int(waited) // WAIT_STEP_SECONDS * WAIT_STEP_SECONDS
+    return f"{message} · {seconds // 60} min {seconds % 60:02d} s"
+
+
+def _worker_state_message(status: Mapping[str, Any]) -> str:
     state = status.get("state")
     if state == "starting":
         pull = status.get("image_pull_percent")
