@@ -182,10 +182,14 @@ class EphemeralR2Keys:
         """
         parent = self.issue(settings, run_name, ttl_seconds)
         base = f"{settings.r2_prefix.strip('/')}/" if settings.r2_prefix.strip("/") else ""
-        read = self._temporary(settings, parent, "object-read-only",
-                               [f"{base}{part}/" for part in UNTRUSTED_READ_PREFIXES], ttl_seconds)
-        write = self._temporary(settings, parent, "object-read-write",
-                                [f"{base}outputs/{output_scope}/"], ttl_seconds)
+        try:
+            read = self._temporary(settings, parent, "object-read-only",
+                                   [f"{base}{part}/" for part in UNTRUSTED_READ_PREFIXES], ttl_seconds)
+            write = self._temporary(settings, parent, "object-read-write",
+                                    [f"{base}outputs/{output_scope}/"], ttl_seconds)
+        except Exception:
+            self.revoke(settings, run_name)  # never leave a bucket-wide parent behind
+            raise
         return {**read, **{f"write_{key}": value for key, value in write.items()}}
 
     def revoke(self, settings: Any, run_name: str | None = None) -> int:

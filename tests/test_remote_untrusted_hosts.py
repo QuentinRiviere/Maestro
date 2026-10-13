@@ -89,3 +89,17 @@ def test_cache_warming_and_unscoped_keys_are_refused_on_untrusted_hosts(tmp_path
     manager = RemoteWorkerManager(RemoteWorkerSettingsStore(tmp_path), environ={})
     with pytest.raises(RemoteWorkerError, match="Cloudflare API token"):
         manager.pod_r2_keys(_settings(cf_api_token=""), "maestro-worker")
+
+
+def test_parent_key_is_revoked_when_scoped_credentials_fail(tmp_path):
+    class Refusing(TempCloudflare):
+        def request(self, method, url, headers=None, json=None, timeout=None):
+            if url.endswith("r2/temp-access-credentials"):
+                return _Response({"success": False, "errors": [{"message": "Authentication error"}]}, 403)
+            return super().request(method, url, headers=headers, json=json, timeout=timeout)
+
+    cloudflare = Refusing()
+    keys = ephemeral_r2.EphemeralR2Keys(tmp_path / "k.json", session=cloudflare, clock=lambda: 1_800_000_000.0)
+    with pytest.raises(ephemeral_r2.EphemeralKeyError, match="Authentication error"):
+        keys.issue_untrusted(_settings(), "maestro-worker", 3600, "scope")
+    assert cloudflare.tokens == {} and keys.tracked() == []
