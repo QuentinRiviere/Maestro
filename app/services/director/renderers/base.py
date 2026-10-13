@@ -132,7 +132,10 @@ class BaseRenderer(ABC):
         return format_camera_text(shot.camera_plan)
 
     @staticmethod
-    def _action_text(shot: ShotPlan) -> str:
+    def _action_text(shot: ShotPlan, *, with_performance: bool = True) -> str:
+        """The action beats; a renderer that writes its own PERFORMANCE section leaves the acting out."""
+        if not with_performance:
+            return ". ".join(str(beat) for beat in shot.action_beats if str(beat).strip())
         return format_action_sequence(shot)
 
     @staticmethod
@@ -142,3 +145,30 @@ class BaseRenderer(ABC):
     @staticmethod
     def _dialogue_text(shot: ShotPlan, plan: Optional[ProductionPlan] = None) -> str:
         return format_dialogue_for_video(shot, plan)
+
+    @staticmethod
+    def _audio_text(shot: ShotPlan) -> str:
+        """The room tone, then the timed sound effects."""
+        parts = [str(shot.audio_plan.ambience or "").strip().rstrip(".")]
+        parts += [str(e).strip().rstrip(".") for e in shot.audio_plan.effects or [] if str(e).strip()]
+        return "; ".join(p for p in parts if p)
+
+    @staticmethod
+    def _scene_map_text(shot: ShotPlan) -> str:
+        """The scene seen from the camera (what is left, right, behind; doors, windows, lights)."""
+        return str((shot.metadata or {}).get("scene_map") or "").strip()
+
+    @staticmethod
+    def _light_lock_text(shot: ShotPlan) -> str:
+        """Video models drift light inside a shot unless told it is fixed."""
+        if not (shot.lighting or (shot.metadata or {}).get("scene_map")):
+            return ""
+        return "constant for the whole shot: no flicker, no change in brightness, direction or color"
+
+    @staticmethod
+    def _locks_text(shot: ShotPlan) -> str:
+        """Positive rules the shot must hold, written as facts (negative lists are ignored)."""
+        locks = [str(c).strip().rstrip(".") for c in shot.constraints or [] if str(c).strip()]
+        if (shot.metadata or {}).get("continuity_group"):
+            locks.append("wardrobe, hair and props stay exactly as in the first frame")
+        return "; ".join(dict.fromkeys(locks))

@@ -35,7 +35,7 @@ class LtxI2VRenderer(BaseRenderer):
             parts.append(f"STYLE: {shot.visual_style}")
 
         # What changes / who moves first
-        action = self._action_text(shot)
+        action = self._action_text(shot, with_performance=False)
         if action:
             parts.append(f"ACTION: {action}")
 
@@ -52,9 +52,18 @@ class LtxI2VRenderer(BaseRenderer):
         if shot.camera_plan.movement:
             parts.append(f"CAMERA: {shot.camera_plan.movement}")
 
+        light = self._light_lock_text(shot)
+        if light:
+            parts.append(f"LIGHT: {light}")
+
         # Sound beginning
-        if shot.audio_plan.ambience:
-            parts.append(f"AUDIO: {shot.audio_plan.ambience}")
+        audio = self._audio_text(shot)
+        if audio:
+            parts.append(f"AUDIO: {audio}")
+
+        locks = self._locks_text(shot)
+        if locks:
+            parts.append(f"LOCKS: {locks}")
 
         # Ending beat
         if shot.ending_beat:

@@ -88,6 +88,9 @@ From the brief, the skill rules and the cast, design the scenes. Return ONLY a J
   "place": "the exact location", "time_of_day": "...",
   "light": "one lighting description kept for every shot of this scene",
   "geography": "the layout of the space: where each character stands or moves, which screen side each one keeps",
+  "scene_map": "the space as the main camera sees it: what is on the left, in the center, on the right and in the
+    background; doors (hinge side, opening inward or outward), windows, stairs and the light sources",
+  "sound": "the room tone and recurring sounds of this place",
   "props": ["objects that matter and which hand or place holds them"],
   "beats": ["the dramatic beats of this scene in order, each one action and its reaction"]}]
 Use as few scenes as the story needs (usually one or two for a short piece). Time and light only change
@@ -181,6 +184,7 @@ class CustomSkillPlanner(BasePlanner):
         locations = [loc for loc in kwargs.get("locations") or [] if isinstance(loc, dict) and loc.get("name")]
         scenes = self._design_scenes(concept, rules, grammar, characters or [], locations) if narrative else []
         scene_location = {scene["scene_id"]: scene.get("location", "") for scene in scenes}
+        scene_by_id = {scene["scene_id"]: scene for scene in scenes}
         scene_ids = [scene["scene_id"] for scene in scenes]
         scene_block = (
             "SCENE DESIGN (fixed; every shot uses one scene_id and keeps its place, light and geography):\n"
@@ -205,11 +209,16 @@ OUTPUT FORMAT — respond with ONLY a JSON array of shot objects:
   "subjects_on_screen": [{{"visual_description": "...", "position_or_relation": "screen side, distance, facing"}}],
   "opening_blocking": "exact positions and poses at the first frame", "environment": "...",
   "lighting": "the scene's light", "mood": "...",
-  "action_beats": ["second by second: action, micro-expression, reaction"],
+  "action_beats": ["timed, e.g. '0.0-2.0s: ...': action, micro-expression, reaction"],
+  "performance": "the acting task: the intention, where the eyes go, what stays still, and what the actor never does",
+  "locks": ["a fact this shot must hold, in positive form, e.g. 'only two hands in frame, both hers'",
+            "'the books stay in her left arm'"],
   "dialogue_beats": [{{"spoken_text": "...", "delivery": "..."}}],
   "camera_plan": {{"framing": "...", "movement": "static unless motivated", "movement_intensity": "subtle|moderate|dynamic",
                   "motivation": "why the camera moves, or empty"}},
-  "audio_plan": {{"mode": "generated_audio"}}, "closing_blocking": "exact positions and poses at the last frame"}}]
+  "audio_plan": {{"mode": "generated_audio", "ambience": "the room tone of this place at this moment",
+                 "effects": ["timed sounds, e.g. '2.0s: the books thud on the floor'"]}},
+  "closing_blocking": "exact positions and poses at the last frame"}}]
 
 {timing_rule} Go:"""
         if kwargs.get("polish_block"):
@@ -247,6 +256,10 @@ OUTPUT FORMAT — respond with ONLY a JSON array of shot objects:
             previous_group = shots[-1].metadata.get("continuity_group") if shots else None
             same_scene = bool(scene_id) and scene_id == previous_group
             closing = str(raw.get("closing_blocking") or raw.get("ending_beat") or "")
+            scene = scene_by_id.get(scene_id) or {}
+            performance = raw.get("performance")
+            locks = [str(lock).strip() for lock in raw.get("locks") or [] if str(lock).strip()]
+            effects = [str(e).strip() for e in audio_raw.get("effects") or [] if str(e).strip()]
             shots.append(ShotPlan(
                 shot_id=self._make_shot_id(i, "cs"),
                 index=i,
@@ -267,18 +280,23 @@ OUTPUT FORMAT — respond with ONLY a JSON array of shot objects:
                 lighting=raw.get("lighting", ""),
                 mood=raw.get("mood", ""),
                 action_beats=raw.get("action_beats", []),
+                performance_beats=[str(performance).strip()] if isinstance(performance, str) and performance.strip()
+                else None,
+                constraints=locks or None,
                 dialogue_beats=[DialogueBeat.from_dict(d) for d in raw.get("dialogue_beats") or []] or None,
                 camera_plan=CameraPlan(framing=cam.get("framing", "medium shot"), angle=cam.get("angle"),
                                        movement=cam.get("movement"),
                                        movement_intensity=cam.get("movement_intensity", "moderate")),
                 audio_plan=AudioPlan(mode="audio_driven" if clip_durations else audio_raw.get("mode", "generated_audio"),
-                                     ambience=audio_raw.get("ambience"),
+                                     ambience=audio_raw.get("ambience") or scene.get("sound") or None,
+                                     effects=effects or None,
                                      timing_anchor="audio" if clip_durations else "video"),
                 ending_beat=closing,
                 metadata={
                     "skill": spec.get("id"), "skill_version": spec.get("version"), **options,
                     **({"continuity_group": scene_id} if scene_id else {}),
                     **({"location": scene_location[scene_id]} if scene_location.get(scene_id) else {}),
+                    **({"scene_map": str(scene["scene_map"])} if scene.get("scene_map") else {}),
                     **({"closing_blocking": closing} if closing else {}),
                     **({"keep_sec": keep} if (keep := normalize_keep(raw.get("keep_sec"), duration)) else {}),
                 },
@@ -333,7 +351,8 @@ OUTPUT FORMAT — respond with ONLY a JSON array of shot objects:
             scenes.append({
                 "scene_id": scene_id,
                 "location": location if location in location_names else "",
-                **{key: str(item.get(key) or "")[:400] for key in ("place", "time_of_day", "light", "geography")},
+                **{key: str(item.get(key) or "")[:400] for key in ("place", "time_of_day", "light", "geography",
+                                                                    "scene_map", "sound")},
                 "props": [str(p)[:160] for p in (item.get("props") or [])][:6],
                 "beats": [str(b)[:200] for b in (item.get("beats") or [])][:8],
             })

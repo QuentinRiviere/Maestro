@@ -42,6 +42,10 @@ class LtxT2VRenderer(BaseRenderer):
         if setting:
             parts.append(f"SETTING: {setting}")
 
+        scene_map = self._scene_map_text(shot)
+        if scene_map:
+            parts.append(f"SCENE MAP: {scene_map}")
+
         # Characters
         subjects = self._subjects_text(shot, plan)
         if subjects:
@@ -49,7 +53,7 @@ class LtxT2VRenderer(BaseRenderer):
             parts.append(f"SUBJECTS: {subjects}{spatial}")
 
         # Action beats
-        action = self._action_text(shot)
+        action = self._action_text(shot, with_performance=False)
         if action:
             parts.append(f"ACTION: {action}")
 
@@ -58,13 +62,25 @@ class LtxT2VRenderer(BaseRenderer):
         if dialogue:
             parts.append(f"DIALOGUE: {dialogue}")
 
+        if shot.performance_beats:
+            parts.append(f"PERFORMANCE: {'. '.join(shot.performance_beats)}")
+
         # Camera movement
         if shot.camera_plan.movement:
             parts.append(f"CAMERA: {shot.camera_plan.movement} ({shot.camera_plan.movement_intensity})")
 
+        light = self._light_lock_text(shot)
+        if light:
+            parts.append(f"LIGHT: {light}")
+
         # Audio/ambient
-        if shot.audio_plan.ambience:
-            parts.append(f"AUDIO: {shot.audio_plan.ambience}")
+        audio = self._audio_text(shot)
+        if audio:
+            parts.append(f"AUDIO: {audio}")
+
+        locks = self._locks_text(shot)
+        if locks:
+            parts.append(f"LOCKS: {locks}")
 
         # Ending beat
         if shot.ending_beat:
