@@ -216,6 +216,17 @@ const INFO_BAR_HEIGHT = 48
 const ASPECT_RATIO = 0.5625
 // Gap between items (tailwind space-y-3 = 12px)
 const GAP = 12
+const GALLERY_COLUMNS_KEY = 'maestro_gallery_columns'
+const GALLERY_COLUMN_CHOICES = [1, 2, 3]
+
+function readGalleryColumns(): number {
+  try {
+    const stored = Number(localStorage.getItem(GALLERY_COLUMNS_KEY))
+    return GALLERY_COLUMN_CHOICES.includes(stored) ? stored : 1
+  } catch {
+    return 1
+  }
+}
 
 function stripTimeSuffix(msg: string): string {
   return msg.replace(/\s*\|\s*\d+:\d+.*$/, '').trim()
@@ -795,6 +806,14 @@ export function MainContent() {
   const [scrollTop, setScrollTop] = useState(0)
   const [containerHeight, setContainerHeight] = useState(800)
   const [containerWidth, setContainerWidth] = useState(800)
+  const [columnPreference, setColumnPreference] = useState(readGalleryColumns)
+  // Phones keep one card per row; several would be too small to read.
+  const columns = isMobile ? 1 : columnPreference
+  const itemWidth = columns > 1 ? (containerWidth - GAP * (columns - 1)) / columns : containerWidth
+  const chooseColumns = useCallback((count: number) => {
+    setColumnPreference(count)
+    try { localStorage.setItem(GALLERY_COLUMNS_KEY, String(count)) } catch { /* private mode */ }
+  }, [])
   const [measuredHeights, setMeasuredHeights] = useState<Map<string, { height: number; width: number }>>(() => new Map())
   const [placeholderTotalHeight, setPlaceholderTotalHeight] = useState(0)
   const outputIds = useMemo(() => outputs.map(outputIdentity), [outputs])
@@ -811,7 +830,7 @@ export function MainContent() {
   }, [outputIds, retainedOutputIds])
 
   // Dynamic estimated item height based on actual container width
-  const estimatedItemHeight = Math.round(containerWidth * ASPECT_RATIO) + INFO_BAR_HEIGHT
+  const estimatedItemHeight = Math.round(itemWidth * ASPECT_RATIO) + INFO_BAR_HEIGHT
 
   // Pipeline and job cards have different heights, including expanded/error
   // states. Their actual flow height is the origin of the virtual output list.
@@ -842,19 +861,29 @@ export function MainContent() {
 
   const getItemHeight = useCallback((index: number) => {
     const measurement = measuredHeights.get(outputIds[index])
-    return measurement && Math.abs(measurement.width - containerWidth) <= 1
+    return measurement && Math.abs(measurement.width - itemWidth) <= 1
       ? measurement.height
       : estimatedItemHeight
-  }, [outputIds, measuredHeights, containerWidth, estimatedItemHeight])
+  }, [outputIds, measuredHeights, itemWidth, estimatedItemHeight])
 
   const { startIndex, endIndex, totalHeight, itemOffsets } = useMemo(() => {
     const count = outputs.length
     const offsets: number[] = new Array(count)
+    // Row bottoms, so the visible-range search skips whole rows.
+    const rowBottoms: number[] = new Array(count)
     let cumulative = placeholderTotalHeight
 
-    for (let i = 0; i < count; i++) {
-      offsets[i] = cumulative
-      cumulative += getItemHeight(i) + GAP
+    // Cards fill rows left to right; a row is as tall as its tallest card.
+    for (let row = 0; row * columns < count; row++) {
+      let rowHeight = 0
+      const first = row * columns
+      const last = Math.min(first + columns, count)
+      for (let i = first; i < last; i++) {
+        offsets[i] = cumulative
+        rowHeight = Math.max(rowHeight, getItemHeight(i))
+      }
+      for (let i = first; i < last; i++) rowBottoms[i] = cumulative + rowHeight
+      cumulative += rowHeight + GAP
     }
     const total = cumulative - (count > 0 ? GAP : 0)
 
@@ -862,7 +891,7 @@ export function MainContent() {
     const viewStart = scrollTop - OVERSCAN * estimatedItemHeight
     while (lo < hi) {
       const mid = (lo + hi) >>> 1
-      if (offsets[mid] + getItemHeight(mid) < viewStart) lo = mid + 1
+      if (rowBottoms[mid] < viewStart) lo = mid + 1
       else hi = mid
     }
     const start = Math.max(0, lo)
@@ -877,7 +906,7 @@ export function MainContent() {
       totalHeight: Math.max(total, placeholderTotalHeight),
       itemOffsets: offsets,
     }
-  }, [outputs.length, scrollTop, containerHeight, getItemHeight, placeholderTotalHeight, estimatedItemHeight])
+  }, [outputs.length, scrollTop, containerHeight, getItemHeight, placeholderTotalHeight, estimatedItemHeight, columns])
 
   const handleItemMeasured = useCallback((index: number, height: number) => {
     const id = outputIds[index]
@@ -886,16 +915,16 @@ export function MainContent() {
     if (!id || !Number.isFinite(height) || height <= 0) return
     setMeasuredHeights(current => {
       const previous = current.get(id)
-      if (previous?.height === height && previous.width === containerWidth) return current
+      if (previous?.height === height && previous.width === itemWidth) return current
       const next = new Map(current)
       for (const key of next.keys()) {
         if (!retainedOutputIds.has(key)) next.delete(key)
       }
-      next.set(id, { height, width: containerWidth })
+      next.set(id, { height, width: itemWidth })
       return next
     })
     scheduleCenteredSelection()
-  }, [outputIds, retainedOutputIds, containerWidth, scheduleCenteredSelection])
+  }, [outputIds, retainedOutputIds, itemWidth, scheduleCenteredSelection])
 
   const handlePlaybackStart = useCallback((index: number, media: HTMLMediaElement) => {
     activateIndex(index)
@@ -1010,7 +1039,12 @@ export function MainContent() {
           onPlaybackStart={handlePlaybackStart}
           onMeasured={handleItemMeasured}
           onOpenViewer={openViewer}
-          style={{
+          style={columns > 1 ? {
+            position: 'absolute',
+            top: itemOffsets[i],
+            left: (i % columns) * (itemWidth + GAP),
+            width: itemWidth,
+          } : {
             position: 'absolute',
             top: itemOffsets[i],
             left: 0,
@@ -1020,7 +1054,7 @@ export function MainContent() {
       )
     }
     return items
-  }, [startIndex, endIndex, navigationIndex, outputs, activeIndex, activateIndex, handlePlaybackStart, handleItemMeasured, itemOffsets, openViewer])
+  }, [startIndex, endIndex, navigationIndex, outputs, activeIndex, activateIndex, handlePlaybackStart, handleItemMeasured, itemOffsets, openViewer, columns, itemWidth])
 
   return (
     <main className="flex-1 flex flex-col min-h-0 min-w-0 h-full overflow-hidden">
@@ -1043,6 +1077,20 @@ export function MainContent() {
             className="rounded-lg p-1.5 text-text-secondary hover:bg-bg-hover hover:text-text-primary disabled:opacity-35">
             <Maximize2 size={16} />
           </button>
+          {!isMobile && (
+            <div role="group" aria-label="Gallery columns" className="flex items-center rounded-lg border border-border p-0.5">
+              {GALLERY_COLUMN_CHOICES.map(count => (
+                <button key={count} type="button" aria-pressed={columnPreference === count}
+                  aria-label={`${count} ${count === 1 ? 'column' : 'columns'}`} title={`${count} ${count === 1 ? 'column' : 'columns'}`}
+                  onClick={() => chooseColumns(count)}
+                  className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${columnPreference === count
+                    ? 'bg-bg-hover text-text-primary'
+                    : 'text-text-muted hover:text-text-primary'}`}>
+                  {count}
+                </button>
+              ))}
+            </div>
+          )}
           <WorkspaceSelector />
           {!isMobile && <GlobalQueuePopover />}
         </div>
