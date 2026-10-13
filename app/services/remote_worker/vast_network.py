@@ -28,22 +28,28 @@ class VastFilterError(RuntimeError):
     pass
 
 
-def vast_api_key(settings: Any, config_path: str = DSTACK_SERVER_CONFIG) -> str:
-    """The Vast.ai key from settings, else from the dstack server config Maestro can read."""
-    if getattr(settings, "vast_api_key", ""):
-        return settings.vast_api_key
+def dstack_backend_config(backend_type: str, config_path: str = DSTACK_SERVER_CONFIG) -> dict[str, Any] | None:
+    """The ``backend_type`` entry of the dstack server config Maestro can read, if any."""
     try:
         import yaml
 
         with open(os.path.expanduser(config_path), encoding="utf-8") as handle:
             config = yaml.safe_load(handle) or {}
     except (OSError, ValueError, ImportError):
-        return ""
+        return None
     for project in config.get("projects") or []:
         for backend in project.get("backends") or []:
-            if isinstance(backend, Mapping) and backend.get("type") == "vastai":
-                return str((backend.get("creds") or {}).get("api_key") or "")
-    return ""
+            if isinstance(backend, Mapping) and backend.get("type") == backend_type:
+                return dict(backend)
+    return None
+
+
+def vast_api_key(settings: Any, config_path: str = DSTACK_SERVER_CONFIG) -> str:
+    """The Vast.ai key from settings, else from the dstack server config Maestro can read."""
+    if getattr(settings, "vast_api_key", ""):
+        return settings.vast_api_key
+    backend = dstack_backend_config("vastai", config_path) or {}
+    return str((backend.get("creds") or {}).get("api_key") or "")
 
 
 def download_speeds(offer_ids: list[int], api_key: str,

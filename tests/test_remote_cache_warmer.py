@@ -39,6 +39,26 @@ def test_warm_spec_is_a_cpu_task_that_never_inlines_secrets():
     assert "secret" not in rendered.replace("secrets.", "") and "ghp" not in rendered
 
 
+def test_warm_spec_runs_the_cpu_tag_on_the_given_backends():
+    spec = cache_warmer.build_warm_run_spec(_settings(), ["flux2_klein_9b"], ["runpod"])
+    assert spec["configuration"]["image"] == "ghcr.io/quentinriviere/maestro-worker:cpu"
+    assert spec["configuration"]["backends"] == ["runpod"]
+    assert cache_warmer.warm_image("registry:5000/team/worker") == "registry:5000/team/worker:cpu"
+    assert cache_warmer.warm_image("ghcr.io/a/w:deps-1@sha256:abc") == "ghcr.io/a/w:cpu"
+
+
+def test_only_backends_without_community_hosts_are_trusted(tmp_path):
+    config = tmp_path / "config.yml"
+    config.write_text(
+        "projects:\n- name: main\n  backends:\n"
+        "  - type: runpod\n    community_cloud: false\n"
+        "  - type: vastai\n    community_cloud: true\n"
+    )
+    settings = _settings(backends=["runpod", "vastai", "aws"])
+    assert cache_warmer.trusted_backends(settings, str(config)) == ["runpod", "aws"]
+    assert cache_warmer.trusted_backends(settings, str(tmp_path / "missing.yml")) == ["aws"]
+
+
 def test_model_types_are_validated_and_deduplicated():
     assert cache_warmer.valid_model_types(["a", "a", " b "]) == ["a", "b"]
     with pytest.raises(cache_warmer.CacheWarmerError):
@@ -121,15 +141,18 @@ class _FakeClient:
         return []
 
 
-def test_start_refuses_without_r2_and_while_a_job_runs():
+def test_start_refuses_without_r2_and_while_a_job_runs(tmp_path):
+    config = tmp_path / "config.yml"
+    config.write_text("projects:\n- name: main\n  backends:\n  - type: runpod\n    community_cloud: false\n")
     client = _FakeClient()
-    warmer = cache_warmer.CacheWarmer(lambda: _settings(r2_bucket=""), lambda: client)
+    warmer = cache_warmer.CacheWarmer(lambda: _settings(r2_bucket=""), lambda: client, config_path=str(config))
     with pytest.raises(cache_warmer.CacheWarmerError):
         warmer.start(["flux2_klein_9b"])
 
-    warmer = cache_warmer.CacheWarmer(lambda: _settings(), lambda: client)
+    warmer = cache_warmer.CacheWarmer(lambda: _settings(), lambda: client, config_path=str(config))
     status = warmer.start(["flux2_klein_9b"])
     assert status["state"] == "starting" and status["requested"] == ["flux2_klein_9b"]
     assert client.fleets[0]["configuration"]["resources"]["gpu"] == 0
+    assert client.fleets[0]["configuration"]["backends"] == ["runpod"]
     with pytest.raises(cache_warmer.CacheWarmerError):
         warmer.start(["minimax_h3"])

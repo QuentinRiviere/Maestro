@@ -313,10 +313,16 @@ class RemoteWorkerManager:
     # ── per-pod R2 keys ────────────────────────────────────────────────────
 
     def pod_r2_keys(self, settings: RemoteWorkerSettings, run_name: str,
-                    max_duration: str | None = None, output_scope: str = "") -> dict[str, str] | None:
-        """A key for one pod, or None to fall back to the long-lived keys."""
+                    max_duration: str | None = None, output_scope: str = "",
+                    trusted: bool = False) -> dict[str, str] | None:
+        """A key for one pod, or None to fall back to the long-lived keys.
+
+        ``trusted`` is for pods the caller has kept off untrusted hosts (the
+        cache warmer): they get a bucket-wide key even when GPU workers do not.
+        """
+        untrusted = settings.untrusted_hosts and not trusted
         if not self.r2_keys.enabled(settings):
-            if settings.untrusted_hosts and settings.r2_configured:
+            if untrusted and settings.r2_configured:
                 raise RemoteWorkerError(
                     "Untrusted hosts need a Cloudflare API token so pods get scoped keys, not the account's"
                 )
@@ -325,7 +331,7 @@ class RemoteWorkerManager:
             return None
         ttl = duration_seconds(max_duration or settings.max_duration)
         try:
-            if settings.untrusted_hosts:
+            if untrusted:
                 return self.r2_keys.issue_untrusted(settings, run_name, ttl, output_scope or run_name)
             return self.r2_keys.issue(settings, run_name, ttl)
         except EphemeralKeyError as exc:

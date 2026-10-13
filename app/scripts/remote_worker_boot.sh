@@ -37,7 +37,11 @@ fi
 # The image bakes one dependency set; a branch may have moved on since.
 BAKED_HASH="$(cat /opt/maestro/requirements.sha256 2>/dev/null || true)"
 CURRENT_HASH="$(sha256sum "${APP_DIR}/requirements.txt" | cut -d' ' -f1)"
-if [ "${BAKED_HASH}" != "${CURRENT_HASH}" ]; then
+if [ "${MAESTRO_IMAGE_FLAVOR:-}" = "cpu" ]; then
+  # The CPU image holds a CPU-only variant of requirements.txt (see
+  # docker/cache-warmer); the GPU delta would pull CUDA wheels it cannot use.
+  [ "${BAKED_HASH}" = "${CURRENT_HASH}" ] || log "requirements.txt differs from the CPU image; using the baked set"
+elif [ "${BAKED_HASH}" != "${CURRENT_HASH}" ]; then
   log "requirements.txt differs from the image; installing the delta"
   "${VENV}/bin/uv" pip install --python "${VENV}/bin/python" -r "${APP_DIR}/requirements.txt" \
     --index-strategy unsafe-best-match

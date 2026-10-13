@@ -1,14 +1,17 @@
 name: Remote worker image
 
 # Builds the dependency image used by the remote GPU worker
-# (docker/remote-worker/Dockerfile) and pushes it to GHCR. Code is cloned at
-# pod boot, so this only needs to run when the dependency set changes.
+# (docker/remote-worker/Dockerfile) and its CPU variant for the R2 cache warmer
+# (docker/cache-warmer/Dockerfile, tag `cpu`), and pushes both to GHCR. Code is
+# cloned at pod boot, so this only needs to run when the dependency set changes.
 on:
   push:
     branches: [main, feat/comfy-inference-backend]
     paths:
       - app/requirements.txt
       - docker/remote-worker/**
+      - docker/cache-warmer/**
+      - docker/controller/controller_requirements.py
       - .github/workflows/remote-worker-image.yml
   workflow_dispatch:
 
@@ -64,3 +67,39 @@ jobs:
           # of the final image. A cache failure must never fail the build.
           cache-from: type=registry,ref=${{ steps.meta.outputs.image }}:buildcache
           cache-to: type=registry,ref=${{ steps.meta.outputs.image }}:buildcache,mode=max,ignore-error=true
+
+  cpu:
+    # The cache warmer's CPU image: same package, `cpu` tag, so it shares the
+    # worker image's visibility and pull credentials.
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute tags
+        id: meta
+        run: |
+          owner="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          deps="$(sha256sum app/requirements.txt docker/cache-warmer/Dockerfile docker/controller/controller_requirements.py | sha256sum | cut -c1-12)"
+          echo "image=ghcr.io/${owner}/maestro-worker" >> "$GITHUB_OUTPUT"
+          echo "deps=${deps}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/cache-warmer/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image }}:cpu
+            ${{ steps.meta.outputs.image }}:cpu-${{ steps.meta.outputs.deps }}
+          cache-from: type=registry,ref=${{ steps.meta.outputs.image }}:buildcache-cpu
+          cache-to: type=registry,ref=${{ steps.meta.outputs.image }}:buildcache-cpu,mode=max,ignore-error=true

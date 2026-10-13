@@ -78,17 +78,20 @@ def test_store_writes_scoped_outputs_with_the_write_set():
     assert write.uploads == [key] and read.uploads == []
 
 
-def test_cache_warming_and_unscoped_keys_are_refused_on_untrusted_hosts(tmp_path):
-    warmer = cache_warmer.CacheWarmer(lambda: _settings(), lambda: None)
-    with pytest.raises(cache_warmer.CacheWarmerError, match="untrusted"):
+def test_cache_warming_needs_a_backend_without_community_hosts(tmp_path):
+    warmer = cache_warmer.CacheWarmer(lambda: _settings(), lambda: None, config_path=str(tmp_path / "none.yml"))
+    with pytest.raises(cache_warmer.CacheWarmerError, match="community"):
         warmer.start(["flux2_klein_9b"])
 
+
+def test_unscoped_keys_are_refused_on_untrusted_hosts_unless_the_pod_is_trusted(tmp_path):
     from services.remote_worker.manager import RemoteWorkerError, RemoteWorkerManager
     from services.remote_worker.settings import RemoteWorkerSettingsStore
 
     manager = RemoteWorkerManager(RemoteWorkerSettingsStore(tmp_path), environ={})
     with pytest.raises(RemoteWorkerError, match="Cloudflare API token"):
         manager.pod_r2_keys(_settings(cf_api_token=""), "maestro-worker")
+    assert manager.pod_r2_keys(_settings(cf_api_token=""), "maestro-cache-warmer", trusted=True) is None
 
 
 def test_parent_key_is_revoked_when_scoped_credentials_fail(tmp_path):

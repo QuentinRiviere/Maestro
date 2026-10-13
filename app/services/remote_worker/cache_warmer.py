@@ -6,8 +6,12 @@ a CPU instance: it clones Maestro, resolves each requested model with Maestro's
 own download logic (so the manifest paths are exactly the ones the GPU worker
 hydrates), publishes the files to R2 and exits, which releases the pod.
 
-The warmer reuses the GPU worker's dstack connection, image, repository and R2
-credentials; only the resources, price cap, fleet and run name differ.
+The warmer reuses the GPU worker's dstack connection, repository and R2
+credentials. It runs the worker image's ``cpu`` tag (docker/cache-warmer), a
+few GB instead of the ~20 GB CUDA image a CPU pod would spend a quarter of an
+hour pulling. Since it writes the cache every later pod loads, it only runs on
+backends whose dstack config excludes community hosts, with a bucket-wide key
+even when GPU workers use untrusted hosts.
 """
 from __future__ import annotations
 
@@ -21,6 +25,7 @@ from typing import Any
 
 from services.remote_worker.dstack_client import DstackClient, DstackError
 from services.remote_worker.settings import RemoteWorkerSettings
+from services.remote_worker.vast_network import DSTACK_SERVER_CONFIG, dstack_backend_config
 from services.remote_worker.worker_spec import (
     SECRET_R2_ACCESS_KEY_ID,
     SECRET_R2_ACCOUNT_ID,
@@ -36,6 +41,10 @@ RUN_NAME = "maestro-cache-warmer"
 FLEET_NAME = "maestro-cache"
 # Enough disk for the largest checkpoints Maestro ships (H3, LTX: ~50 GB each).
 CPU_RESOURCES = {"cpu": "4..", "memory": "8GB..", "disk": "120GB..", "gpu": 0}
+CPU_IMAGE_TAG = "cpu"
+# Backends with a ``community_cloud`` switch; they rent third-party hosts
+# unless it is explicitly off in the dstack server config.
+COMMUNITY_BACKENDS = {"runpod", "vastai"}
 MAX_PRICE_PER_HOUR = 0.5
 MAX_DURATION = "2h"
 FLEET_IDLE_SECONDS = 60
@@ -67,7 +76,28 @@ def valid_model_types(model_types: list[str]) -> list[str]:
     return cleaned
 
 
-def build_warm_run_spec(settings: RemoteWorkerSettings, model_types: list[str]) -> dict[str, Any]:
+def warm_image(image: str) -> str:
+    """The ``cpu`` tag of the worker image's repository."""
+    repository = image.split("@", 1)[0]
+    if ":" in repository.rsplit("/", 1)[-1]:
+        repository = repository.rsplit(":", 1)[0]
+    return f"{repository}:{CPU_IMAGE_TAG}"
+
+
+def trusted_backends(settings: RemoteWorkerSettings, config_path: str = DSTACK_SERVER_CONFIG) -> list[str]:
+    """The worker's backends that only rent datacenter hosts."""
+    trusted = []
+    for backend in settings.backends:
+        if backend in COMMUNITY_BACKENDS:
+            config = dstack_backend_config(backend, config_path)
+            if not config or config.get("community_cloud") is not False:
+                continue
+        trusted.append(backend)
+    return trusted
+
+
+def build_warm_run_spec(settings: RemoteWorkerSettings, model_types: list[str],
+                        backends: list[str] | None = None) -> dict[str, Any]:
     """Task spec: clone Maestro, cache the models in R2, exit."""
     clone = (
         f"rm -rf {SOURCE_DIR} && "
@@ -81,7 +111,7 @@ def build_warm_run_spec(settings: RemoteWorkerSettings, model_types: list[str]) 
     configuration: dict[str, Any] = {
         "type": "task",
         "name": RUN_NAME,
-        "image": settings.image,
+        "image": warm_image(settings.image),
         "commands": [clone, warm],
         "env": {
             "R2_ACCOUNT_ID": _secret_ref(SECRET_R2_ACCOUNT_ID),
@@ -91,7 +121,7 @@ def build_warm_run_spec(settings: RemoteWorkerSettings, model_types: list[str]) 
             "MAESTRO_R2_PREFIX": settings.r2_prefix,
         },
         "resources": dict(CPU_RESOURCES),
-        "backends": list(settings.backends),
+        "backends": list(backends if backends is not None else settings.backends),
         "spot_policy": "on-demand",
         "max_price": MAX_PRICE_PER_HOUR,
         "max_duration": MAX_DURATION,
@@ -105,14 +135,14 @@ def build_warm_run_spec(settings: RemoteWorkerSettings, model_types: list[str]) 
     return {"run_name": RUN_NAME, "configuration": configuration}
 
 
-def build_warm_fleet_spec(settings: RemoteWorkerSettings) -> dict[str, Any]:
+def build_warm_fleet_spec(settings: RemoteWorkerSettings, backends: list[str] | None = None) -> dict[str, Any]:
     """CPU-only fleet so the warmer can never land on (and pay for) a GPU."""
     configuration: dict[str, Any] = {
         "type": "fleet",
         "name": FLEET_NAME,
         "nodes": {"min": 0, "max": 1},
         "resources": dict(CPU_RESOURCES),
-        "backends": list(settings.backends),
+        "backends": list(backends if backends is not None else settings.backends),
         "spot_policy": "on-demand",
         "max_price": MAX_PRICE_PER_HOUR,
         "idle_duration": FLEET_IDLE_SECONDS,
@@ -145,7 +175,9 @@ class CacheWarmer:
         settings: Callable[[], RemoteWorkerSettings],
         client: Callable[[], DstackClient],
         pod_r2_keys: Callable[..., dict[str, str] | None] = lambda *_args, **_kwargs: None,
+        config_path: str = DSTACK_SERVER_CONFIG,
     ) -> None:
+        self._config_path = config_path
         self._settings = settings
         self._client = client
         # Per-pod key issuer (RemoteWorkerManager.pod_r2_keys); revocation is
@@ -162,26 +194,27 @@ class CacheWarmer:
         if not settings.r2_configured:
             raise CacheWarmerError("Configure the R2 bucket in Remote GPU settings first")
         model_types = valid_model_types(model_types)
-        if settings.untrusted_hosts:
-            # Filling the cache means writing what every later pod loads; it
-            # must run on a host Maestro trusts.
-            raise CacheWarmerError("Cache warming writes the shared model cache: turn off untrusted hosts "
-                                   "(and restrict dstack to datacenter offers) to run it")
+        # Filling the cache means writing what every later pod loads: only
+        # datacenter hosts, whatever the GPU worker is allowed to use.
+        backends = trusted_backends(settings, self._config_path)
+        if not backends:
+            raise CacheWarmerError("Cache warming writes the shared model cache and needs a backend without "
+                                   "community hosts: set community_cloud: false for it in the dstack server config")
         client = self._client()
         with self._lock:
             run = client.get_run(RUN_NAME)
             if run and str(run.get("status") or "") not in _FINISHED and not run.get("deleted"):
                 raise CacheWarmerError("A cache job is already running")
-            keys = self._pod_r2_keys(settings, RUN_NAME, MAX_DURATION)
+            keys = self._pod_r2_keys(settings, RUN_NAME, MAX_DURATION, trusted=True)
             for name, value in dstack_secrets(settings, keys).items():
                 client.set_secret(name, value)
-            client.apply_fleet(build_warm_fleet_spec(settings))
-            client.apply(build_warm_run_spec(settings, model_types))
+            client.apply_fleet(build_warm_fleet_spec(settings, backends))
+            client.apply(build_warm_run_spec(settings, model_types, backends))
             self._model_types = model_types
             self._log_lines = []
             self._log_cursor = None
             self._submission = None
-            log.info("cache warmer submitted for %s", ", ".join(model_types))
+            log.info("cache warmer submitted for %s on %s", ", ".join(model_types), ", ".join(backends))
         return self.status()
 
     def stop(self) -> dict[str, Any]:
