@@ -96,9 +96,14 @@ def pin_fast_offers(run_spec: dict[str, Any], plan: Callable[[dict[str, Any]], M
     key = vast_api_key(settings)
     if not key:
         raise VastFilterError("No Vast.ai API key to check host network speed (dstack config or settings)")
-    probe = {**run_spec, "configuration": {k: v for k, v in run_spec["configuration"].items() if k != "fleets"}}
-    job_plans = plan(probe).get("job_plans") or [{}]
-    offers = job_plans[0].get("offers") or []
+    # One plan per backend: a combined plan returns only the few cheapest
+    # offers, which could leave a whole backend out of the pinned list.
+    offers: list[Mapping[str, Any]] = []
+    for backend in backends:
+        configuration = {k: v for k, v in run_spec["configuration"].items() if k != "fleets"}
+        configuration["backends"] = [backend]
+        job_plans = plan({**run_spec, "configuration": configuration}).get("job_plans") or [{}]
+        offers += job_plans[0].get("offers") or []
     allowed, summary = allowed_instance_types(offers, min_mbps, lambda ids: download_speeds(ids, key, session))
     if not allowed:
         raise VastFilterError(f"No offer left once Vast.ai hosts under {min_mbps:g} Mb/s are excluded")

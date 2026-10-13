@@ -40,11 +40,13 @@ def test_run_spec_is_pinned_from_a_fleetless_plan(monkeypatch):
     spec = build_run_spec(_settings(fleet="maestro"))
 
     def plan(probe):
-        seen["probe"] = probe
-        return {"job_plans": [{"offers": OFFERS}]}
+        backend = probe["configuration"]["backends"]
+        seen.setdefault("backends", []).append(backend)
+        assert "fleets" not in probe["configuration"]
+        return {"job_plans": [{"offers": [o for o in OFFERS if [o["backend"]] == backend]}]}
 
     vast_network.pin_fast_offers(spec, plan, _settings())
-    assert "fleets" not in seen["probe"]["configuration"]
+    assert seen["backends"] == [["runpod"], ["vastai"]]
     assert spec["configuration"]["instance_types"] == ["NVIDIA A100-SXM4-80GB", "111"]
     assert spec["configuration"]["fleets"] == ["maestro"]
 
