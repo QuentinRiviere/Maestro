@@ -1315,6 +1315,9 @@ export interface RemoteWorkerSettings {
   cf_api_token: string
   cf_api_token_set: boolean
   untrusted_hosts: boolean
+  min_download_mbps: number
+  vast_api_key: string
+  vast_api_key_set: boolean
   /** Fields fixed by MAESTRO_REMOTE_* environment variables (read-only). */
   env_locked: string[]
   idle_ttl_minutes: number

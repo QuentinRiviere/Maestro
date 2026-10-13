@@ -33,6 +33,7 @@ from services.remote_worker.settings import (
     read_local_dstack_config,
 )
 from services.remote_worker.ephemeral_r2 import EphemeralKeyError, EphemeralR2Keys, duration_seconds
+from services.remote_worker.vast_network import PLAN_OFFERS, VastFilterError, pin_fast_offers
 from services.remote_worker.worker_spec import build_fleet_spec, build_run_spec, dstack_secrets
 
 
@@ -89,6 +90,7 @@ class RemoteWorkerManager:
         self._watchdog: threading.Thread | None = None
         self._watchdog_stop = threading.Event()
         self.r2_keys = EphemeralR2Keys(store.path.parent / "remote_worker_r2_keys.json")
+        self._network_filter: dict[str, Any] = {}
 
     # ── settings ───────────────────────────────────────────────────────────
 
@@ -158,6 +160,7 @@ class RemoteWorkerManager:
             "active_jobs": self._active_jobs,
             "pod_r2_keys": self.r2_keys.enabled(settings),
             "pod_r2_keys_active": len(self.r2_keys.tracked()),
+            "network_filter": self._network_filter or None,
         }
         if not settings.configured:
             return base
@@ -282,7 +285,15 @@ class RemoteWorkerManager:
                 client.apply_fleet(build_fleet_spec(settings))
             self._stop_reason = None
             self._last_activity = self._clock()
-            client.apply(build_run_spec(settings, output_scope))
+            run_spec = build_run_spec(settings, output_scope)
+            try:
+                self._network_filter = pin_fast_offers(
+                    run_spec, lambda spec: client.get_plan(spec, max_offers=PLAN_OFFERS), settings,
+                )
+            except VastFilterError as exc:
+                self._revoke_pod_keys(settings.run_name)
+                raise RemoteWorkerError(str(exc)) from exc
+            client.apply(run_spec)
             log.info("remote worker %s submitted (model %s)", settings.run_name, model_type or "-")
         return self.status()
 

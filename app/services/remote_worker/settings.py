@@ -18,7 +18,8 @@ DEFAULT_REPO_URL = "https://github.com/QuentinRiviere/Maestro.git"
 DEFAULT_IMAGE = "ghcr.io/quentinriviere/maestro-worker:latest"
 
 # Never returned in clear by the API; a masked value sent back is ignored.
-SECRET_FIELDS = ("token", "registry_token", "r2_access_key_id", "r2_secret_access_key", "cf_api_token")
+SECRET_FIELDS = ("token", "registry_token", "r2_access_key_id", "r2_secret_access_key", "cf_api_token",
+                 "vast_api_key")
 
 
 @dataclass
@@ -66,6 +67,10 @@ class RemoteWorkerSettings:
     # GPUs): they then get read-only access to the model cache and inputs,
     # write access to their own output folder only, and verify cache hashes.
     untrusted_hosts: bool = False
+    # Vast.ai hosts measured below this download speed (Mb/s) are never
+    # rented; 0 disables the check. The key defaults to the dstack config's.
+    min_download_mbps: int = 800
+    vast_api_key: str = ""
     # behaviour
     idle_ttl_minutes: int = 30
     # Stop as soon as nothing is queued or running instead of waiting the TTL.

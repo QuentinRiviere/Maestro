@@ -461,6 +461,7 @@ export function RemoteWorkerPanel() {
           <Field locked={isLocked('disk')} label="Disk" value={merged.disk} onChange={value => update('disk', value)} placeholder="200GB.." />
           <Field locked={isLocked('memory')} label="RAM" value={merged.memory} onChange={value => update('memory', value)} placeholder="64GB.." />
           <Field locked={isLocked('cpu')} label="vCPUs" value={merged.cpu} onChange={value => update('cpu', value)} placeholder="8.." />
+          <Field locked={isLocked('min_download_mbps')} label="Min Vast.ai download (Mb/s)" type="number" value={merged.min_download_mbps} onChange={value => update('min_download_mbps', Number(value))} placeholder="800" />
         </div>
         <div className="text-[9px] leading-relaxed text-text-muted">
           Max duration and max price are enforced by dstack even if this computer is off.
