@@ -38,6 +38,8 @@ DEFAULT_TTL_SECONDS = 4 * 3600
 # that window (or a slow submit) for a finished run.
 SUBMIT_GRACE_SECONDS = 300
 MAX_TEMP_TTL_SECONDS = 7 * 86400
+PARENT_PROPAGATION_ATTEMPTS = 8
+PARENT_PROPAGATION_DELAY_SECONDS = 4
 # What an untrusted pod may read: the model cache and content-addressed inputs.
 UNTRUSTED_READ_PREFIXES = ("ckpts", "hf", "loras", "manifests", "assets")
 
@@ -68,7 +70,9 @@ class EphemeralR2Keys:
         *,
         session: requests.Session | None = None,
         clock: Callable[[], float] = time.time,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
+        self._sleep = sleep
         self._path = Path(state_path)
         self._session = session or requests.Session()
         self._clock = clock
@@ -159,13 +163,22 @@ class EphemeralR2Keys:
 
     def _temporary(self, settings: Any, parent: dict[str, str], permission: str,
                    prefixes: list[str], ttl_seconds: int) -> dict[str, str]:
-        result = self._call(settings, "POST", "r2/temp-access-credentials", {
+        body = {
             "bucket": settings.r2_bucket,
             "parentAccessKeyId": parent["access_key_id"],
             "permission": permission,
             "ttlSeconds": int(min(MAX_TEMP_TTL_SECONDS, ttl_seconds + EXPIRY_MARGIN_SECONDS)),
             "prefixes": prefixes,
-        }) or {}
+        }
+        # A freshly created parent token takes a few seconds to propagate.
+        for attempt in range(PARENT_PROPAGATION_ATTEMPTS):
+            try:
+                result = self._call(settings, "POST", "r2/temp-access-credentials", body) or {}
+                break
+            except EphemeralKeyError as exc:
+                if "unauthorized" not in str(exc).lower() or attempt == PARENT_PROPAGATION_ATTEMPTS - 1:
+                    raise
+                self._sleep(PARENT_PROPAGATION_DELAY_SECONDS)
         if not all(result.get(key) for key in ("accessKeyId", "secretAccessKey", "sessionToken")):
             raise EphemeralKeyError("Cloudflare returned incomplete temporary credentials")
         return {"access_key_id": result["accessKeyId"], "secret_access_key": result["secretAccessKey"],
