@@ -869,7 +869,7 @@ export async function fetchGroupClips(groupId: string, workspace?: string): Prom
 export interface PipelineStatus {
   id: string
   status: 'running' | 'paused' | 'completed' | 'failed' | 'cancelled'
-  phase: 'resuming' | 'planning' | 'polishing_prompts' | 'generating_images' | 'preparing_video' | 'generating_video' | 'post_processing' | 'completed' | 'failed' | 'cancelled'
+  phase: 'resuming' | 'casting' | 'planning' | 'polishing_prompts' | 'generating_images' | 'preparing_video' | 'generating_video' | 'post_processing' | 'completed' | 'failed' | 'cancelled'
   auto_mode: boolean
   progress: {
     current: number

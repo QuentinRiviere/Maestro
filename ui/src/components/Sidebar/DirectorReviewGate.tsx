@@ -71,6 +71,39 @@ function CastCard({ pid, kind, index, entry }: {
   )
 }
 
+/** Read-only cast thumbnails that fill in while a run is casting and planning. */
+export function DirectorLiveCast() {
+  const status = useStore(s => s.pipelineStatus)
+  const pid = useStore(s => s.pipelineId)
+  const cast = status?.cast
+  const entries: Array<[DirectorCastKind, DirectorCastEntry, number]> = [
+    ...(cast?.characters ?? []).map((entry, i) => ['character', entry, i] as [DirectorCastKind, DirectorCastEntry, number]),
+    ...(cast?.locations ?? []).map((entry, i) => ['location', entry, i] as [DirectorCastKind, DirectorCastEntry, number]),
+  ]
+  if (!pid || !entries.length || status?.status === 'paused') return null
+  const pending = status?.phase === 'casting'
+
+  return (
+    <div className="space-y-1.5">
+      <p className="text-xs text-text-primary font-medium">Cast</p>
+      <div className="grid grid-cols-4 gap-1.5">
+        {entries.map(([kind, entry, index]) => (
+          <div key={`${kind}-${index}`} className="space-y-0.5" title={entry.description}>
+            <div className="aspect-square rounded bg-bg-tertiary overflow-hidden flex items-center justify-center">
+              {entry.image
+                ? <img src={directorCastImageUrl(pid, kind, index, entry.image)} alt={entry.name} className="w-full h-full object-cover" />
+                : pending
+                  ? <Loader2 size={12} className="animate-spin text-text-muted" />
+                  : <span className="text-[9px] text-text-muted">No image</span>}
+            </div>
+            <p className="text-[9px] text-text-secondary truncate">{entry.name}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 /** Validation stops of a server-side Director run: the cast, then the storyboard. */
 export function DirectorReviewGate() {
   const status = useStore(s => s.pipelineStatus)

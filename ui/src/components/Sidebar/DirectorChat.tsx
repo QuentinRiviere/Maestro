@@ -3,7 +3,7 @@ import { DirectorGpuClipLimit } from './DirectorGpuClipLimit'
 import { useState, useCallback, useRef, useMemo, useEffect } from 'react'
 import { Upload, Loader2, Music, RotateCcw, Check, X, ChevronRight, ChevronDown, ImageIcon, Play, Film, Mic, Send, Users, FileText, ListVideo } from 'lucide-react'
 import { useStore, isPlannerSkill, directorModelUsesFixedMediaStrength, getFamiliesForMode, getModelsForFamily, resolveResolution } from '../../stores/useStore'
-import { DirectorReviewGate } from './DirectorReviewGate'
+import { DirectorLiveCast, DirectorReviewGate } from './DirectorReviewGate'
 import { DirectorSkillPicker } from './DirectorSkillPicker'
 import { skillIcon } from '../../lib/skillIcons'
 import { fetchModelOptions, getFileUrl } from '../../api/client'
@@ -568,11 +568,13 @@ export function DirectorChat() {
   const directorQueueLoading = useStore(s => s.directorQueueLoading)
   const directorQueueEditingEntryId = useStore(s => s.directorQueueEditingEntryId)
   const queueCurrentDirectorPipeline = useStore(s => s.queueCurrentDirectorPipeline)
+  // The server decides last: a cast or a storyboard review can turn shot
+  // images on after the run starts, so its image phase also counts.
   const usesShotImages = directorWillGenerateShotImages(
     selectedDirectorShotImageSupport,
     directorShotImageGuidance,
     directorHasVisualReferences,
-  )
+  ) || pipelinePhase === 'generating_images' || Boolean(pipelineStatus?.clip_images?.some(Boolean))
 
   // Viral Video runs the short-film workflows (story or uploaded audio)
   // with its own planner, so it shares every short-film step.
@@ -1225,6 +1227,13 @@ export function DirectorChat() {
         {/* Completed video-prompt streams stay in the chat history */}
         {(pastStep('plan_video') || (atStep('plan_video') && !loading) || atStep('review_video')) && (
           <LlmLogStage stage="plan_video" label="Video prompts" />
+        )}
+
+        {/* Cast images as they render, before any validation stop */}
+        {pipelineActive && pipelineStatus?.status !== 'paused' && pipelineStatus?.cast && (
+          <SystemBubble>
+            <DirectorLiveCast />
+          </SystemBubble>
         )}
 
         {/* Server-side validation stops (cast, then storyboard) */}
