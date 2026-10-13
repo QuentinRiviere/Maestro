@@ -11043,6 +11043,7 @@ async def director_bible_assistant(bible_id: str, request: Request):
 async def director_bible_generate(bible_id: str, request: Request):
     """Render every look of the bible that has no approved image yet (in the background)."""
     from services.director_pipeline import generate_bible_assets
+    _init_pipeline()  # renders need the wgp module, wired on first Director use
     body = await request.json() if request.headers.get("content-length", "0") != "0" else {}
     body = body if isinstance(body, dict) else {}
     bible = _bible_call(
@@ -11060,6 +11061,7 @@ _BIBLE_IMAGE = "/api/v1/director/bibles/{bible_id}/elements/{element_id}/variant
 async def director_bible_render(bible_id: str, element_id: str, variant_id: str, request: Request):
     """Render a candidate image of one element's look (it renders in the background)."""
     from services.director_pipeline import render_bible_image
+    _init_pipeline()  # renders need the wgp module, wired on first Director use
     body = await request.json() if request.headers.get("content-length", "0") != "0" else {}
     body = body if isinstance(body, dict) else {}
     bible = _bible_call(
@@ -11075,6 +11077,7 @@ async def director_bible_render(bible_id: str, element_id: str, variant_id: str,
 async def director_bible_views(bible_id: str, element_id: str, variant_id: str, request: Request):
     """Render the angles of a character's look (face, three-quarter, profile, back) in the background."""
     from services.director_pipeline import render_bible_views
+    _init_pipeline()  # renders need the wgp module, wired on first Director use
     body = await request.json() if request.headers.get("content-length", "0") != "0" else {}
     body = body if isinstance(body, dict) else {}
     bible = _bible_call(
