@@ -459,6 +459,8 @@ export function RemoteWorkerPanel() {
           <Field locked={isLocked('max_price')} label="Max price ($/h)" type="number" value={merged.max_price} onChange={value => update('max_price', Number(value))} />
           <Field locked={isLocked('max_duration')} label="Max duration" value={merged.max_duration} onChange={value => update('max_duration', value)} placeholder="4h" />
           <Field locked={isLocked('disk')} label="Disk" value={merged.disk} onChange={value => update('disk', value)} placeholder="200GB.." />
+          <Field locked={isLocked('memory')} label="RAM" value={merged.memory} onChange={value => update('memory', value)} placeholder="64GB.." />
+          <Field locked={isLocked('cpu')} label="vCPUs" value={merged.cpu} onChange={value => update('cpu', value)} placeholder="8.." />
         </div>
         <div className="text-[9px] leading-relaxed text-text-muted">
           Max duration and max price are enforced by dstack even if this computer is off.

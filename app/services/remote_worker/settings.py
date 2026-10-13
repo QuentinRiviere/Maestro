@@ -45,6 +45,10 @@ class RemoteWorkerSettings:
     manage_fleet: bool = True
     gpu: str = "48GB.."
     disk: str = "200GB.."
+    # System RAM and vCPUs: marketplace GPUs can ship with 8-16 GB of RAM,
+    # too little to load the video and image checkpoints.
+    memory: str = "64GB.."
+    cpu: str = "8.."
     spot_policy: str = "on-demand"
     max_price: float = 0.8
     max_duration: str = "4h"

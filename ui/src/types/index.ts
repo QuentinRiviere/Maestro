@@ -1299,6 +1299,8 @@ export interface RemoteWorkerSettings {
   manage_fleet: boolean
   gpu: string
   disk: string
+  memory: string
+  cpu: string
   spot_policy: string
   max_price: number
   max_duration: string

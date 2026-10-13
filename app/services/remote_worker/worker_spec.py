@@ -36,6 +36,16 @@ def dstack_secrets(settings: RemoteWorkerSettings) -> dict[str, str]:
     return secrets
 
 
+def worker_resources(settings: RemoteWorkerSettings) -> dict[str, Any]:
+    """GPU, disk, and the RAM/CPU floor the worker needs to load checkpoints."""
+    resources: dict[str, Any] = {"gpu": settings.gpu, "disk": settings.disk}
+    if settings.memory:
+        resources["memory"] = settings.memory
+    if settings.cpu:
+        resources["cpu"] = settings.cpu
+    return resources
+
+
 def build_run_spec(settings: RemoteWorkerSettings) -> dict[str, Any]:
     """Service spec: clone Maestro at ``repo_ref`` and run the boot script.
 
@@ -67,7 +77,7 @@ def build_run_spec(settings: RemoteWorkerSettings) -> dict[str, Any]:
         "commands": [clone, f"bash {SOURCE_DIR}/app/scripts/remote_worker_boot.sh"],
         "port": WORKER_PORT,
         "env": env,
-        "resources": {"gpu": settings.gpu, "disk": settings.disk},
+        "resources": worker_resources(settings),
         "backends": list(settings.backends),
         "spot_policy": settings.spot_policy,
         "max_price": settings.max_price,
@@ -103,7 +113,7 @@ def build_fleet_spec(settings: RemoteWorkerSettings) -> dict[str, Any]:
         "type": "fleet",
         "name": settings.fleet,
         "nodes": {"min": 0, "max": 1},
-        "resources": {"gpu": settings.gpu, "disk": settings.disk},
+        "resources": worker_resources(settings),
         "backends": list(settings.backends),
         "spot_policy": settings.spot_policy,
         "max_price": settings.max_price,

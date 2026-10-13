@@ -463,3 +463,14 @@ class ManagerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_worker_spec_requires_a_ram_and_cpu_floor():
+    from services.remote_worker.settings import RemoteWorkerSettings
+    from services.remote_worker.worker_spec import build_fleet_spec, build_run_spec
+
+    settings = RemoteWorkerSettings.from_mapping({"gpu": "80GB..", "disk": "200GB.."})
+    run = build_run_spec(settings)["configuration"]["resources"]
+    fleet = build_fleet_spec(settings)["configuration"]["resources"]
+    assert run == fleet == {"gpu": "80GB..", "disk": "200GB..", "memory": "64GB..", "cpu": "8.."}
+    assert "memory" not in build_run_spec(RemoteWorkerSettings.from_mapping({"memory": ""}))["configuration"]["resources"]
