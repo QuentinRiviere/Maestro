@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { AlertTriangle, Check, ImagePlus, Loader2, Plus, Sparkles, Trash2, X } from 'lucide-react'
 import { useStore } from '../../stores/useStore'
+import { AppModeToggle, MaestroBrand } from '../AppModeNavigation'
 import {
   approveBibleImage, BIBLE_PLURAL, createDirectorBible, deleteBibleImage, deleteDirectorBible,
   directorBibleImageUrl, fetchDirectorBible, fetchDirectorBibles, renderBibleImage, updateDirectorBible,
@@ -196,7 +197,7 @@ function ElementCard({ bible, element, saved, onChange, onRemove, onBible }: {
 }
 
 /** The bibles of your series: approved people, places, props and their looks, reused by every episode. */
-export function BibleManagerDialog({ initialId, onClose }: { initialId?: string; onClose: () => void }) {
+function BibleManagerPanel({ initialId, onClose }: { initialId?: string; onClose?: () => void }) {
   const [list, setList] = useState<DirectorBibleSummary[]>([])
   const [selected, setSelected] = useState(initialId || '')
   const [bible, setBible] = useState<DirectorBible | null>(null)
@@ -288,9 +289,7 @@ export function BibleManagerDialog({ initialId, onClose }: { initialId?: string;
   const setElements = (kind: BibleKind, next: BibleElement[]) => draft && setDraft({ ...draft, [BIBLE_PLURAL[kind]]: next })
 
   return (
-    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true"
-      aria-label="Bibles" onClick={e => { if (e.target === e.currentTarget) onClose() }}>
-      <div className="w-full max-w-5xl h-[90vh] flex bg-bg-secondary border border-border rounded-xl overflow-hidden">
+      <div className="w-full h-full flex bg-bg-secondary overflow-hidden">
         <aside className="w-48 shrink-0 border-r border-border p-2.5 space-y-2 overflow-y-auto">
           <h2 className="text-sm font-medium text-text-primary">Bibles</h2>
           {list.map(item => (
@@ -331,7 +330,7 @@ export function BibleManagerDialog({ initialId, onClose }: { initialId?: string;
                   {saving ? <Loader2 size={10} className="animate-spin" /> : <Check size={10} />} Save
                 </button>
               )}
-              <button onClick={onClose} className="text-text-muted hover:text-text-primary" aria-label="Close"><X size={16} /></button>
+              {onClose && <button onClick={onClose} className="text-text-muted hover:text-text-primary" aria-label="Close"><X size={16} /></button>}
             </div>
           </header>
           {error && <p className="px-3 pt-2 text-[10px] text-chip-red">{error}</p>}
@@ -387,6 +386,32 @@ export function BibleManagerDialog({ initialId, onClose }: { initialId?: string;
             </>
           )}
         </section>
+      </div>
+  )
+}
+
+export function BibleManagerDialog({ initialId, onClose }: { initialId?: string; onClose: () => void }) {
+  return (
+    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true"
+      aria-label="Bibles" onClick={e => { if (e.target === e.currentTarget) onClose() }}>
+      <div className="w-full max-w-5xl h-[90vh] border border-border rounded-xl overflow-hidden">
+        <BibleManagerPanel initialId={initialId} onClose={onClose} />
+      </div>
+    </div>
+  )
+}
+
+/** The Bibles tab: the manager on the whole canvas, with the app navigation. */
+export function BiblesWorkspace() {
+  const bibleId = useStore(s => s.directorBibleId)
+  return (
+    <div className="flex h-full w-full flex-col">
+      <header className="flex h-12 shrink-0 items-center gap-3 border-b border-border bg-bg-secondary px-3">
+        <MaestroBrand />
+        <AppModeToggle size="sm" />
+      </header>
+      <div className="min-h-0 flex-1">
+        <BibleManagerPanel initialId={bibleId || undefined} />
       </div>
     </div>
   )

@@ -16,6 +16,7 @@ import { GlobalQueuePopover } from './components/GlobalQueuePopover'
 import { NotificationCoordinator } from './components/NotificationCoordinator'
 import { NotificationToastHost } from './components/NotificationToastHost'
 import { EditorWorkspace } from './editor/EditorWorkspace'
+import { BiblesWorkspace } from './components/Sidebar/BibleManagerDialog'
 import { MaestroBrand } from './components/AppModeNavigation'
 import { EditorRoundTripBanner } from './editor/EditorRoundTripBanner'
 import { useStore } from './stores/useStore'
@@ -37,6 +38,8 @@ function App() {
   const sidebarMode = useStore(s => s.sidebarMode)
   const isMobile = useIsMobileSidecar()
   const isEditor = sidebarMode === 'editor'
+  const isBibles = sidebarMode === 'bibles'
+  const isFullPage = isEditor || isBibles
 
   useEffect(() => {
     loadModels()
@@ -58,9 +61,9 @@ function App() {
   }, [loadLlmStatus])
 
   return (
-    <div className={`flex ${isMobile && !isEditor ? 'flex-col' : 'flex-col md:flex-row'} h-full w-full bg-bg-primary`}>
+    <div className={`flex ${isMobile && !isFullPage ? 'flex-col' : 'flex-col md:flex-row'} h-full w-full bg-bg-primary`}>
       {/* Mobile header */}
-      {isMobile && !isEditor && (
+      {isMobile && !isFullPage && (
         <header className="h-12 shrink-0 grid grid-cols-[1fr_auto_1fr] items-center gap-1 px-2 border-b border-border bg-bg-secondary">
           <button
             onClick={toggleSidebar}
@@ -85,6 +88,8 @@ function App() {
 
       {isEditor ? (
         <EditorWorkspace />
+      ) : isBibles ? (
+        <BiblesWorkspace />
       ) : (
         <>
           <Sidebar />
