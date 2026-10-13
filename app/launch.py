@@ -11030,6 +11030,19 @@ async def director_bible_assistant(bible_id: str, request: Request):
         raise HTTPException(status_code=502, detail=str(error)) from error
 
 
+@api.post("/api/v1/director/bibles/{bible_id}/generate")
+async def director_bible_generate(bible_id: str, request: Request):
+    """Render every look of the bible that has no approved image yet (in the background)."""
+    from services.director_pipeline import generate_bible_assets
+    body = await request.json() if request.headers.get("content-length", "0") != "0" else {}
+    body = body if isinstance(body, dict) else {}
+    bible = _bible_call(
+        generate_bible_assets, bible_id, image_model=str(body.get("image_model") or ""),
+        image_params=body.get("image_params") if isinstance(body.get("image_params"), dict) else {},
+    )
+    return {"bible": bible}
+
+
 _BIBLE_IMAGE = "/api/v1/director/bibles/{bible_id}/elements/{element_id}/variants/{variant_id}"
 
 

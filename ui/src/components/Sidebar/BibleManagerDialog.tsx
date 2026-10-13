@@ -5,7 +5,7 @@ import { AppModeToggle, MaestroBrand } from '../AppModeNavigation'
 import { BibleChat } from './BibleChat'
 import {
   approveBibleImage, BIBLE_PLURAL, createDirectorBible, deleteBibleImage, deleteDirectorBible,
-  directorBibleImageUrl, fetchDirectorBible, fetchDirectorBibles, renderBibleImage, updateDirectorBible,
+  directorBibleImageUrl, fetchDirectorBible, fetchDirectorBibles, generateBibleAssets, renderBibleImage, updateDirectorBible,
   uploadBibleImage,
   type BibleElement, type BibleKind, type BibleVariant, type DirectorBible, type DirectorBibleSummary,
 } from '../../api/directorBibles'
@@ -17,12 +17,16 @@ const TABS: Array<[BibleKind | 'world', string]> = [
 ]
 const FIELDS: Record<BibleKind, Array<[keyof BibleElement, string, boolean]>> = {
   character: [['role', 'Role', false], ['descriptor', 'How shots name them', false],
-    ['description', 'Look', true], ['wardrobe', 'Default wardrobe', false]],
+    ['description', 'Look', true], ['wardrobe', 'Default wardrobe', false],
+    ['personality', 'Personality', false], ['arc', 'Arc', false]],
   location: [['description', 'Place', true], ['notes', 'Geometry & physics (doors, scale, light)', false]],
   prop: [['descriptor', 'How shots name it', false], ['description', 'Object', true],
     ['notes', 'Scale & details', false]],
 }
 
+const pendingImages = (bible: DirectorBible) => (['characters', 'locations', 'props'] as const)
+  .reduce((count, plural) => count + bible[plural].reduce((n, e) => n + e.variants
+    .filter(v => !v.images.some(i => i.status === 'approved' || i.status === 'rendering')).length, 0), 0)
 const slug = (text: string) => text.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 32)
 const rendering = (bible: DirectorBible | null) => !!bible && (['characters', 'locations', 'props'] as const)
   .some(plural => bible[plural].some(e => e.variants.some(v => v.images.some(i => i.status === 'rendering'))))
@@ -251,6 +255,17 @@ function BibleManagerPanel({ initialId, onClose }: { initialId?: string; onClose
     return () => window.clearInterval(timer)
   }, [isRendering, selected, applyServer])
 
+  const imageModel = useStore(s => s.selectedModelPerMode.image || 'flux2_klein_9b')
+  // Generate saves the draft first: the server renders the stored bible.
+  const generateAssets = async () => {
+    if (!draft) return
+    const saved = await updateDirectorBible(draft)
+    const next = await generateBibleAssets(saved.id, imageModel)
+    setBible(next)
+    setDraft(next)
+    refreshList()
+  }
+
   const save = async () => {
     if (!draft) return
     setSaving(true)
@@ -352,11 +367,12 @@ function BibleManagerPanel({ initialId, onClose }: { initialId?: string; onClose
                     <label className="block"><span className={label}>Description</span>
                       <textarea className={input} rows={2} value={draft.description}
                         onChange={e => setDraft({ ...draft, description: e.target.value })} /></label>
-                    {([['logline', 'Series premise'], ['tone', 'Tone'],
+                    {([['logline', 'Series premise'], ['story', 'Story'], ['stakes', 'Stakes'],
+                      ['twists', 'Possible twists'], ['tone', 'Tone'], ['narrative_style', 'Narrative style'],
                       ['look', 'Look: camera, lenses, film stock, palette (pasted into every image prompt)'],
                       ['rules', 'World rules (positive form works best)'], ['forbidden', 'Never']] as const).map(([field, title]) => (
                       <label key={field} className="block"><span className={label}>{title}</span>
-                        <textarea className={input} rows={field === 'rules' || field === 'look' ? 4 : 2} value={draft.world[field] ?? ''}
+                        <textarea className={input} rows={['story', 'twists', 'rules', 'look'].includes(field) ? 4 : 2} value={draft.world[field] ?? ''}
                           onChange={e => setDraft({ ...draft, world: { ...draft.world, [field]: e.target.value } })} /></label>
                     ))}
                     <div>
@@ -387,7 +403,10 @@ function BibleManagerPanel({ initialId, onClose }: { initialId?: string; onClose
             </>
           )}
         </section>
-        {draft && <BibleChat key={draft.id} bibleId={draft.id} draft={draft} onApply={setDraft} />}
+        {draft && (
+          <BibleChat key={draft.id} bibleId={draft.id} draft={draft} onChange={setDraft} onGenerate={generateAssets}
+            pendingImages={pendingImages(draft)} imageModel={imageModel} rendering={isRendering} />
+        )}
       </div>
   )
 }

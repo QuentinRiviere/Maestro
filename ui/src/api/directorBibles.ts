@@ -40,13 +40,25 @@ export interface BibleElement {
   descriptor?: string
   description: string
   wardrobe?: string
+  personality?: string
+  arc?: string
   notes?: string
   voice_character_id?: string
   variants: BibleVariant[]
   image: string | null
 }
 
-export interface BibleWorld { logline: string; tone: string; look: string; rules: string; forbidden: string }
+export interface BibleWorld {
+  logline: string
+  story: string
+  stakes: string
+  twists: string
+  tone: string
+  narrative_style: string
+  look: string
+  rules: string
+  forbidden: string
+}
 
 export interface DirectorBible {
   id: string
@@ -145,8 +157,17 @@ export interface BibleChatMessage { role: 'user' | 'assistant'; content: string 
 export interface BibleAssistantAnswer {
   reply: string
   changes: string[]
-  /** The proposed bible (not saved): apply it to the draft, then save. */
+  /** The proposed bible (not saved): it goes to the draft, saved by Save or Generate. */
   bible: DirectorBible
+  /** True once the bible can be rendered; ``missing`` says what is still needed otherwise. */
+  ready: boolean
+  missing: string[]
+}
+
+/** Render every look that has no approved image yet (in the background). */
+export function generateBibleAssets(bibleId: string, imageModel: string): Promise<DirectorBible> {
+  return bibleCall(`/api/v1/director/bibles/${encodeURIComponent(bibleId)}/generate`,
+    jsonBody({ image_model: imageModel }), 'Could not start the generation')
 }
 
 /** One assistant turn on the bible being edited. */

@@ -352,3 +352,77 @@ class BibleAssistantTests(unittest.TestCase):
         with self.assertRaises(bible_assistant.BibleAssistantError):
             bible_assistant.assist(self.bible, [{"role": "assistant", "content": "hi"}],
                                    generate=lambda **_: "{}", folder=bibles._folder("spring_rain"))
+
+
+class BibleReadinessTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        patcher = patch.object(bibles, "BIBLES_DIR", Path(self.tmp.name) / "bibles")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_ready_needs_a_dressed_character_a_place_and_a_look(self):
+        from services.director import bible_assistant
+        bible = bibles.save_bible({"name": "Spring Rain"})
+        answer = {"reply": "Prêt ?", "changes": ["Added Eun-seo"], "ready": True, "bible": {
+            "name": "Spring Rain", "characters": [{"name": "Eun-seo", "description": "17, Korean"}]}}
+        result = bible_assistant.assist(bible, [{"role": "user", "content": "go"}],
+                                        generate=lambda **_: json.dumps(answer), folder=bibles._folder("spring_rain"))
+        self.assertFalse(result["ready"])
+        self.assertEqual(result["missing"], ["a character with a look and a wardrobe", "a location",
+                                             "a look block (visual style)"])
+        answer["bible"].update(characters=[GIRL], locations=[HALL], world={"look": "Pastel, 35mm."})
+        result = bible_assistant.assist(bible, [{"role": "user", "content": "go"}],
+                                        generate=lambda **_: json.dumps(answer), folder=bibles._folder("spring_rain"))
+        self.assertTrue(result["ready"])
+        self.assertEqual(result["bible"]["world"]["look"], "Pastel, 35mm.")
+
+
+class BibleGenerateTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        patcher = patch.object(bibles, "BIBLES_DIR", Path(self.tmp.name) / "bibles")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        saved = pipeline._wgp
+        self.addCleanup(lambda: setattr(pipeline, "_wgp", saved))
+        pipeline._wgp = SimpleNamespace(save_path=self.tmp.name)
+
+    def test_generate_renders_defaults_then_looks_from_them(self):
+        bibles.save_bible({
+            "name": "Spring Rain",
+            "characters": [{**GIRL, "variants": [{"id": "default"},
+                                                 {"id": "winter", "label": "Winter", "description": "camel coat"}]}],
+            "locations": [HALL, {"name": "Rooftop", "description": "flat roof"}],
+        })
+        calls = []
+
+        def submit(gen_params, **kwargs):
+            calls.append((gen_params["prompt"], [os.path.basename(r) for r in gen_params["image_refs"]]))
+            name = f"render{len(calls)}.png"
+            with open(os.path.join(kwargs["out_dir"], name), "wb") as handle:
+                handle.write(b"png")
+            return [name]
+
+        with patch.object(pipeline, "_submit_and_wait", side_effect=submit):
+            bible = pipeline.generate_bible_assets("spring_rain", image_model="cloud_fal_seedream_4")
+            self.assertEqual(len(bibles.missing_images(bible)), 0)  # every slot reserved at once
+            for _ in range(200):
+                if not any(i["status"] == "rendering" for plural in ("characters", "locations")
+                           for e in bibles.get_bible("spring_rain")[plural] for v in e["variants"] for i in v["images"]):
+                    break
+                time.sleep(0.02)
+        bible = bibles.get_bible("spring_rain")
+        hall, roof = bible["locations"]
+        girl = bible["characters"][0]
+        self.assertEqual(len(calls), 4)
+        # Defaults first; the rooftop matches the approved hallway; the winter look edits the default sheet.
+        self.assertTrue(calls[-1][0].startswith("The same person as reference image 1"))
+        self.assertEqual(calls[-1][1], [girl["image"]])
+        rooftop_call = next(c for c in calls if "flat roof" in c[0])
+        self.assertEqual(rooftop_call[1], [hall["image"]])
+        self.assertTrue(roof["image"] and girl["variants"][1]["images"][0]["status"] == "approved")
+        with self.assertRaises(bibles.BibleError):
+            pipeline.generate_bible_assets("spring_rain")

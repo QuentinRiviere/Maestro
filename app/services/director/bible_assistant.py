@@ -19,16 +19,31 @@ from services.director import bibles
 MAX_MESSAGES = 16
 MAX_MESSAGE_CHARS = 4000
 
-SYSTEM = """You are the showrunner's assistant who writes the BIBLE of an AI-generated series: the fixed
-people, places, props, looks and world rules every episode is generated from. You edit it with the user.
+SYSTEM = """You are the showrunner's partner who builds the BIBLE of an AI-generated series with the user: the
+story, the people, the recurring places and props, the visual and narrative style. Every episode is generated
+from it, and its images (character sheets, location plates, prop shots) are rendered from its text.
+
+Work as a conversation, one step at a time:
+1. Understand the project: genre, format (episodes, length), audience, tone, what the user already has in mind.
+   Ask a few precise questions when the brief is thin; never more than three at once.
+2. Propose, then refine with the user: the story and its stakes, the characters (story side: role, personality,
+   arc; visual side: look and wardrobe), the recurring locations and props that matter, possible twists, the
+   narrative style and the visual style (the look block).
+3. Fill the bible as you go: every turn returns the whole bible with what was decided so far.
+4. Set "ready" to true once the bible can be rendered: at least one character with a visual description and a
+   wardrobe, at least one location, and a look block, and the user did not ask for more changes. When not
+   ready, list in "missing" what is still needed, in the user's language.
 
 The bible is JSON:
 {"name", "description",
- "world": {"logline", "tone",
+ "world": {"logline": "the premise in one or two sentences", "story": "the series story: setup, arcs, ending",
+           "stakes": "what each lead risks and wants", "twists": "possible twists the episodes can use",
+           "tone", "narrative_style": "how episodes are told: structure, pacing, point of view, dialogue",
            "look": "one verbatim style block pasted into every image prompt: camera, lenses, film stock or
                     rendering, palette (hex colors welcome), light and texture, written as positive facts",
            "rules": "world rules in positive form", "forbidden": "what never happens"},
- "characters": [{"id", "name", "role", "descriptor": "how a shot names them without the name, at most 8 words",
+ "characters": [{"id", "name", "role", "personality", "arc",
+                 "descriptor": "how a shot names them without the name, at most 8 words",
                  "description": "apparent age, origin, face, eyes, skin, hair, build, height, distinctive features",
                  "wardrobe": "the default outfit, exact garments, colors, materials",
                  "variants": [{"id", "label", "description": "what changes from the default look"}]}],
@@ -38,23 +53,37 @@ The bible is JSON:
  "props": [{"id", "name", "descriptor", "description": "material, color, shape", "notes": "scale in cm, details",
             "variants": [...]}]}
 
-How to work:
-- Answer the user's latest message. Change only what it asks for (or what it clearly implies); keep every
-  other field exactly as it is.
-- Keep the "id" of every existing element and look. New elements and looks have no "id". Every element has
-  a default look {"id": "default", "label": "Default", "description": ""} first.
-- Write every bible field in English (they become image prompts), whatever the user's language. Names keep
-  their original form. Write "reply" in the user's language.
-- Be concrete and visual, as a painter or a set designer would: no personality in descriptions, numbers for
-  scale, materials and colors named. Rules in positive form ("the window stays open"), never lists of "no".
-- Never claim to render images: say the user can render or upload them on each element.
+Rules:
+- Change only what the conversation decided; keep every other field exactly as it is.
+- Keep the "id" of every existing element and look. New elements and looks have no "id". Every element has a
+  default look {"id": "default", "label": "Default", "description": ""} first; add other looks only for
+  outfits or states the story needs (a uniform and a party dress, a wet street and a dry one).
+- Write every bible field in English (they become prompts), whatever the user's language. Names keep their
+  original form. Write "reply" and "missing" in the user's language.
+- Visual fields stay concrete, as a painter or a set designer would write them: numbers for scale, materials
+  and colors named; personality and arcs go in their own fields, never in "description". Rules in positive
+  form ("the window stays open"), never lists of "no".
+- You never render images yourself: once ready, the user clicks Generate.
 - At most 24 characters, 24 locations and 24 props.
 
-Return ONLY JSON: {"reply": "a short answer", "changes": ["one line per change"], "bible": {the whole bible}}"""
+Return ONLY JSON: {"reply": "your message: proposals, questions", "changes": ["one line per change to the bible"],
+"ready": false, "missing": ["what is still needed"], "bible": {the whole bible}}"""
 
 
 class BibleAssistantError(RuntimeError):
     pass
+
+
+def render_gaps(bible: dict) -> list[str]:
+    """What the bible lacks before its images can be rendered (empty when it can)."""
+    gaps = []
+    if not any(c.get("description") and c.get("wardrobe") for c in bible.get("characters") or []):
+        gaps.append("a character with a look and a wardrobe")
+    if not bible.get("locations"):
+        gaps.append("a location")
+    if not (bible.get("world") or {}).get("look"):
+        gaps.append("a look block (visual style)")
+    return gaps
 
 
 def _text_view(bible: dict) -> dict:
@@ -126,15 +155,18 @@ def assist(bible: dict, messages: Any, *, generate: Callable[..., str], folder: 
               + "\n\nConversation:\n" + transcript)
     last_error: Exception | None = None
     for _ in range(2):
-        text = generate(prompt=prompt, system_prompt=SYSTEM, max_new_tokens=6000, temperature=0.4,
+        text = generate(prompt=prompt, system_prompt=SYSTEM, max_new_tokens=8000, temperature=0.5,
                         enable_thinking=False)
         try:
             answer = _json_object(text)
             proposed = answer.get("bible") if isinstance(answer.get("bible"), dict) else {}
             merged = _merge(bible, proposed, folder) if proposed else bible
             changes = [str(c).strip()[:300] for c in answer.get("changes") or [] if str(c).strip()][:40]
-            reply = str(answer.get("reply") or "").strip()[:2000] or ("Done." if changes else "No change.")
-            return {"reply": reply, "changes": changes if proposed else [], "bible": merged}
+            reply = str(answer.get("reply") or "").strip()[:4000] or ("Done." if changes else "No change.")
+            missing = [str(m).strip()[:200] for m in answer.get("missing") or [] if str(m).strip()][:10]
+            gaps = render_gaps(merged)
+            return {"reply": reply, "changes": changes if proposed else [], "bible": merged,
+                    "ready": bool(answer.get("ready")) and not gaps, "missing": missing or gaps}
         except (BibleAssistantError, bibles.BibleError) as error:
             last_error = error
     raise BibleAssistantError(str(last_error or "The assistant did not answer"))

@@ -6349,6 +6349,63 @@ def _apply_bible(pid: str, params: dict) -> str:
     return bibles.world_block(bible, props=params.get("bible_props"))
 
 
+def _render_bible_slot(bible_id: str, element_id: str, variant_id: str, slot: str, *, image_model: str,
+                       image_params: dict, chain_from: Optional[list] = None) -> None:
+    """Render one reserved bible slot now; the slot ends as a candidate (or approved) or a failure.
+
+    The bible is read at render time, so a look rendered after its default
+    is edited from the default approved a moment before.
+    """
+    from services.director import bibles, casting
+
+    try:
+        bible = bibles.get_bible(bible_id)
+        if not bible:
+            raise bibles.BibleError("Unknown bible")
+        kind, element = bibles.find_element(bible, element_id)
+        variant = bibles.find_variant(element, variant_id)
+        refs = [str(path) for path in bibles.reference_paths(bible, element, variant, chain_from)]
+        budget = image_ref_profile(image_model)["max_refs"]
+        if budget:
+            refs = refs[:budget]
+        from_default = variant["id"] != bibles.DEFAULT_VARIANT and bool(refs)
+        prompt = casting.bible_image_prompt(
+            kind, element, variant, casting.style_phrase(bible.get("style")),
+            ref_label="Picture" if image_ref_profile(image_model)["label"] == "Picture" else "reference image",
+            from_default=from_default, chained=len(refs) - (1 if from_default else 0),
+        )
+        look = (bible.get("world") or {}).get("look", "")
+        if look:
+            prompt = f"{prompt} {look}"
+        gen_params = {
+            "model_type": image_model,
+            "prompt": prompt,
+            "image_refs": refs,
+            "image_mode": 1,
+            "image_prompt_type": "",
+            "num_inference_steps": image_params.get("num_inference_steps", 8),
+            "guidance_scale": image_params.get("guidance_scale", 1),
+            "video_prompt_type": _director_image_prompt_type(image_model, refs),
+            "resolution": image_params.get("resolution", "1280x720"),
+            "seed": -1,
+            "settings_version": 2.52,
+            "generation_mode": "image",
+            "repeat_generation": 1,
+            "negative_prompt": "",
+            "video_length": 1,
+        }
+        out_dir = os.path.join(_wgp.save_path, "_bible_renders")
+        os.makedirs(out_dir, exist_ok=True)
+        files = _submit_and_wait(gen_params, timeout_s=900, out_dir=out_dir)
+        source = files[0] if files and files[0] else ""
+        if source and not os.path.isabs(source):
+            source = os.path.join(out_dir, source)
+        bibles.finish_render(bible_id, element_id, variant_id, slot, source=source)
+    except Exception as error:  # the slot must not stay "rendering"
+        print(f"[Bible {bible_id}] Render of {element_id} ({variant_id}) failed: {error}")
+        bibles.finish_render(bible_id, element_id, variant_id, slot, error=str(error))
+
+
 def render_bible_image(bible_id: str, element_id: str, variant_id: str, *, image_model: str = "",
                        image_params: Optional[dict] = None, chain_from: Optional[list] = None) -> dict:
     """Render a candidate image of one bible element's look, in the background.
@@ -6358,61 +6415,57 @@ def render_bible_image(bible_id: str, element_id: str, variant_id: str, *, image
     Returns the bible with the new "rendering" slot; the slot becomes a
     candidate (approved when the look had none) or a failure.
     """
-    from services.director import bibles, casting
+    from services.director import bibles
 
     bible = bibles.get_bible(bible_id)
     if not bible:
         raise bibles.BibleError("Unknown bible")
-    kind, element = bibles.find_element(bible, element_id)
-    variant = bibles.find_variant(element, variant_id)
-    image_model = image_model or "flux2_klein_9b"
-    image_params = image_params or {}
-    refs = [str(path) for path in bibles.reference_paths(bible, element, variant, chain_from)]
-    budget = image_ref_profile(image_model)["max_refs"]
-    if budget:
-        refs = refs[:budget]
-    from_default = variant["id"] != bibles.DEFAULT_VARIANT and bool(refs)
-    prompt = casting.bible_image_prompt(
-        kind, element, variant, casting.style_phrase(bible.get("style")),
-        ref_label="Picture" if image_ref_profile(image_model)["label"] == "Picture" else "reference image",
-        from_default=from_default, chained=len(refs) - (1 if from_default else 0),
-    )
-    look = (bible.get("world") or {}).get("look", "")
-    if look:
-        prompt = f"{prompt} {look}"
+    bibles.find_variant(bibles.find_element(bible, element_id)[1], variant_id)
     bible, slot = bibles.start_render(bible_id, element_id, variant_id)
-    gen_params = {
-        "model_type": image_model,
-        "prompt": prompt,
-        "image_refs": refs,
-        "image_mode": 1,
-        "image_prompt_type": "",
-        "num_inference_steps": image_params.get("num_inference_steps", 8),
-        "guidance_scale": image_params.get("guidance_scale", 1),
-        "video_prompt_type": _director_image_prompt_type(image_model, refs),
-        "resolution": image_params.get("resolution", "1280x720"),
-        "seed": -1,
-        "settings_version": 2.52,
-        "generation_mode": "image",
-        "repeat_generation": 1,
-        "negative_prompt": "",
-        "video_length": 1,
-    }
-    out_dir = os.path.join(_wgp.save_path, "_bible_renders")
+    threading.Thread(
+        target=_render_bible_slot, name=f"bible-render-{slot}", daemon=True,
+        args=(bible_id, element_id, variant_id, slot),
+        kwargs={"image_model": image_model or "flux2_klein_9b", "image_params": image_params or {},
+                "chain_from": chain_from},
+    ).start()
+    return bible
+
+
+def generate_bible_assets(bible_id: str, *, image_model: str = "", image_params: Optional[dict] = None) -> dict:
+    """Render every look that has no approved image yet, in the background.
+
+    Default looks go first; the first location is rendered alone and every
+    other location matches it (the same world). Then the other looks, each
+    edited from its default approved meanwhile. Every slot is reserved up
+    front, so the bible shows all renders as under way at once. Returns the
+    bible with its slots.
+    """
+    from services.director import bibles
+
+    bible = bibles.get_bible(bible_id)
+    if not bible:
+        raise bibles.BibleError("Unknown bible")
+    pending = bibles.missing_images(bible)
+    if not pending:
+        raise bibles.BibleError("Every look already has an approved image")
+    first_location = next((e["id"] for e in bible.get("locations") or []), None)
+    jobs = []
+    for element, variant in pending:
+        bible, slot = bibles.start_render(bible_id, element["id"], variant["id"])
+        chain = ([first_location] if element["kind"] == "location" and element["id"] != first_location
+                 and variant["id"] == bibles.DEFAULT_VARIANT else [])
+        jobs.append((element["id"], variant["id"], slot, chain))
+    image_model = image_model or "flux2_klein_9b"
 
     def run() -> None:
-        try:
-            os.makedirs(out_dir, exist_ok=True)
-            files = _submit_and_wait(gen_params, timeout_s=900, out_dir=out_dir)
-            source = files[0] if files and files[0] else ""
-            if source and not os.path.isabs(source):
-                source = os.path.join(out_dir, source)
-            bibles.finish_render(bible_id, element_id, variant_id, slot, source=source)
-        except Exception as error:  # the slot must not stay "rendering"
-            print(f"[Bible {bible_id}] Render of {element['name']} ({variant_id}) failed: {error}")
-            bibles.finish_render(bible_id, element_id, variant_id, slot, error=str(error))
+        # Default looks first (the first location before the places that
+        # match it), then the other looks, edited from those defaults.
+        ordered = sorted(jobs, key=lambda job: (job[1] != bibles.DEFAULT_VARIANT, bool(job[3])))
+        for element_id, variant_id, slot, chain in ordered:
+            _render_bible_slot(bible_id, element_id, variant_id, slot, image_model=image_model,
+                               image_params=image_params or {}, chain_from=chain)
 
-    threading.Thread(target=run, name=f"bible-render-{slot}", daemon=True).start()
+    threading.Thread(target=run, name=f"bible-generate-{bible_id}", daemon=True).start()
     return bible
 
 

@@ -38,7 +38,8 @@ BIBLE_FILE = "bible.json"
 KINDS = {"character": "characters", "location": "locations", "prop": "props"}
 # Text fields of each kind, with their length limit.
 FIELDS = {
-    "character": {"role": 120, "descriptor": 80, "description": 700, "wardrobe": 400},
+    "character": {"role": 120, "descriptor": 80, "description": 700, "wardrobe": 400,
+                  "personality": 500, "arc": 500},
     "location": {"description": 700, "notes": 600},
     "prop": {"descriptor": 80, "description": 700, "notes": 600},
 }
@@ -50,7 +51,8 @@ DEFAULT_VARIANT = "default"
 IMAGE_STATES = ("rendering", "candidate", "approved", "failed")
 # A render still "rendering" after this long was cut by a restart.
 RENDER_STALE_SECONDS = 45 * 60
-WORLD_FIELDS = ("logline", "tone", "look", "rules", "forbidden")
+WORLD_FIELDS = ("logline", "story", "stakes", "twists", "tone", "narrative_style", "look", "rules", "forbidden")
+WORLD_LIMITS = {"story": 4000, "twists": 3000}
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
 _LOCK = threading.RLock()
 _SLUG = re.compile(r"[^a-z0-9]+")
@@ -183,7 +185,7 @@ def _elements(raw: Any, kind: str, folder: Path) -> list[dict]:
 
 def _world(raw: Any) -> dict:
     raw = raw if isinstance(raw, dict) else {}
-    return {field: _text(raw.get(field), 2000) for field in WORLD_FIELDS}
+    return {field: _text(raw.get(field), WORLD_LIMITS.get(field, 2000)) for field in WORLD_FIELDS}
 
 
 def normalize_bible(raw: Any, folder: Path) -> dict:
@@ -203,6 +205,18 @@ def normalize_bible(raw: Any, folder: Path) -> dict:
     for kind, plural in KINDS.items():
         bible[plural] = _elements(raw.get(plural), kind, folder)
     return bible
+
+
+def missing_images(bible: dict) -> list[tuple[dict, dict]]:
+    """(element, look) pairs with no approved image and no render under way, default looks first."""
+    pending = []
+    for plural in KINDS.values():
+        for element in bible.get(plural) or []:
+            for variant in element.get("variants") or []:
+                images = variant.get("images") or []
+                if not any(i["status"] in ("approved", "rendering") for i in images):
+                    pending.append((element, variant))
+    return sorted(pending, key=lambda pair: pair[1]["id"] != DEFAULT_VARIANT)
 
 
 def approved_image(element: dict, variant_id: str = DEFAULT_VARIANT) -> str | None:
@@ -600,7 +614,9 @@ def world_block(bible: dict, *, props: Any = None) -> str:
     world = bible.get("world") or {}
     lines = [
         f"{label}: {world[field]}"
-        for field, label in (("logline", "Series premise"), ("tone", "Tone"),
+        for field, label in (("logline", "Series premise"), ("story", "Series story"),
+                             ("stakes", "Stakes"), ("twists", "Possible twists (only when this episode's brief uses one)"),
+                             ("tone", "Tone"), ("narrative_style", "Narrative style"),
                              ("look", "Look (every image and video prompt is written in it)"),
                              ("rules", "World rules"), ("forbidden", "Never"))
         if world.get(field)
