@@ -50,7 +50,7 @@ DEFAULT_VARIANT = "default"
 IMAGE_STATES = ("rendering", "candidate", "approved", "failed")
 # A render still "rendering" after this long was cut by a restart.
 RENDER_STALE_SECONDS = 45 * 60
-WORLD_FIELDS = ("logline", "tone", "rules", "forbidden")
+WORLD_FIELDS = ("logline", "tone", "look", "rules", "forbidden")
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
 _LOCK = threading.RLock()
 _SLUG = re.compile(r"[^a-z0-9]+")
@@ -601,6 +601,7 @@ def world_block(bible: dict, *, props: Any = None) -> str:
     lines = [
         f"{label}: {world[field]}"
         for field, label in (("logline", "Series premise"), ("tone", "Tone"),
+                             ("look", "Look (every image and video prompt is written in it)"),
                              ("rules", "World rules"), ("forbidden", "Never"))
         if world.get(field)
     ]

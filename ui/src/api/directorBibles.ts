@@ -46,7 +46,7 @@ export interface BibleElement {
   image: string | null
 }
 
-export interface BibleWorld { logline: string; tone: string; rules: string; forbidden: string }
+export interface BibleWorld { logline: string; tone: string; look: string; rules: string; forbidden: string }
 
 export interface DirectorBible {
   id: string

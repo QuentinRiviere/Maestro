@@ -264,7 +264,8 @@ class BiblePipelineTests(unittest.TestCase):
 
     def test_a_project_starts_from_its_bible(self):
         bibles.save_bible({"name": "Spring Rain", "style": {"medium": "live action"},
-                           "characters": [GIRL], "locations": [HALL], "world": {"tone": "tender, rainy"}})
+                           "characters": [GIRL], "locations": [HALL],
+                           "world": {"tone": "tender, rainy", "look": "Soft pastel highlights, luminous skin."}})
         params = {"bible_id": "spring_rain", "bible_locations": ["Hallway"]}
 
         block = pipeline._apply_bible("p1", params)
@@ -274,6 +275,7 @@ class BiblePipelineTests(unittest.TestCase):
         self.assertEqual(params["director_casting"], "on")
         self.assertEqual(params["_director_bible_revision"], 1)
         self.assertIn("Tone: tender, rainy", block)
+        self.assertEqual(params["_director_bible_look"], "Soft pastel highlights, luminous skin.")
         self.assertEqual(pipeline._pipelines["p1"]["bible"]["id"], "spring_rain")
 
     def test_a_revised_project_keeps_its_own_cast(self):

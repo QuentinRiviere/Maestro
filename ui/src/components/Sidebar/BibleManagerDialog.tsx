@@ -352,10 +352,11 @@ export function BibleManagerDialog({ initialId, onClose }: { initialId?: string;
                     <label className="block"><span className={label}>Description</span>
                       <textarea className={input} rows={2} value={draft.description}
                         onChange={e => setDraft({ ...draft, description: e.target.value })} /></label>
-                    {([['logline', 'Series premise'], ['tone', 'Tone'], ['rules', 'World rules (positive form works best)'],
-                      ['forbidden', 'Never']] as const).map(([field, title]) => (
+                    {([['logline', 'Series premise'], ['tone', 'Tone'],
+                      ['look', 'Look: camera, lenses, film stock, palette (pasted into every image prompt)'],
+                      ['rules', 'World rules (positive form works best)'], ['forbidden', 'Never']] as const).map(([field, title]) => (
                       <label key={field} className="block"><span className={label}>{title}</span>
-                        <textarea className={input} rows={field === 'rules' ? 4 : 2} value={draft.world[field]}
+                        <textarea className={input} rows={field === 'rules' || field === 'look' ? 4 : 2} value={draft.world[field] ?? ''}
                           onChange={e => setDraft({ ...draft, world: { ...draft.world, [field]: e.target.value } })} /></label>
                     ))}
                     <div>

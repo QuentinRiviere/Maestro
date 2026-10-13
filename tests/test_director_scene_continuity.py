@@ -82,6 +82,26 @@ class SceneContinuityImageTests(unittest.TestCase):
         self.assertEqual(requests[3]["refs"], ["roof.jpg", "girl.jpg"])
         self.assertNotIn(pipeline.SCENE_CONTINUITY_PREFIX, requests[3]["prompt"])
 
+    def test_the_bible_look_ends_every_image_prompt(self):
+        anchor = self._file("anchor.jpg")
+        look = "Soft pastel highlights, luminous skin."
+        params = {"reference_image_path": anchor, "_director_bible_look": look}
+        plans = [{"image_prompt": "wide of the hallway", "_director_continuity_group": "meet"},
+                 {"image_prompt": "close-up on her hands", "_director_continuity_group": "meet"}]
+        names = iter(["shot1.jpg", "shot2.jpg"])
+        prompts = []
+
+        def submit(gen_params, **_kwargs):
+            prompts.append(gen_params["prompt"])
+            name = next(names)
+            self._file(name)
+            return [name]
+
+        with patch.object(pipeline, "_submit_and_wait", side_effect=submit):
+            pipeline._run_image_generation(self.pid, params, plans, out_dir=self.tmp.name)
+        self.assertTrue(all(p.endswith(look) for p in prompts))
+        self.assertTrue(prompts[1].startswith(pipeline.SCENE_CONTINUITY_PREFIX))
+
 
 class ImageRefProfileTests(unittest.TestCase):
     def test_qwen_gets_three_refs_named_pictures(self):

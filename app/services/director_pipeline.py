@@ -2265,6 +2265,9 @@ def _rerun_clip_image_impl(out_dir: str, pid: str, clip_index: int, prompt_overr
     _style_prefix = _style_prefix_for((state.get("_params_snapshot") or {}).get("_reference_style") or "")
     if _style_prefix and not prompt.lower().startswith("maintain the same"):
         prompt = _style_prefix + prompt
+    bible_look = str((state.get("_params_snapshot") or {}).get("_director_bible_look") or "").strip()
+    if bible_look and bible_look not in prompt:
+        prompt = f"{prompt.rstrip()} {bible_look}"
 
     # Get image gen params from the saved pipeline state
     image_model = state.get("image_model") or "flux2_klein_9b"
@@ -6338,6 +6341,8 @@ def _apply_bible(pid: str, params: dict) -> str:
             params["_director_style_contract"] = copy.deepcopy(bible["style"])
     # The bible is the cast: casting runs on it whatever the pipeline type.
     params["director_casting"] = "on"
+    # Its look is pasted word for word into every image prompt.
+    params["_director_bible_look"] = (bible.get("world") or {}).get("look", "")
     _update_pipeline(pid, bible={"id": bible["id"], "name": bible["name"],
                                  "revision": params.get("_director_bible_revision")})
     print(f"[Pipeline {pid}] Bible {bible['id']} r{params.get('_director_bible_revision')}")
@@ -6372,6 +6377,9 @@ def render_bible_image(bible_id: str, element_id: str, variant_id: str, *, image
         ref_label="Picture" if image_ref_profile(image_model)["label"] == "Picture" else "reference image",
         from_default=from_default, chained=len(refs) - (1 if from_default else 0),
     )
+    look = (bible.get("world") or {}).get("look", "")
+    if look:
+        prompt = f"{prompt} {look}"
     bible, slot = bibles.start_render(bible_id, element_id, variant_id)
     gen_params = {
         "model_type": image_model,
@@ -7357,6 +7365,7 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
     # images, keyframes, anchor) at generation time — after polish, and
     # regardless of whether the planner remembered to name the medium.
     _style_prefix = _style_prefix_for(params.get("_reference_style") or "")
+    _bible_look = str(params.get("_director_bible_look") or "").strip()
 
     def _gen_image(
         prompt: str,
@@ -7372,6 +7381,9 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
             print(f"[Pipeline {pid}] Stripped motion-effect language from image prompt")
         if _style_prefix and not prompt.lower().startswith("maintain the same"):
             prompt = _style_prefix + prompt
+        # Last, so a scene lead naming reference 1 stays at the start.
+        if _bible_look and _bible_look not in prompt:
+            prompt = f"{prompt.rstrip()} {_bible_look}"
         all_refs = []
         seen_refs = set()
         selected_extra_refs = (
