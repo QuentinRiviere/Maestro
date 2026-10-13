@@ -7470,7 +7470,8 @@ def _cache_warmer():
     from services.remote_worker.cache_warmer import CacheWarmer
     global _cache_warmer_instance
     if _cache_warmer_instance is None:
-        _cache_warmer_instance = CacheWarmer(lambda: _remote_worker.settings, _remote_worker.client)
+        _cache_warmer_instance = CacheWarmer(lambda: _remote_worker.settings, _remote_worker.client,
+                                             _remote_worker.pod_r2_keys)
     return _cache_warmer_instance
 
 

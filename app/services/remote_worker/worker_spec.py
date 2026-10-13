@@ -24,13 +24,21 @@ def _secret_ref(name: str) -> str:
     return "${{ secrets.%s }}" % name
 
 
-def dstack_secrets(settings: RemoteWorkerSettings) -> dict[str, str]:
-    """Secrets the run spec references, with their values."""
+def dstack_secrets(
+    settings: RemoteWorkerSettings, r2_keys: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Secrets the run spec references, with their values.
+
+    ``r2_keys`` (a per-pod key from ephemeral_r2) replaces the long-lived R2
+    keys, which then never leave this machine.
+    """
     secrets: dict[str, str] = {}
     if settings.r2_configured:
         secrets[SECRET_R2_ACCOUNT_ID] = settings.r2_account_id
-        secrets[SECRET_R2_ACCESS_KEY_ID] = settings.r2_access_key_id
-        secrets[SECRET_R2_SECRET_ACCESS_KEY] = settings.r2_secret_access_key
+        secrets[SECRET_R2_ACCESS_KEY_ID] = (r2_keys or {}).get("access_key_id") or settings.r2_access_key_id
+        secrets[SECRET_R2_SECRET_ACCESS_KEY] = (
+            (r2_keys or {}).get("secret_access_key") or settings.r2_secret_access_key
+        )
     if settings.registry_username and settings.registry_token:
         secrets[SECRET_REGISTRY_TOKEN] = settings.registry_token
     return secrets

@@ -1312,6 +1312,8 @@ export interface RemoteWorkerSettings {
   r2_bucket: string
   r2_prefix: string
   r2_configured: boolean
+  cf_api_token: string
+  cf_api_token_set: boolean
   /** Fields fixed by MAESTRO_REMOTE_* environment variables (read-only). */
   env_locked: string[]
   idle_ttl_minutes: number
@@ -1331,6 +1333,10 @@ export type RemoteWorkerState =
 
 export interface RemoteWorkerStatus {
   state: RemoteWorkerState
+  /** Pods get their own revocable R2 key (a Cloudflare API token is set). */
+  pod_r2_keys?: boolean
+  /** Per-pod R2 keys currently alive. */
+  pod_r2_keys_active?: number
   run_name: string
   idle_ttl_minutes: number
   route_generations: boolean

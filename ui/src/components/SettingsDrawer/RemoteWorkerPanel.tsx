@@ -245,7 +245,7 @@ export function RemoteWorkerPanel() {
   }
 
   const secretField = (
-    key: 'registry_token' | 'r2_access_key_id' | 'r2_secret_access_key',
+    key: 'registry_token' | 'r2_access_key_id' | 'r2_secret_access_key' | 'cf_api_token',
     label: string,
     stored: boolean,
   ) => (
@@ -513,6 +513,12 @@ export function RemoteWorkerPanel() {
         <Field locked={isLocked('r2_account_id')} label="Account ID" value={merged.r2_account_id} onChange={value => update('r2_account_id', value)} />
         {secretField('r2_access_key_id', 'Access key ID', merged.r2_access_key_id_set)}
         {secretField('r2_secret_access_key', 'Secret access key', merged.r2_secret_access_key_set)}
+        {secretField('cf_api_token', 'Cloudflare API token (per-pod keys)', merged.cf_api_token_set)}
+        <div className={`text-[9px] leading-relaxed ${status?.pod_r2_keys ? 'text-emerald-300' : 'text-amber-300'}`}>
+          {status?.pod_r2_keys
+            ? `Each pod gets its own key, limited to this bucket and revoked when it stops (${status.pod_r2_keys_active ?? 0} active). The keys above never leave this computer.`
+            : 'Without a Cloudflare API token (permission: Account API Tokens Edit), pods receive the keys above. Add one so each pod gets its own revocable key.'}
+        </div>
         <div className="grid grid-cols-2 gap-2">
           <Field locked={isLocked('r2_bucket')} label="Bucket" value={merged.r2_bucket} onChange={value => update('r2_bucket', value)} />
           <Field locked={isLocked('r2_prefix')} label="Prefix" value={merged.r2_prefix} onChange={value => update('r2_prefix', value)} placeholder="maestro" />

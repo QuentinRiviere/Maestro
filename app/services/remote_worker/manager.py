@@ -31,6 +31,7 @@ from services.remote_worker.settings import (
     is_masked,
     read_local_dstack_config,
 )
+from services.remote_worker.ephemeral_r2 import EphemeralKeyError, EphemeralR2Keys, duration_seconds
 from services.remote_worker.worker_spec import build_fleet_spec, build_run_spec, dstack_secrets
 
 
@@ -86,6 +87,7 @@ class RemoteWorkerManager:
         self._proxy_ok_run: str | None = None
         self._watchdog: threading.Thread | None = None
         self._watchdog_stop = threading.Event()
+        self.r2_keys = EphemeralR2Keys(store.path.parent / "remote_worker_r2_keys.json")
 
     # ── settings ───────────────────────────────────────────────────────────
 
@@ -153,6 +155,8 @@ class RemoteWorkerManager:
             "route_generations": settings.route_generations,
             "model_type": self._requested_model or settings.default_model_type or None,
             "active_jobs": self._active_jobs,
+            "pod_r2_keys": self.r2_keys.enabled(settings),
+            "pod_r2_keys_active": len(self.r2_keys.tracked()),
         }
         if not settings.configured:
             return base
@@ -269,7 +273,7 @@ class RemoteWorkerManager:
             run = client.get_run(settings.run_name)
             if run and str(run.get("status") or "") not in _FINISHED_RUN and not run.get("deleted"):
                 return self.status()
-            for name, value in dstack_secrets(settings).items():
+            for name, value in dstack_secrets(settings, self.pod_r2_keys(settings, settings.run_name)).items():
                 client.set_secret(name, value)
             if settings.manage_fleet and settings.fleet:
                 client.apply_fleet(build_fleet_spec(settings))
@@ -289,7 +293,37 @@ class RemoteWorkerManager:
                 log.info("remote worker %s stop requested: %s", settings.run_name, reason)
             self._stop_reason = reason
             self._mark_not_ready()
+        self._revoke_pod_keys(settings.run_name)
         return self.status()
+
+    # ── per-pod R2 keys ────────────────────────────────────────────────────
+
+    def pod_r2_keys(self, settings: RemoteWorkerSettings, run_name: str,
+                    max_duration: str | None = None) -> dict[str, str] | None:
+        """A key for one pod, or None to fall back to the long-lived keys."""
+        if not self.r2_keys.enabled(settings):
+            if settings.r2_configured:
+                log.warning("no Cloudflare API token: %s gets the long-lived R2 keys", run_name)
+            return None
+        try:
+            return self.r2_keys.issue(settings, run_name, duration_seconds(max_duration or settings.max_duration))
+        except EphemeralKeyError as exc:
+            # Never hand out the long-lived keys silently once ephemeral keys
+            # are configured: the pod would run on untrusted hardware.
+            raise RemoteWorkerError(f"Could not issue a per-pod R2 key: {exc}") from exc
+
+    def _revoke_pod_keys(self, run_name: str) -> None:
+        try:
+            self.r2_keys.revoke(self.settings, run_name)
+        except Exception as exc:  # the key also expires on its own
+            log.warning("R2 key revoke for %s failed: %s", run_name, exc)
+
+    def run_active(self, run_name: str) -> bool:
+        run = self.client().get_run(run_name)
+        return bool(run) and not run.get("deleted") and str(run.get("status") or "") not in _FINISHED_RUN
+
+    def reconcile_pod_keys(self) -> int:
+        return self.r2_keys.reconcile(self.settings, self.run_active)
 
     def logs(self, since: str | None = None) -> list[dict[str, str]]:
         settings = self.settings
@@ -396,6 +430,7 @@ class RemoteWorkerManager:
                     if self.settings.configured:
                         self.status()  # refreshes readiness bookkeeping
                         self.idle_tick()
+                        self.reconcile_pod_keys()  # revoke keys of finished pods
                 except Exception as exc:  # never let the watchdog die
                     log.warning("remote worker watchdog: %s", exc)
 

@@ -18,7 +18,7 @@ DEFAULT_REPO_URL = "https://github.com/QuentinRiviere/Maestro.git"
 DEFAULT_IMAGE = "ghcr.io/quentinriviere/maestro-worker:latest"
 
 # Never returned in clear by the API; a masked value sent back is ignored.
-SECRET_FIELDS = ("token", "registry_token", "r2_access_key_id", "r2_secret_access_key")
+SECRET_FIELDS = ("token", "registry_token", "r2_access_key_id", "r2_secret_access_key", "cf_api_token")
 
 
 @dataclass
@@ -58,6 +58,10 @@ class RemoteWorkerSettings:
     r2_secret_access_key: str = ""
     r2_bucket: str = ""
     r2_prefix: str = "maestro"
+    # Cloudflare API token allowed to create and delete account API tokens.
+    # When set, pods get their own bucket-scoped R2 key, revoked when they
+    # stop, instead of the long-lived keys above (which stay on this machine).
+    cf_api_token: str = ""
     # behaviour
     idle_ttl_minutes: int = 30
     # Stop as soon as nothing is queued or running instead of waiting the TTL.

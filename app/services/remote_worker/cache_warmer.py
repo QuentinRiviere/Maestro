@@ -144,9 +144,13 @@ class CacheWarmer:
         self,
         settings: Callable[[], RemoteWorkerSettings],
         client: Callable[[], DstackClient],
+        pod_r2_keys: Callable[..., dict[str, str] | None] = lambda *_args, **_kwargs: None,
     ) -> None:
         self._settings = settings
         self._client = client
+        # Per-pod key issuer (RemoteWorkerManager.pod_r2_keys); revocation is
+        # the manager watchdog's reconcile once this task's run has ended.
+        self._pod_r2_keys = pod_r2_keys
         self._lock = threading.Lock()
         self._model_types: list[str] = []
         self._log_lines: list[str] = []
@@ -163,7 +167,8 @@ class CacheWarmer:
             run = client.get_run(RUN_NAME)
             if run and str(run.get("status") or "") not in _FINISHED and not run.get("deleted"):
                 raise CacheWarmerError("A cache job is already running")
-            for name, value in dstack_secrets(settings).items():
+            keys = self._pod_r2_keys(settings, RUN_NAME, MAX_DURATION)
+            for name, value in dstack_secrets(settings, keys).items():
                 client.set_secret(name, value)
             client.apply_fleet(build_warm_fleet_spec(settings))
             client.apply(build_warm_run_spec(settings, model_types))
