@@ -167,10 +167,11 @@ export function R2CachePanel() {
       <div className="max-h-64 space-y-0.5 overflow-y-auto rounded-md border border-border/60 bg-bg-primary/40 p-1">
         {localModels.map(model => {
           const cached = cachedByModel.get(model.model_type)
+          const verified = Boolean(cached?.hashed)
           return (
             <label key={model.model_type}
               className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-[10px] hover:bg-bg-hover">
-              {cached ? (
+              {verified ? (
                 <Check size={11} className="shrink-0 text-emerald-300" />
               ) : (
                 <input
@@ -184,6 +185,7 @@ export function R2CachePanel() {
               <span className={`min-w-0 flex-1 truncate ${cached ? 'text-text-primary' : 'text-text-secondary'}`}>{model.name}</span>
               {cached ? (
                 <span className="shrink-0 text-text-muted" title={`${cached.files} files`}>
+                  {verified ? '' : <span className="text-amber-300" title="Cached without integrity hashes: pods on untrusted hosts will not use it. Select it to add hashes.">no hash · </span>}
                   {formatSize(cached.bytes)} · {formatDate(cached.updated_at)}
                 </span>
               ) : jobByModel.get(model.model_type)?.state === 'failed' ? (

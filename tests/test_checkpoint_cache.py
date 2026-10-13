@@ -167,3 +167,56 @@ class CheckpointCacheTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UntrustedCacheTests(CheckpointCacheTests):
+    """Integrity hashes from trusted publishers; read-only, verifying pods."""
+
+    def _publish_from(self, name):
+        cache, roots = self._pod(name)
+        before = cache.snapshot()
+        self._download(roots)
+        cache.publish("minimax_h3", before)
+        return cache, roots
+
+    def _untrusted(self, name):
+        cache, roots = self._pod(name)
+        cache.readonly = cache.require_hashes = True
+        return cache, roots
+
+    def test_publish_records_hashes_and_untrusted_pods_verify_them(self):
+        trusted, _ = self._publish_from("trusted")
+        self.assertTrue(trusted.has_hashes("minimax_h3"))
+        pod, roots = self._untrusted("pod")
+        self.assertEqual(pod.hydrate("minimax_h3"), 3)
+        with open(os.path.join(roots["ckpts"], "vae.safetensors"), "rb") as handle:
+            self.assertEqual(handle.read(), b"V" * 4)
+
+    def test_tampered_cache_file_is_removed_and_refused(self):
+        self._publish_from("trusted")
+        remote = os.path.join(self.tmp, "r2", "videogen", "maestro", "ckpts", "vae.safetensors")
+        _write(remote, b"EVIL")  # same size, different content
+        pod, roots = self._untrusted("pod")
+        with self.assertRaisesRegex(CheckpointCacheError, "do not match"):
+            pod.hydrate("minimax_h3")
+        self.assertFalse(os.path.exists(os.path.join(roots["ckpts"], "vae.safetensors")))
+
+    def test_untrusted_pods_refuse_unhashed_manifests_and_never_publish(self):
+        trusted, troots = self._publish_from("trusted")
+        manifest = os.path.join(self.tmp, "r2", "videogen", "maestro", "manifests", "minimax_h3.json")
+        import json as _json
+        with open(manifest) as handle:
+            payload = _json.load(handle)
+        for entry in payload["files"]:
+            entry.pop("sha256")
+        with open(manifest, "w") as handle:
+            _json.dump(payload, handle)
+        pod, roots = self._untrusted("pod")
+        with self.assertRaisesRegex(CheckpointCacheError, "without a trusted hash"):
+            pod.hydrate("minimax_h3")
+        before = pod.snapshot()
+        _write(os.path.join(roots["ckpts"], "new.safetensors"), b"N")
+        self.assertEqual(pod.publish("minimax_h3", before), 0)
+        # A trusted host that holds the files adds the hashes back.
+        self.assertEqual(trusted.rehash("minimax_h3"), 3)
+        self.assertTrue(pod.has_hashes("minimax_h3"))

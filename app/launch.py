@@ -31488,8 +31488,22 @@ def _run_cache_warm(model_types: list[str]) -> int:
             emit(model_type, "failed", error="Unknown model")
             failures += 1
             continue
-        if cache.read_manifest(model_type)[0]:
+        if cache.has_hashes(model_type):
             emit(model_type, "cached", message="Already in the R2 cache")
+            continue
+        if cache.read_manifest(model_type)[0]:
+            # Older manifest without hashes: pull it on this trusted host and
+            # vouch for each file, so untrusted pods can verify what they load.
+            emit(model_type, "downloading", message="Adding integrity hashes")
+            started = time.time()
+            try:
+                cache.hydrate(model_type)
+                rehashed = cache.rehash(model_type)
+            except Exception as exc:
+                emit(model_type, "failed", error=str(exc)[:300])
+                failures += 1
+                continue
+            emit(model_type, "cached", message=f"Hashed {rehashed} cached file(s)", seconds=round(time.time() - started))
             continue
         emit(model_type, "downloading")
         started = time.time()

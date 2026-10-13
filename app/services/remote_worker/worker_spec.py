@@ -18,6 +18,17 @@ SECRET_R2_ACCOUNT_ID = "MAESTRO_R2_ACCOUNT_ID"
 SECRET_R2_ACCESS_KEY_ID = "MAESTRO_R2_ACCESS_KEY_ID"
 SECRET_R2_SECRET_ACCESS_KEY = "MAESTRO_R2_SECRET_ACCESS_KEY"
 SECRET_REGISTRY_TOKEN = "MAESTRO_REGISTRY_TOKEN"
+# Untrusted hosts: session token of the read-only set, and the write-only set.
+SECRET_R2_SESSION_TOKEN = "MAESTRO_R2_SESSION_TOKEN"
+SECRET_R2_WRITE_ACCESS_KEY_ID = "MAESTRO_R2_WRITE_ACCESS_KEY_ID"
+SECRET_R2_WRITE_SECRET_ACCESS_KEY = "MAESTRO_R2_WRITE_SECRET_ACCESS_KEY"
+SECRET_R2_WRITE_SESSION_TOKEN = "MAESTRO_R2_WRITE_SESSION_TOKEN"
+_SCOPED_SECRETS = {
+    "session_token": (SECRET_R2_SESSION_TOKEN, "R2_SESSION_TOKEN"),
+    "write_access_key_id": (SECRET_R2_WRITE_ACCESS_KEY_ID, "R2_WRITE_ACCESS_KEY_ID"),
+    "write_secret_access_key": (SECRET_R2_WRITE_SECRET_ACCESS_KEY, "R2_WRITE_SECRET_ACCESS_KEY"),
+    "write_session_token": (SECRET_R2_WRITE_SESSION_TOKEN, "R2_WRITE_SESSION_TOKEN"),
+}
 
 
 def _secret_ref(name: str) -> str:
@@ -39,6 +50,9 @@ def dstack_secrets(
         secrets[SECRET_R2_SECRET_ACCESS_KEY] = (
             (r2_keys or {}).get("secret_access_key") or settings.r2_secret_access_key
         )
+        for field, (secret, _env) in _SCOPED_SECRETS.items():
+            if (r2_keys or {}).get(field):
+                secrets[secret] = r2_keys[field]
     if settings.registry_username and settings.registry_token:
         secrets[SECRET_REGISTRY_TOKEN] = settings.registry_token
     return secrets
@@ -54,7 +68,26 @@ def worker_resources(settings: RemoteWorkerSettings) -> dict[str, Any]:
     return resources
 
 
-def build_run_spec(settings: RemoteWorkerSettings) -> dict[str, Any]:
+def pod_r2_env(settings: RemoteWorkerSettings, output_scope: str = "") -> dict[str, str]:
+    """R2 variables of a pod: secret references plus untrusted-host switches."""
+    env = {
+        "R2_ACCOUNT_ID": _secret_ref(SECRET_R2_ACCOUNT_ID),
+        "R2_ACCESS_KEY_ID": _secret_ref(SECRET_R2_ACCESS_KEY_ID),
+        "R2_SECRET_ACCESS_KEY": _secret_ref(SECRET_R2_SECRET_ACCESS_KEY),
+        "MAESTRO_R2_BUCKET": settings.r2_bucket,
+        "MAESTRO_R2_PREFIX": settings.r2_prefix,
+    }
+    if settings.untrusted_hosts:
+        env.update({variable: _secret_ref(secret) for secret, variable in _SCOPED_SECRETS.values()})
+        env.update({
+            "MAESTRO_R2_CACHE_READONLY": "1",
+            "MAESTRO_R2_REQUIRE_HASHES": "1",
+            "MAESTRO_R2_OUTPUT_SCOPE": output_scope,
+        })
+    return env
+
+
+def build_run_spec(settings: RemoteWorkerSettings, output_scope: str = "") -> dict[str, Any]:
     """Service spec: clone Maestro at ``repo_ref`` and run the boot script.
 
     The image (docker/remote-worker) carries the Python environment, so a boot
@@ -71,13 +104,7 @@ def build_run_spec(settings: RemoteWorkerSettings) -> dict[str, Any]:
     )
     env: dict[str, str] = {"SERVER_PORT": str(WORKER_PORT)}
     if settings.r2_configured:
-        env.update({
-            "R2_ACCOUNT_ID": _secret_ref(SECRET_R2_ACCOUNT_ID),
-            "R2_ACCESS_KEY_ID": _secret_ref(SECRET_R2_ACCESS_KEY_ID),
-            "R2_SECRET_ACCESS_KEY": _secret_ref(SECRET_R2_SECRET_ACCESS_KEY),
-            "MAESTRO_R2_BUCKET": settings.r2_bucket,
-            "MAESTRO_R2_PREFIX": settings.r2_prefix,
-        })
+        env.update(pod_r2_env(settings, output_scope))
     configuration: dict[str, Any] = {
         "type": "service",
         "name": settings.run_name,

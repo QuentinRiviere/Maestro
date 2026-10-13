@@ -31,6 +31,21 @@ def safe_name(name: str) -> str:
     return cleaned or "file"
 
 
+def _s3_client(account_id: str, access_key_id: str, secret_access_key: str, session_token: str | None = None):
+    import boto3
+    from botocore.config import Config
+
+    return boto3.client(
+        "s3",
+        endpoint_url=f"https://{account_id}.r2.cloudflarestorage.com",
+        aws_access_key_id=access_key_id,
+        aws_secret_access_key=secret_access_key,
+        aws_session_token=session_token,
+        region_name="auto",
+        config=Config(retries={"max_attempts": 5, "mode": "standard"}),
+    )
+
+
 class R2Store:
     def __init__(
         self,
@@ -41,22 +56,22 @@ class R2Store:
         bucket: str,
         prefix: str = "maestro",
         client: Any = None,
+        session_token: str | None = None,
+        write_credentials: tuple[str, str, str | None] | None = None,
+        write_client: Any = None,
+        output_scope: str = "",
     ) -> None:
         self.bucket = bucket
         self.prefix = prefix.strip("/")
+        # Pods on untrusted hosts get read-only credentials for inputs and a
+        # second set that can only write under outputs/<output_scope>/.
+        self.output_scope = safe_name(output_scope) if output_scope else ""
         if client is None:
-            import boto3
-            from botocore.config import Config
-
-            client = boto3.client(
-                "s3",
-                endpoint_url=f"https://{account_id}.r2.cloudflarestorage.com",
-                aws_access_key_id=access_key_id,
-                aws_secret_access_key=secret_access_key,
-                region_name="auto",
-                config=Config(retries={"max_attempts": 5, "mode": "standard"}),
-            )
+            client = _s3_client(account_id, access_key_id, secret_access_key, session_token)
+        if write_client is None and write_credentials:
+            write_client = _s3_client(account_id, *write_credentials)
         self._client = client
+        self._write_client = write_client or client
 
     # ── construction from the two sides' configuration ─────────────────────
 
@@ -80,12 +95,19 @@ class R2Store:
         required = ("R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "MAESTRO_R2_BUCKET")
         if not all(env.get(name) for name in required):
             return None
+        write = None
+        if env.get("R2_WRITE_ACCESS_KEY_ID") and env.get("R2_WRITE_SECRET_ACCESS_KEY"):
+            write = (env["R2_WRITE_ACCESS_KEY_ID"], env["R2_WRITE_SECRET_ACCESS_KEY"],
+                     env.get("R2_WRITE_SESSION_TOKEN") or None)
         return cls(
             account_id=env["R2_ACCOUNT_ID"],
             access_key_id=env["R2_ACCESS_KEY_ID"],
             secret_access_key=env["R2_SECRET_ACCESS_KEY"],
             bucket=env["MAESTRO_R2_BUCKET"],
             prefix=env.get("MAESTRO_R2_PREFIX", "maestro"),
+            session_token=env.get("R2_SESSION_TOKEN") or None,
+            write_credentials=write,
+            output_scope=env.get("MAESTRO_R2_OUTPUT_SCOPE", ""),
         )
 
     # ── keys ───────────────────────────────────────────────────────────────
@@ -99,6 +121,8 @@ class R2Store:
         return self._key("assets", sha256, safe_name(name))
 
     def output_key(self, job_id: str, name: str) -> str:
+        if self.output_scope:
+            return self._key("outputs", self.output_scope, safe_name(job_id), safe_name(name))
         return self._key("outputs", safe_name(job_id), safe_name(name))
 
     def is_asset_key(self, key: str) -> bool:
@@ -123,14 +147,14 @@ class R2Store:
         if skip_if_exists and self.exists(key):
             return key
         try:
-            self._client.upload_file(local_path, self.bucket, key)
+            self._write_client.upload_file(local_path, self.bucket, key)
         except Exception as exc:
             raise R2StoreError(f"R2 upload of {os.path.basename(local_path)} failed: {exc}") from exc
         return key
 
     def delete(self, key: str) -> None:
         try:
-            self._client.delete_object(Bucket=self.bucket, Key=key)
+            self._write_client.delete_object(Bucket=self.bucket, Key=key)
         except Exception as exc:
             raise R2StoreError(f"R2 delete of {key} failed: {exc}") from exc
 

@@ -514,6 +514,13 @@ export function RemoteWorkerPanel() {
         {secretField('r2_access_key_id', 'Access key ID', merged.r2_access_key_id_set)}
         {secretField('r2_secret_access_key', 'Secret access key', merged.r2_secret_access_key_set)}
         {secretField('cf_api_token', 'Cloudflare API token (per-pod keys)', merged.cf_api_token_set)}
+        <Toggle
+          checked={merged.untrusted_hosts}
+          onChange={checked => update('untrusted_hosts', checked)}
+          label="Pods may run on untrusted hosts"
+          description={isLocked('untrusted_hosts') ? 'Set by environment.' : 'For community or marketplace GPUs. Pods can only read the model cache and their inputs, write their own outputs, never update the cache, and verify every cached file against its hash. Needs the Cloudflare API token; cache warming is disabled.'}
+          disabled={isLocked('untrusted_hosts')}
+        />
         <div className={`text-[9px] leading-relaxed ${status?.pod_r2_keys ? 'text-emerald-300' : 'text-amber-300'}`}>
           {status?.pod_r2_keys
             ? `Each pod gets its own key, limited to this bucket and revoked when it stops (${status.pod_r2_keys_active ?? 0} active). The keys above never leave this computer.`

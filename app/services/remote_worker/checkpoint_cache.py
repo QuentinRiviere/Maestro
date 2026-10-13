@@ -18,12 +18,14 @@ for presence and size afterwards.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 import subprocess
 import tempfile
 from collections.abc import Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
@@ -47,6 +49,17 @@ class FileEntry:
     root: str
     path: str
     size: int
+    # SHA-256 written by a trusted publisher; pods on untrusted hosts can
+    # only read the cache, so a tampered file cannot match it.
+    sha256: str = ""
+
+
+def file_sha256(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(8 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 @dataclass(frozen=True)
@@ -69,7 +82,13 @@ class R2CheckpointCache:
         roots: Mapping[str, str],
         s5cmd: str = "s5cmd",
         runner: Runner = subprocess.run,
+        readonly: bool = False,
+        require_hashes: bool = False,
     ) -> None:
+        # Untrusted hosts: never publish, and never use a file whose hash the
+        # manifest does not vouch for.
+        self.readonly = readonly
+        self.require_hashes = require_hashes
         self._base = f"s3://{bucket}/{prefix.strip('/')}" if prefix.strip("/") else f"s3://{bucket}"
         self._endpoint_url = endpoint_url
         self._roots = {name: os.path.abspath(path) for name, path in roots.items()}
@@ -90,6 +109,8 @@ class R2CheckpointCache:
             prefix=os.environ.get("MAESTRO_R2_PREFIX", "maestro"),
             endpoint_url=endpoint,
             roots=roots,
+            readonly=os.environ.get("MAESTRO_R2_CACHE_READONLY") == "1",
+            require_hashes=os.environ.get("MAESTRO_R2_REQUIRE_HASHES") == "1",
         )
 
     # ── s5cmd plumbing ─────────────────────────────────────────────────────
@@ -99,6 +120,9 @@ class R2CheckpointCache:
         # s5cmd reads the standard AWS variable names.
         env["AWS_ACCESS_KEY_ID"] = os.environ.get("R2_ACCESS_KEY_ID", "")
         env["AWS_SECRET_ACCESS_KEY"] = os.environ.get("R2_SECRET_ACCESS_KEY", "")
+        # Temporary prefix-scoped credentials come with a session token.
+        if os.environ.get("R2_SESSION_TOKEN"):
+            env["AWS_SESSION_TOKEN"] = os.environ["R2_SESSION_TOKEN"]
         env.setdefault("AWS_REGION", "auto")
         return env
 
@@ -148,7 +172,7 @@ class R2CheckpointCache:
             log.warning("ignoring unreadable manifest for %s", model_type)
             return [], []
         files = [
-            FileEntry(str(item["root"]), str(item["path"]), int(item["size"]))
+            FileEntry(str(item["root"]), str(item["path"]), int(item["size"]), str(item.get("sha256") or ""))
             for item in payload.get("files") or []
             if item.get("root") in self._roots and _safe_relative(item.get("path"))
         ]
@@ -201,6 +225,10 @@ class R2CheckpointCache:
     def hydrate(self, model_type: str) -> int:
         """Pull cached files for ``model_type``; return how many were fetched."""
         files, links = self.read_manifest(model_type)
+        if self.require_hashes and any(not entry.sha256 for entry in files):
+            raise CheckpointCacheError(
+                f"the {model_type} cache has files without a trusted hash; downloading from the source instead"
+            )
         missing = [
             entry for entry in files
             if not (os.path.isfile(self._local(entry.root, entry.path))
@@ -221,6 +249,11 @@ class R2CheckpointCache:
             raise CheckpointCacheError(
                 f"R2 pull incomplete for {model_type}: {', '.join(problems[:5])}"
             )
+        tampered = self._verify([entry for entry in missing if entry.sha256])
+        if tampered:
+            raise CheckpointCacheError(
+                f"R2 cache files of {model_type} do not match their hashes (removed): {', '.join(tampered[:5])}"
+            )
         for link in links:
             local = self._local(link.root, link.path)
             if os.path.lexists(local):
@@ -230,6 +263,44 @@ class R2CheckpointCache:
         log.info("hydrated %s: %d file(s) pulled from R2", model_type, len(missing))
         return len(missing)
 
+    def _verify(self, entries: list[FileEntry]) -> list[str]:
+        """Paths whose local content does not match the manifest hash (deleted)."""
+        def check(entry: FileEntry) -> str | None:
+            local = self._local(entry.root, entry.path)
+            if file_sha256(local) == entry.sha256:
+                return None
+            os.remove(local)
+            return entry.path
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            return [path for path in pool.map(check, entries) if path]
+
+    def _with_hashes(self, entries: list[FileEntry]) -> list[FileEntry]:
+        def hashed(entry: FileEntry) -> FileEntry:
+            return FileEntry(entry.root, entry.path, entry.size, file_sha256(self._local(entry.root, entry.path)))
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            return list(pool.map(hashed, entries))
+
+    def has_hashes(self, model_type: str) -> bool:
+        files, _ = self.read_manifest(model_type)
+        return bool(files) and all(entry.sha256 for entry in files)
+
+    def rehash(self, model_type: str) -> int:
+        """Add hashes to an older manifest from files pulled on this trusted host."""
+        if self.readonly:
+            raise CheckpointCacheError("cannot rehash from a read-only host")
+        files, links = self.read_manifest(model_type)
+        unhashed = [entry for entry in files if not entry.sha256]
+        if not unhashed:
+            return 0
+        for entry in unhashed:
+            local = self._local(entry.root, entry.path)
+            if not (os.path.isfile(local) and os.path.getsize(local) == entry.size):
+                raise CheckpointCacheError(f"{entry.path} is not on disk; hydrate {model_type} first")
+        rehashed = {(e.root, e.path): e for e in self._with_hashes(unhashed)}
+        self._write_manifest(model_type, [rehashed.get((e.root, e.path), e) for e in files], links)
+        log.info("rehashed %s: %d file(s)", model_type, len(rehashed))
+        return len(rehashed)
+
     def publish(
         self,
         model_type: str,
@@ -238,15 +309,18 @@ class R2CheckpointCache:
     ) -> int:
         """Upload files that appeared between ``before`` and ``after`` (default:
         now); update the manifest."""
+        if self.readonly:
+            log.info("cache is read-only on this host; %s not published", model_type)
+            return 0
         before_files, before_links = before
         after_files, after_links = after if after is not None else self.snapshot()
         old_files, old_links = self.read_manifest(model_type)
 
-        new_files = [
+        new_files = self._with_hashes([
             FileEntry(root, path, size)
             for (root, path), size in after_files.items()
             if before_files.get((root, path)) != size
-        ]
+        ])
         new_links = [
             LinkEntry(root, path, target)
             for (root, path), target in after_links.items()

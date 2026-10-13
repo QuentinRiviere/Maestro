@@ -162,6 +162,11 @@ class CacheWarmer:
         if not settings.r2_configured:
             raise CacheWarmerError("Configure the R2 bucket in Remote GPU settings first")
         model_types = valid_model_types(model_types)
+        if settings.untrusted_hosts:
+            # Filling the cache means writing what every later pod loads; it
+            # must run on a host Maestro trusts.
+            raise CacheWarmerError("Cache warming writes the shared model cache: turn off untrusted hosts "
+                                   "(and restrict dstack to datacenter offers) to run it")
         client = self._client()
         with self._lock:
             run = client.get_run(RUN_NAME)
@@ -257,6 +262,8 @@ def list_cached_models(store: Any) -> list[dict[str, Any]]:
                 "model_type": key[len(prefix):-len(".json")],
                 "files": len(files),
                 "bytes": sum(int(f.get("size") or 0) for f in files if isinstance(f, Mapping)),
+                # Untrusted pods only use a cache whose files all carry a hash.
+                "hashed": bool(files) and all(isinstance(f, Mapping) and f.get("sha256") for f in files),
                 "updated_at": obj["LastModified"].timestamp(),
             })
     return sorted(cached, key=lambda item: item["model_type"])

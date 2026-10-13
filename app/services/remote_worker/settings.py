@@ -62,6 +62,10 @@ class RemoteWorkerSettings:
     # When set, pods get their own bucket-scoped R2 key, revoked when they
     # stop, instead of the long-lived keys above (which stay on this machine).
     cf_api_token: str = ""
+    # Pods may run on hosts Maestro cannot trust (marketplace or community
+    # GPUs): they then get read-only access to the model cache and inputs,
+    # write access to their own output folder only, and verify cache hashes.
+    untrusted_hosts: bool = False
     # behaviour
     idle_ttl_minutes: int = 30
     # Stop as soon as nothing is queued or running instead of waiting the TTL.

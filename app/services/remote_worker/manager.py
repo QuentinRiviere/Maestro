@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+import uuid
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -273,13 +274,15 @@ class RemoteWorkerManager:
             run = client.get_run(settings.run_name)
             if run and str(run.get("status") or "") not in _FINISHED_RUN and not run.get("deleted"):
                 return self.status()
-            for name, value in dstack_secrets(settings, self.pod_r2_keys(settings, settings.run_name)).items():
+            output_scope = f"{settings.run_name}-{uuid.uuid4().hex[:12]}"
+            keys = self.pod_r2_keys(settings, settings.run_name, output_scope=output_scope)
+            for name, value in dstack_secrets(settings, keys).items():
                 client.set_secret(name, value)
             if settings.manage_fleet and settings.fleet:
                 client.apply_fleet(build_fleet_spec(settings))
             self._stop_reason = None
             self._last_activity = self._clock()
-            client.apply(build_run_spec(settings))
+            client.apply(build_run_spec(settings, output_scope))
             log.info("remote worker %s submitted (model %s)", settings.run_name, model_type or "-")
         return self.status()
 
@@ -299,14 +302,21 @@ class RemoteWorkerManager:
     # ── per-pod R2 keys ────────────────────────────────────────────────────
 
     def pod_r2_keys(self, settings: RemoteWorkerSettings, run_name: str,
-                    max_duration: str | None = None) -> dict[str, str] | None:
+                    max_duration: str | None = None, output_scope: str = "") -> dict[str, str] | None:
         """A key for one pod, or None to fall back to the long-lived keys."""
         if not self.r2_keys.enabled(settings):
+            if settings.untrusted_hosts and settings.r2_configured:
+                raise RemoteWorkerError(
+                    "Untrusted hosts need a Cloudflare API token so pods get scoped keys, not the account's"
+                )
             if settings.r2_configured:
                 log.warning("no Cloudflare API token: %s gets the long-lived R2 keys", run_name)
             return None
+        ttl = duration_seconds(max_duration or settings.max_duration)
         try:
-            return self.r2_keys.issue(settings, run_name, duration_seconds(max_duration or settings.max_duration))
+            if settings.untrusted_hosts:
+                return self.r2_keys.issue_untrusted(settings, run_name, ttl, output_scope or run_name)
+            return self.r2_keys.issue(settings, run_name, ttl)
         except EphemeralKeyError as exc:
             # Never hand out the long-lived keys silently once ephemeral keys
             # are configured: the pod would run on untrusted hardware.

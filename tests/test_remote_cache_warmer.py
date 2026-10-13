@@ -94,7 +94,7 @@ def test_cached_models_come_from_manifests():
         "maestro/ckpts/a": b"x",
     })
     assert cache_warmer.list_cached_models(store) == [{
-        "model_type": "minimax_h3", "files": 2, "bytes": 15,
+        "model_type": "minimax_h3", "files": 2, "bytes": 15, "hashed": False,
         "updated_at": datetime.datetime(2026, 10, 12, tzinfo=datetime.timezone.utc).timestamp(),
     }]
 

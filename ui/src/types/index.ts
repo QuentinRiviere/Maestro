@@ -1314,6 +1314,7 @@ export interface RemoteWorkerSettings {
   r2_configured: boolean
   cf_api_token: string
   cf_api_token_set: boolean
+  untrusted_hosts: boolean
   /** Fields fixed by MAESTRO_REMOTE_* environment variables (read-only). */
   env_locked: string[]
   idle_ttl_minutes: number
@@ -1365,6 +1366,8 @@ export interface R2CachedModel {
   files: number
   bytes: number
   updated_at: number
+  /** Every file has a trusted hash, so untrusted pods may use it. */
+  hashed?: boolean
 }
 
 export type R2CacheJobState = 'idle' | 'starting' | 'running' | 'done' | 'failed' | 'stopped' | 'unknown'
