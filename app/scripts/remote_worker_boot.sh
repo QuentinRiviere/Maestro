@@ -58,8 +58,13 @@ fi
 # Worker-local paths, applied by wgp on top of its own (auto-tuned on first
 # boot) config. Writing a partial wgp_config.json instead would skip wgp's
 # defaults entirely.
+# "auto" attention picks the fastest kernel the image ships that this GPU
+# supports (sage2 > sage > sdpa, see wgp.get_auto_attention), so a stored
+# config can never pin the worker to plain SDPA, and a GPU without a matching
+# SageAttention kernel still falls back to SDPA instead of failing.
 export MAESTRO_CONFIG_OVERRIDES="$(cat <<JSON
-{"checkpoints_paths": ["${DATA}/ckpts"],
+{"attention_mode": "auto",
+ "checkpoints_paths": ["${DATA}/ckpts"],
  "loras_root": "${DATA}/loras",
  "save_path": "${DATA}/outputs",
  "image_save_path": "${DATA}/outputs",

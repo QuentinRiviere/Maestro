@@ -67,11 +67,14 @@ from typing import Any, List, Literal, Optional, Tuple, Union
 import warnings
 import os
 
+# Architectures sageattn dispatches below; others (e.g. sm_100) raise at run time.
+_SAGE2_ARCHS = {(8, 0), (8, 6), (8, 9), (9, 0), (12, 0)}
+
+
 def is_sage2_supported():
     device_count = torch.cuda.device_count()
     for i in range(device_count):
-        major, minor = torch.cuda.get_device_capability(i)
-        if major < 8:
+        if tuple(torch.cuda.get_device_capability(i)) not in _SAGE2_ARCHS:
             return False
     return True
 

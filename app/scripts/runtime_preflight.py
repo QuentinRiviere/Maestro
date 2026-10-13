@@ -62,7 +62,9 @@ def main() -> int:
     triton_ok = _import_ok("triton")
     triton_version = _distribution_version("triton-windows", "triton")
     sage_ok = _import_ok("sageattention")
+    sage_version = _distribution_version("sageattention")
     flash_ok = _import_ok("flash_attn")
+    flash_version = _distribution_version("flash_attn", "flash-attn")
     lightx2v_import_ok = _import_ok("lightx2v_kernel")
     lightx2v_ops = bool(
         hasattr(torch.ops, "lightx2v_kernel")
@@ -88,9 +90,11 @@ def main() -> int:
         "[Runtime] Kernels: "
         f"Triton={'ready' if triton_ok else 'missing'}"
         f"{f' ({triton_version})' if triton_version else ''}, "
-        f"SageAttention={'ready' if sage_ok else 'missing'}, "
+        f"SageAttention={'ready' if sage_ok else 'missing'}"
+        f"{f' ({sage_version})' if sage_ok and sage_version else ''}, "
         f"Lightx2v NVFP4={'ready' if lightx2v_ok else 'missing'}, "
-        f"FlashAttention={'ready' if flash_ok else 'missing'}, "
+        f"FlashAttention={'ready' if flash_ok else 'missing'}"
+        f"{f' ({flash_version})' if flash_ok and flash_version else ''}, "
         f"H3 Sol Engine={'ready' if sol_ready else 'unavailable in this runtime'}"
     )
 
