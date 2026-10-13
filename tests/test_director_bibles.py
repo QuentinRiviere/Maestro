@@ -529,6 +529,46 @@ class BibleRenderSettingsTests(unittest.TestCase):
         self.assertEqual([os.path.basename(r) for r in sent[1]["image_refs"]], [new_default])
         self.assertEqual(bible["characters"][0]["image"], old)  # still the approved reference
 
+    def test_angles_are_edited_from_the_approved_look_and_make_one_turnaround_sheet(self):
+        from PIL import Image
+
+        girl = self._bible()
+        with self.assertRaises(bibles.BibleError):
+            pipeline.render_bible_views("spring_rain", girl, "default", image_model="cloud_fal_flux_dev_lora")
+        approved = bibles.get_bible("spring_rain")["characters"][0]["image"]
+        Image.new("RGB", (544, 960), (200, 50, 50)).save(bibles._folder("spring_rain") / approved, "PNG")
+        sent = []
+
+        def submit(gen_params, **kwargs):
+            sent.append(gen_params)
+            name = f"angle{len(sent)}.png"
+            Image.new("RGB", (512, 512), (50, 50, 200)).save(os.path.join(kwargs["out_dir"], name), "PNG")
+            return [name]
+
+        with patch.object(pipeline, "_submit_and_wait", side_effect=submit):
+            pipeline.render_bible_views("spring_rain", girl, "default", image_model="cloud_fal_seedream_4")
+            for _ in range(200):
+                if not bibles.active_renders():
+                    break
+                time.sleep(0.02)
+        self.assertEqual(len(sent), 4)
+        self.assertTrue(all([os.path.basename(r) for r in p["image_refs"]] == [approved] for p in sent))
+        self.assertIn("exact side profile", sent[2]["prompt"])
+        self.assertEqual((sent[0]["resolution"], sent[3]["resolution"]), ("1024x1024", "1088x1920"))
+        bible = bibles.get_bible("spring_rain")
+        variant = bible["characters"][0]["variants"][0]
+        # Each angle is approved on its own; the look's main image is unchanged.
+        self.assertEqual(list(bibles.approved_views(variant)), list(bibles.VIEWS))
+        self.assertEqual(bible["characters"][0]["image"], approved)
+        self.assertEqual(bibles.missing_images(bible), [(bible["characters"][0], bible["characters"][0]["variants"][1])])
+        out = os.path.join(self.tmp.name, "project")
+        cast = bibles.project_cast(bible, out)
+        sheet = cast["characters"][0]["image"]
+        self.assertTrue(sheet.startswith("bible_spring_rain_sheet_"))
+        with Image.open(os.path.join(out, sheet)) as image:
+            self.assertEqual(image.height, 1920)
+            self.assertEqual(image.width, 1088 + 1920 + 640)  # figure, back (square in this fake), faces
+
 
 def test_regenerate_all_adds_a_candidate_to_every_idle_look():
     with tempfile.TemporaryDirectory() as tmp, patch.object(bibles, "BIBLES_DIR", Path(tmp) / "bibles"):

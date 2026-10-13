@@ -100,7 +100,7 @@ def _text_view(bible: dict) -> dict:
             entry.update({field: element.get(field, "") for field in bibles.FIELDS[kind]})
             entry["variants"] = [
                 {"id": v.get("id"), "label": v.get("label"), "description": v.get("description", ""),
-                 "has_image": any(i.get("status") == "approved" for i in v.get("images") or [])}
+                 "has_image": any(i.get("status") == "approved" and not i.get("view") for i in v.get("images") or [])}
                 for v in element.get("variants") or []
             ]
             view[plural].append(entry)

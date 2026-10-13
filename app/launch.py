@@ -11071,6 +11071,20 @@ async def director_bible_render(bible_id: str, element_id: str, variant_id: str,
     return {"bible": bible}
 
 
+@api.post(_BIBLE_IMAGE + "/views")
+async def director_bible_views(bible_id: str, element_id: str, variant_id: str, request: Request):
+    """Render the angles of a character's look (face, three-quarter, profile, back) in the background."""
+    from services.director_pipeline import render_bible_views
+    body = await request.json() if request.headers.get("content-length", "0") != "0" else {}
+    body = body if isinstance(body, dict) else {}
+    bible = _bible_call(
+        render_bible_views, bible_id, element_id, variant_id,
+        image_model=str(body.get("image_model") or ""),
+        image_params=body.get("image_params") if isinstance(body.get("image_params"), dict) else {},
+    )
+    return {"bible": bible}
+
+
 @api.post(_BIBLE_IMAGE + "/upload")
 async def director_bible_upload(bible_id: str, element_id: str, variant_id: str, request: Request,
                                 file: UploadFile = File(...)):

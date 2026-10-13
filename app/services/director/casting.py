@@ -195,6 +195,33 @@ def prop_shot_prompt(prop: dict, style: str = "") -> str:
     )
 
 
+_VIEW_SHOTS = {
+    "face_front": "a close-up portrait: the head and the top of the shoulders fill a square frame, facing the camera",
+    "face_three_quarter": "a close-up portrait: the head and the top of the shoulders fill a square frame, the head "
+                          "turned three-quarters toward the left of the frame",
+    "face_profile": "a close-up portrait: the head and the top of the shoulders fill a square frame, in exact side "
+                    "profile looking toward the left of the frame",
+    "back": "a full-body view from behind, head to shoes, in a tall portrait frame: the back of the head, hair, "
+            "garments and shoes as seen from the back",
+}
+VIEW_RESOLUTIONS = {"face_front": "1024x1024", "face_three_quarter": "1024x1024", "face_profile": "1024x1024",
+                    "back": SHEET_RESOLUTION}
+
+
+def view_prompt(view: str, element: dict, variant: dict, style: str = "", *, ref_label: str = "") -> str:
+    """One angle of a character's look, edited from its approved image (reference 1)."""
+    label = ref_label or "reference image"
+    wardrobe = variant.get("description") or element.get("wardrobe") or ""
+    return (
+        f"The exact person of {label} 1, now in {_VIEW_SHOTS[view]}. Keep the same face, eyes, age, skin, "
+        "hairstyle and hair color, build and wardrobe; plain light-grey studio background, even soft lighting, "
+        "neutral expression, sharp focus, both eyes sharp and matching with natural catchlights where visible, "
+        f"no text, no logo. Person: {element.get('description', '')}"
+        + (f" Wearing: {wardrobe}." if wardrobe else "")
+        + realism_clause("character", style)
+    )
+
+
 def bible_image_prompt(kind: str, element: dict, variant: dict, style: str = "", *,
                        ref_label: str = "", from_default: bool = False, chained: int = 0) -> str:
     """The prompt of one bible image: the element's sheet, plate or prop shot, in one of its looks.

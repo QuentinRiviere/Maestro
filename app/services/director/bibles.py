@@ -21,6 +21,7 @@ project records the bible id and revision it was made from.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import re
@@ -45,8 +46,11 @@ FIELDS = {
 # A series keeps more people, places and props than one project casts.
 MAX_ELEMENTS = 24
 MAX_VARIANTS = 12
-MAX_IMAGES = 12
+MAX_IMAGES = 32
 DEFAULT_VARIANT = "default"
+# Angles of a character's look, edited from its approved image: together they
+# make the turnaround sheet a project uses as the character's reference.
+VIEWS = {"face_front": "Face", "face_three_quarter": "Face 3/4", "face_profile": "Profile", "back": "Back"}
 IMAGE_STATES = ("queued", "rendering", "candidate", "approved", "failed")
 IN_PROGRESS = ("queued", "rendering")
 # Render slots owned by this process. A slot still queued or rendering that
@@ -110,11 +114,17 @@ def _images(raw: Any, folder: Path) -> list[dict]:
             "status": status,
             "error": error,
             "created_at": str(item.get("created_at") or _now()),
+            "view": item.get("view") if item.get("view") in VIEWS else "",
         })
-    approved = [i for i, image in enumerate(images) if image["status"] == "approved"]
-    for index in approved[:-1]:
-        images[index]["status"] = "candidate"
+    for view in ("", *VIEWS):
+        approved = [i for i, image in enumerate(images) if image["status"] == "approved" and image["view"] == view]
+        for index in approved[:-1]:
+            images[index]["status"] = "candidate"
     return images[-MAX_IMAGES:] if len(images) > MAX_IMAGES else images
+
+
+def _has_approved(variant: dict, view: str = "") -> bool:
+    return any(i["status"] == "approved" and i.get("view", "") == view for i in variant["images"])
 
 
 def _variants(raw: dict, folder: Path) -> list[dict]:
@@ -213,7 +223,7 @@ def missing_images(bible: dict, *, every_look: bool = False) -> list[tuple[dict,
     for plural in KINDS.values():
         for element in bible.get(plural) or []:
             for variant in element.get("variants") or []:
-                images = variant.get("images") or []
+                images = [i for i in variant.get("images") or [] if not i.get("view")]
                 if not any(i["status"] in skip for i in images):
                     pending.append((element, variant))
     return sorted(pending, key=lambda pair: pair[1]["id"] != DEFAULT_VARIANT)
@@ -223,7 +233,8 @@ def approved_image(element: dict, variant_id: str = DEFAULT_VARIANT) -> str | No
     """The approved image of a variant (of the default one when it has none)."""
     for wanted in dict.fromkeys([variant_id, DEFAULT_VARIANT]):
         variant = next((v for v in element.get("variants") or [] if v["id"] == wanted), None)
-        image = next((i["file"] for i in (variant or {}).get("images") or [] if i["status"] == "approved"), None)
+        image = next((i["file"] for i in (variant or {}).get("images") or []
+                      if i["status"] == "approved" and not i.get("view")), None)
         if image:
             return image
     return None
@@ -407,22 +418,23 @@ def add_image(bible_id: str, element_id: str, variant_id: str, source: str) -> d
         name = _import_image(_folder(bible_id), source, _image_prefix(element, variant_id))
         if not name:
             raise BibleError("Not an image file")
-        approved = any(i["status"] == "approved" for i in variant["images"])
         variant["images"].append({"id": secrets.token_hex(4), "file": name,
-                                  "status": "candidate" if approved else "approved",
-                                  "error": "", "created_at": _now()})
+                                  "status": "candidate" if _has_approved(variant) else "approved",
+                                  "error": "", "created_at": _now(), "view": ""})
     return _mutate(bible_id, change)[0]
 
 
-def start_render(bible_id: str, element_id: str, variant_id: str) -> tuple[dict, str]:
-    """Reserve a rendering slot in a variant; returns the bible and the slot id."""
+def start_render(bible_id: str, element_id: str, variant_id: str, view: str = "") -> tuple[dict, str]:
+    """Reserve a rendering slot in a variant (of one of its angles); returns the bible and the slot id."""
     def change(bible: dict) -> str:
-        _, element = find_element(bible, element_id)
+        kind, element = find_element(bible, element_id)
         variant = find_variant(element, variant_id)
+        if view and (view not in VIEWS or kind != "character"):
+            raise BibleError("Unknown angle")
         slot = secrets.token_hex(4)
         _LIVE_SLOTS.add(slot)
         variant["images"].append({"id": slot, "file": None, "status": "queued", "error": "",
-                                  "created_at": _now()})
+                                  "created_at": _now(), "view": view})
         return slot
     return _mutate(bible_id, change)
 
@@ -461,9 +473,10 @@ def active_renders() -> list[dict]:
                 for variant in element["variants"]:
                     for image in variant["images"]:
                         if image["status"] in IN_PROGRESS:
+                            look = variant["label"] + (f" · {VIEWS[image['view']]}" if image.get("view") else "")
                             renders.append({
                                 "bible_id": bible["id"], "bible_name": bible["name"], "kind": element["kind"],
-                                "element": element["name"], "look": variant["label"], "slot": image["id"],
+                                "element": element["name"], "look": look, "slot": image["id"],
                                 "status": image["status"], "created_at": image["created_at"],
                             })
     return sorted(renders, key=lambda render: (render["status"] != "rendering", render["created_at"]))
@@ -483,8 +496,8 @@ def finish_render(bible_id: str, element_id: str, variant_id: str, slot: str, *,
         if not name:
             image.update(status="failed", error=_text(error or "The render produced no image", 300))
             return
-        approved = any(i["status"] == "approved" for i in variant["images"])
-        image.update(file=name, status="candidate" if approved else "approved", error="")
+        image.update(file=name, status="candidate" if _has_approved(variant, image.get("view", "")) else "approved",
+                     error="")
     return _mutate(bible_id, change)[0]
 
 
@@ -496,7 +509,7 @@ def approve_image(bible_id: str, element_id: str, variant_id: str, image_id: str
         if chosen is None:
             raise BibleError("Unknown image")
         for image in variant["images"]:
-            if image["status"] == "approved":
+            if image["status"] == "approved" and image.get("view", "") == chosen.get("view", ""):
                 image["status"] = "candidate"
         chosen["status"] = "approved"
     return _mutate(bible_id, change)[0]
@@ -556,6 +569,47 @@ def reference_paths(bible: dict, element: dict, variant: dict, chain_from: list[
     return paths
 
 
+def approved_views(variant: dict) -> dict[str, str]:
+    """The approved image of each angle of a look, in ``VIEWS`` order."""
+    found = {i["view"]: i["file"] for i in variant.get("images") or []
+             if i.get("view") and i["status"] == "approved" and i["file"]}
+    return {view: found[view] for view in VIEWS if view in found}
+
+
+def compose_turnaround(folder: Path, main: str, views: dict[str, str], target: str) -> bool:
+    """One sheet: the full figure and the back side by side, the face angles stacked on the right."""
+    from PIL import Image
+
+    height = 1920
+    try:
+        def tall(name: str) -> Image.Image:
+            with Image.open(folder / name) as image:
+                image = image.convert("RGB")
+                return image.resize((max(1, round(image.width * height / image.height)), height))
+        panels = [tall(main)] + ([tall(views["back"])] if "back" in views else [])
+        faces = []
+        for view in ("face_front", "face_three_quarter", "face_profile"):
+            if view in views:
+                with Image.open(folder / views[view]) as image:
+                    faces.append(image.convert("RGB"))
+        side = height // 3
+        width = sum(p.width for p in panels) + (side if faces else 0)
+        sheet = Image.new("RGB", (width, height), (214, 214, 214))
+        x = 0
+        for panel in panels:
+            sheet.paste(panel, (x, 0))
+            x += panel.width
+        for row, face in enumerate(faces):
+            # Square crop around the centre, then one third of the sheet height.
+            edge = min(face.width, face.height)
+            left, top = (face.width - edge) // 2, (face.height - edge) // 2
+            sheet.paste(face.crop((left, top, left + edge, top + edge)).resize((side, side)), (x, row * side))
+        sheet.save(target, "PNG")
+        return True
+    except (OSError, ValueError):
+        return False
+
+
 # ── projects ───────────────────────────────────────────────────────────────
 
 
@@ -599,10 +653,9 @@ def add_cast(cast: dict, image_dirs: list[str], *, bible_id: str | None = None, 
                 stored = _import_image(folder, source, _image_prefix(element, DEFAULT_VARIANT))
                 if stored:
                     variant = find_variant(element, DEFAULT_VARIANT)
-                    approved = any(i["status"] == "approved" for i in variant["images"])
                     variant["images"].append({"id": secrets.token_hex(4), "file": stored,
-                                              "status": "candidate" if approved else "approved",
-                                              "error": "", "created_at": _now()})
+                                              "status": "candidate" if _has_approved(variant) else "approved",
+                                              "error": "", "created_at": _now(), "view": ""})
         if style and not bible.get("style"):
             bible["style"] = copy.deepcopy(style)
     return _mutate(bible_id, change)[0]
@@ -653,14 +706,22 @@ def project_cast(bible: dict, out_dir: str, *, characters: Any = None, locations
                 else:
                     entry["description"] = f"{element['description']} In this scene: {look['description']}"
             image = approved_image(element, look["id"])
-            if image and (folder / image).is_file():
+            # A character's look with approved angles goes to the project as one turnaround sheet.
+            variant = next((v for v in element["variants"] if v["id"] == look["id"]), None)
+            views = approved_views(variant) if kind == "character" and variant and _has_approved(variant) else {}
+            entry["image"] = None
+            if image and (folder / image).is_file() and views:
+                stem = hashlib.sha1("|".join([image, *views.values()]).encode()).hexdigest()[:10]
+                copied = f"bible_{bible['id']}_sheet_{stem}.png"
+                target = os.path.join(out_dir, copied)
+                if os.path.isfile(target) or compose_turnaround(folder, image, views, target):
+                    entry["image"] = copied
+            if image and (folder / image).is_file() and not entry["image"]:
                 copied = f"bible_{bible['id']}_{image}"
                 target = os.path.join(out_dir, copied)
                 if not os.path.isfile(target):
                     shutil.copyfile(folder / image, target)
                 entry["image"] = copied
-            else:
-                entry["image"] = None
             cast[plural].append(entry)
     return cast
 

@@ -6389,7 +6389,8 @@ def _text_only_look_error(image_model: str) -> str:
 
 
 def _render_bible_slot(bible_id: str, element_id: str, variant_id: str, slot: str, *, image_model: str,
-                       image_params: dict, chain_from: Optional[list] = None, base_image: Optional[str] = None) -> None:
+                       image_params: dict, chain_from: Optional[list] = None, base_image: Optional[str] = None,
+                       view: str = "") -> None:
     """Render one reserved bible slot now; the slot ends as a candidate (or approved) or a failure.
 
     The bible is read at render time, so a look rendered after its default
@@ -6407,17 +6408,27 @@ def _render_bible_slot(bible_id: str, element_id: str, variant_id: str, slot: st
         budget = image_model_reference_limit(image_model)
         if variant["id"] != bibles.DEFAULT_VARIANT and budget == 0:
             raise bibles.BibleError(_text_only_look_error(image_model))
-        refs = [str(path) for path in bibles.reference_paths(bible, element, variant, chain_from, base_image)]
-        # A text-only model never sees references: its prompt must not name any.
-        if budget is not None:
-            refs = refs[:budget]
-        from_default = variant["id"] != bibles.DEFAULT_VARIANT and bool(refs)
-        prompt = casting.bible_image_prompt(
-            kind, element, variant,
-            casting.asset_medium(bible.get("style"), (bible.get("world") or {}).get("look", "")),
-            ref_label="Picture" if image_ref_profile(image_model)["label"] == "Picture" else "reference image",
-            from_default=from_default, chained=len(refs) - (1 if from_default else 0),
-        )
+        medium = casting.asset_medium(bible.get("style"), (bible.get("world") or {}).get("look", ""))
+        ref_label = "Picture" if image_ref_profile(image_model)["label"] == "Picture" else "reference image"
+        if view:
+            # An angle is an edit of the look's approved image: same person, turned.
+            if budget == 0:
+                raise bibles.BibleError(_text_only_look_error(image_model))
+            source = bibles.image_path(bible_id, bibles.approved_image(element, variant["id"]) or "")
+            if source is None:
+                raise bibles.BibleError("Approve an image of this look before rendering its angles")
+            refs = [str(source)]
+            prompt = casting.view_prompt(view, element, variant, medium, ref_label=ref_label)
+        else:
+            refs = [str(path) for path in bibles.reference_paths(bible, element, variant, chain_from, base_image)]
+            # A text-only model never sees references: its prompt must not name any.
+            if budget is not None:
+                refs = refs[:budget]
+            from_default = variant["id"] != bibles.DEFAULT_VARIANT and bool(refs)
+            prompt = casting.bible_image_prompt(
+                kind, element, variant, medium, ref_label=ref_label,
+                from_default=from_default, chained=len(refs) - (1 if from_default else 0),
+            )
         # Sheets and prop shots are neutral references; the cinematic look
         # (depth of field, haze, rain) belongs to places and to the shots.
         look = (bible.get("world") or {}).get("look", "")
@@ -6433,7 +6444,8 @@ def _render_bible_slot(bible_id: str, element_id: str, variant_id: str, slot: st
             "num_inference_steps": image_params.get("num_inference_steps", 8),
             "guidance_scale": image_params.get("guidance_scale", 1),
             "video_prompt_type": _director_image_prompt_type(image_model, refs),
-            "resolution": (casting.SHEET_RESOLUTION if kind == "character"
+            "resolution": (casting.VIEW_RESOLUTIONS[view] if view
+                           else casting.SHEET_RESOLUTION if kind == "character"
                            else image_params.get("resolution", "1280x720")),
             "seed": -1,
             "settings_version": 2.52,
@@ -6478,6 +6490,41 @@ def render_bible_image(bible_id: str, element_id: str, variant_id: str, *, image
         kwargs={"image_model": image_model or "flux2_klein_9b", "image_params": image_params or {},
                 "chain_from": chain_from},
     ).start()
+    return bible
+
+
+def render_bible_views(bible_id: str, element_id: str, variant_id: str, *, image_model: str = "",
+                       image_params: Optional[dict] = None) -> dict:
+    """Render every angle of a character's look (face, three-quarter, profile, back), in the background.
+
+    Each angle is edited from the look's approved image, so the model must
+    read images. Approved angles make the turnaround sheet a project uses.
+    """
+    from services.director import bibles
+
+    bible = bibles.get_bible(bible_id)
+    if not bible:
+        raise bibles.BibleError("Unknown bible")
+    kind, element = bibles.find_element(bible, element_id)
+    variant = bibles.find_variant(element, variant_id)
+    image_model = image_model or "flux2_klein_9b"
+    if kind != "character":
+        raise bibles.BibleError("Angles are for characters")
+    if image_model_reference_limit(image_model) == 0:
+        raise bibles.BibleError(_text_only_look_error(image_model))
+    if not any(i["status"] == "approved" and not i.get("view") for i in variant["images"]):
+        raise bibles.BibleError("Approve an image of this look before rendering its angles")
+    jobs = []
+    for view in bibles.VIEWS:
+        bible, slot = bibles.start_render(bible_id, element_id, variant_id, view)
+        jobs.append((view, slot))
+
+    def run() -> None:
+        for view, slot in jobs:
+            _render_bible_slot(bible_id, element_id, variant_id, slot, image_model=image_model,
+                               image_params=image_params or {}, view=view)
+
+    threading.Thread(target=run, name=f"bible-views-{element_id}", daemon=True).start()
     return bible
 
 

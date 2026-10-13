@@ -5,7 +5,7 @@ import { AppModeToggle, MaestroBrand } from '../AppModeNavigation'
 import { BibleChat } from './BibleChat'
 import { useConfirm } from './ConfirmDialog'
 import {
-  approveBibleImage, BIBLE_PLURAL, unapproveBibleImage, createDirectorBible, deleteBibleImage, deleteDirectorBible,
+  approveBibleImage, BIBLE_PLURAL, renderBibleViews, unapproveBibleImage, createDirectorBible, deleteBibleImage, deleteDirectorBible,
   directorBibleImageUrl, fetchDirectorBible, fetchDirectorBibles, generateBibleAssets, renderBibleImage, updateDirectorBible,
   uploadBibleImage,
   type BibleElement, type BibleKind, type BibleVariant, type DirectorBible, type DirectorBibleSummary,
@@ -27,7 +27,7 @@ const FIELDS: Record<BibleKind, Array<[keyof BibleElement, string, boolean]>> = 
 
 const pendingImages = (bible: DirectorBible) => (['characters', 'locations', 'props'] as const)
   .reduce((count, plural) => count + bible[plural].reduce((n, e) => n + e.variants
-    .filter(v => !v.images.some(i => i.status === 'approved' || i.status === 'queued' || i.status === 'rendering')).length, 0), 0)
+    .filter(v => !v.images.some(i => !i.view && (i.status === 'approved' || i.status === 'queued' || i.status === 'rendering'))).length, 0), 0)
 /** Whether a model can edit from a reference image (looks need it to keep the same person or place). */
 function useReadsImages(modelType: string): boolean {
   return useStore(s => {
@@ -98,16 +98,17 @@ const DELETE_IMAGE_NOTE = 'The image leaves this look. Projects that already use
 const inProgress = (status: string) => status === 'queued' || status === 'rendering'
 
 /** One image of a look, full size: approve it, delete it, or step through the look's images. */
-function ImageViewer({ bible, element, variant, index, onIndex, onClose, onBible }: {
+function ImageViewer({ bible, element, variant, view, index, onIndex, onClose, onBible }: {
   bible: DirectorBible
   element: BibleElement
   variant: BibleVariant
+  view: string
   index: number
   onIndex: (index: number) => void
   onClose: () => void
   onBible: (bible: DirectorBible) => void
 }) {
-  const images = variant.images.filter(i => i.file)
+  const images = variant.images.filter(i => i.file && (i.view || '') === view)
   const image = images[Math.min(index, images.length - 1)]
   const [busy, setBusy] = useState(false)
   const ask = useContext(AskContext)
@@ -169,10 +170,12 @@ function ImageViewer({ bible, element, variant, index, onIndex, onClose, onBible
   )
 }
 
-function Images({ bible, element, variant, onBible }: {
+/** The images of a look, or of one of its angles (``view``). */
+function Images({ bible, element, variant, view = '', onBible }: {
   bible: DirectorBible
   element: BibleElement
   variant: BibleVariant
+  view?: string
   onBible: (bible: DirectorBible) => void
 }) {
   const [error, setError] = useState<string | null>(null)
@@ -182,12 +185,13 @@ function Images({ bible, element, variant, onBible }: {
     setError(null)
     try { onBible(await call()) } catch (e) { setError(e instanceof Error ? e.message : 'Failed') }
   }
-  if (!variant.images.length) return <p className="text-[10px] text-text-muted">No image yet: render or upload one.</p>
-  const withFiles = variant.images.filter(i => i.file)
+  const shown = variant.images.filter(i => (i.view || '') === view)
+  if (!shown.length) return view ? null : <p className="text-[10px] text-text-muted">No image yet: render or upload one.</p>
+  const withFiles = shown.filter(i => i.file)
   return (
     <div className="space-y-1">
       <div className="flex flex-wrap gap-1.5">
-        {variant.images.map(image => (
+        {shown.map(image => (
           <div key={image.id} className={`relative w-28 aspect-video rounded overflow-hidden border ${
             image.status === 'approved' ? 'border-emerald-400' : 'border-border'} bg-bg-tertiary`}>
             {image.file
@@ -215,16 +219,66 @@ function Images({ bible, element, variant, onBible }: {
           </div>
         ))}
       </div>
-      {variant.images.some(i => i.status === 'failed') && (
-        <p className="text-[9px] text-chip-red truncate" title={variant.images.find(i => i.status === 'failed')?.error}>
-          {variant.images.find(i => i.status === 'failed')?.error}
+      {shown.some(i => i.status === 'failed') && (
+        <p className="text-[9px] text-chip-red truncate" title={shown.find(i => i.status === 'failed')?.error}>
+          {shown.find(i => i.status === 'failed')?.error}
         </p>
       )}
       {error && <p className="text-[10px] text-chip-red">{error}</p>}
       {viewing !== null && withFiles.length > 0 && (
-        <ImageViewer bible={bible} element={element} variant={variant} index={viewing} onIndex={setViewing}
+        <ImageViewer bible={bible} element={element} variant={variant} view={view} index={viewing} onIndex={setViewing}
           onClose={() => setViewing(null)} onBible={onBible} />
       )}
+    </div>
+  )
+}
+
+const VIEW_LABELS: Record<string, string> = {
+  face_front: 'Face', face_three_quarter: 'Face 3/4', face_profile: 'Profile', back: 'Back',
+}
+
+/** The angles of a character's look, edited from its approved image; approved ones make its turnaround sheet. */
+function Angles({ bible, element, variant, readsImages, imageModel, onBible }: {
+  bible: DirectorBible
+  element: BibleElement
+  variant: BibleVariant
+  readsImages: boolean
+  imageModel: string
+  onBible: (bible: DirectorBible) => void
+}) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const hasMain = variant.images.some(i => !i.view && i.status === 'approved')
+  const angles = variant.images.filter(i => i.view)
+  const running = angles.some(i => i.status === 'queued' || i.status === 'rendering')
+  const approved = new Set(angles.filter(i => i.status === 'approved').map(i => i.view))
+  const render = async () => {
+    setBusy(true)
+    setError(null)
+    try { onBible(await renderBibleViews(bible.id, element.id, variant.id, imageModel)) }
+    catch (e) { setError(e instanceof Error ? e.message : 'Could not render the angles') }
+    finally { setBusy(false) }
+  }
+  return (
+    <div className="space-y-1 rounded border border-border/60 p-1.5">
+      <div className="flex items-center gap-2">
+        <span className={label + ' !mb-0'}>Angles</span>
+        <span className="text-[9px] text-text-muted">
+          {approved.size ? `${approved.size}/4 in the turnaround sheet projects use` : 'face, 3/4, profile and back, for a turnaround sheet'}
+        </span>
+        <button disabled={busy || running || !hasMain || !readsImages} onClick={() => void render()}
+          title={!hasMain ? 'Approve an image of this look first' : !readsImages ? `${imageModel} cannot read an image` : `Render the 4 angles with ${imageModel}`}
+          className="ml-auto flex items-center gap-1 rounded border border-border px-2 py-0.5 text-[10px] text-text-secondary hover:text-text-primary disabled:opacity-40">
+          {busy || running ? <Loader2 size={10} className="animate-spin" /> : <Sparkles size={10} />} {angles.length ? 'Re-render angles' : 'Render angles'}
+        </button>
+      </div>
+      {Object.entries(VIEW_LABELS).map(([view, name]) => angles.some(i => i.view === view) && (
+        <div key={view} className="flex items-start gap-1.5">
+          <span className="w-12 shrink-0 pt-1 text-[9px] text-text-muted">{name}</span>
+          <Images bible={bible} element={element} variant={variant} view={view} onBible={onBible} />
+        </div>
+      ))}
+      {error && <p className="text-[10px] text-chip-red">{error}</p>}
     </div>
   )
 }
@@ -315,6 +369,9 @@ function ElementCard({ bible, element, saved, onChange, onRemove, onBible }: {
             onChange={e => onChange({ ...element, variants: element.variants.map(v => v.id === variant.id ? { ...v, description: e.target.value } : v) })} />
         )}
         {variant && saved && <Images bible={bible} element={element} variant={variant} onBible={onBible} />}
+        {variant && saved && element.kind === 'character' && (
+          <Angles bible={bible} element={element} variant={variant} readsImages={readsImages} imageModel={imageModel} onBible={onBible} />
+        )}
 
         {saved && variant && element.variants.some(v => v.id === variant.id) ? (
           <div className="space-y-1">
