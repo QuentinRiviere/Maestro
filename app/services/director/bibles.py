@@ -552,24 +552,26 @@ def _look(element: dict, variants: Any) -> dict:
 
 
 def project_cast(bible: dict, out_dir: str, *, characters: Any = None, locations: Any = None,
-                 variants: Any = None) -> dict:
+                 props: Any = None, variants: Any = None) -> dict:
     """The cast of one project made from a bible, its images copied into ``out_dir``.
 
     The Director keeps cast images as file names in the project's output
     folder; copying them keeps every cast path (planning, review, saved
-    projects, Open & Edit) unchanged. ``characters`` and ``locations`` pick
-    elements (by name, id or tag; none picks all); ``variants`` maps an
-    element to the look this project uses. A character's look replaces its
-    wardrobe; a location's look is added to its description.
+    projects, Open & Edit) unchanged. ``characters``, ``locations`` and
+    ``props`` pick elements (by name, id or tag; none picks all);
+    ``variants`` maps an element to the look this project uses. A
+    character's look replaces its wardrobe; a place's or a prop's look is
+    added to its description. Props only feed shot references (by name).
     """
     folder = _folder(bible["id"])
     os.makedirs(out_dir, exist_ok=True)
-    cast: dict[str, list] = {"characters": [], "locations": []}
-    for kind, plural, names in (("character", "characters", characters), ("location", "locations", locations)):
+    cast: dict[str, list] = {"characters": [], "locations": [], "props": []}
+    for kind, plural, names in (("character", "characters", characters), ("location", "locations", locations),
+                                ("prop", "props", props)):
         for element in _chosen(bible.get(plural) or [], names):
             look = _look(element, variants)
             entry = {field: element.get(field, "") for field in ("name", "role", "descriptor", "description",
-                                                                 "wardrobe") if field in element}
+                                                                 "wardrobe", "notes") if field in element}
             entry.update(bible_element=element["id"], bible_variant=look["id"], tag=element["tag"])
             if look["id"] != DEFAULT_VARIANT and look["description"]:
                 if kind == "character":

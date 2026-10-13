@@ -212,6 +212,41 @@ class BibleRenderTests(unittest.TestCase):
         self.assertEqual(requests[0]["image_refs"], [])
 
 
+class ShotSubjectRefTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.paths = {}
+        for name in ("girl.jpg", "boy.jpg", "teacher.jpg", "umbrella.jpg"):
+            path = os.path.join(self.tmp.name, name)
+            with open(path, "wb") as handle:
+                handle.write(b"jpeg")
+            self.paths[name] = path
+        self.params = {
+            "character_ref_labels": ["Eun-seo", "Ji-ho", "Ms. Park"],
+            "character_ref_paths": [self.paths["girl.jpg"], self.paths["boy.jpg"], self.paths["teacher.jpg"]],
+            "_director_cast": {
+                "characters": [{"name": "Eun-seo", "descriptor": "the teen girl with see-through bangs", "tag": "@eun_seo"},
+                               {"name": "Ji-ho", "descriptor": "the tall boy in a loose tie"},
+                               {"name": "Ms. Park", "descriptor": "the stern homeroom teacher"}],
+                "props": [{"name": "Umbrella", "descriptor": "clear plastic umbrella", "image": "umbrella.jpg"}],
+            },
+        }
+        self.characters, self.props = pipeline.cast_ref_needles(self.params, self.tmp.name)
+        self.all = [self.paths["girl.jpg"], self.paths["boy.jpg"], self.paths["teacher.jpg"]]
+
+    def test_a_shot_gets_the_sheets_of_the_people_it_names(self):
+        plan = {"_director_subjects_on_screen": [{"visual_description": "the tall boy in a loose tie, leaning"}]}
+        refs = pipeline.shot_subject_refs(plan, "Close-up: the teen girl with see-through bangs looks up", self.characters,
+                                          self.props, self.all)
+        self.assertEqual(refs, [self.paths["girl.jpg"], self.paths["boy.jpg"]])
+
+    def test_named_props_follow_and_an_unnamed_shot_keeps_every_sheet(self):
+        refs = pipeline.shot_subject_refs({}, "Rain on the window; a clear plastic umbrella leans by the door",
+                                          self.characters, self.props, self.all)
+        self.assertEqual(refs, [*self.all, self.paths["umbrella.jpg"]])
+
+
 class BiblePipelineTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

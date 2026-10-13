@@ -4875,6 +4875,52 @@ def scene_refs(image_model: str, master: str, characters: list[str], extras: lis
     return master, ordered
 
 
+def _shot_text(plan: dict, prompt: str) -> str:
+    subjects = " ".join(
+        str((subject or {}).get("visual_description") or "") if isinstance(subject, dict) else str(subject)
+        for subject in plan.get("_director_subjects_on_screen") or []
+    )
+    return " ".join([prompt or "", str(plan.get("video_prompt") or ""), subjects]).lower()
+
+
+def cast_ref_needles(params: dict, out_dir: str) -> tuple[list[tuple[str, list[str]]], list[tuple[str, list[str]]]]:
+    """(character, prop) reference images with the words that name them in a shot.
+
+    A character is named by its cast name, its descriptor (the polished
+    prompts use it instead of the name) or its bible tag.
+    """
+    cast = params.get("_director_cast") if isinstance(params.get("_director_cast"), dict) else {}
+    by_name = {str(c.get("name") or "").casefold(): c for c in cast.get("characters") or []}
+    characters = []
+    for label, path in zip(params.get("character_ref_labels") or [], params.get("character_ref_paths") or []):
+        if not (path and os.path.isfile(path)):
+            continue
+        entry = by_name.get(str(label or "").casefold()) or {}
+        needles = [label, entry.get("descriptor"), entry.get("tag")]
+        characters.append((path, [str(n).lower() for n in needles if n and len(str(n)) > 1]))
+    props = []
+    for entry in cast.get("props") or []:
+        path = os.path.join(out_dir, entry["image"]) if entry.get("image") else ""
+        if path and os.path.isfile(path):
+            needles = [entry.get("name"), entry.get("descriptor"), entry.get("tag")]
+            props.append((path, [str(n).lower() for n in needles if n and len(str(n)) > 1]))
+    return characters, props
+
+
+def shot_subject_refs(plan: dict, prompt: str, characters: list, props: list, fallback: list[str]) -> list[str]:
+    """The character sheets and prop images of the people and objects a shot names.
+
+    A shot that names no cast member keeps every character sheet (the old
+    behaviour, and the safe one for crowd or ambiguous shots); props only
+    come when named. With a large bible this keeps the reference budget of
+    an editor for the people actually in the shot.
+    """
+    text = _shot_text(plan, prompt)
+    named = [path for path, needles in characters if any(n in text for n in needles)]
+    shown_props = [path for path, needles in props if any(n in text for n in needles)]
+    return list(dict.fromkeys((named or list(fallback)) + shown_props))
+
+
 def review_pause_seconds() -> float | None:
     """How long the oldest Director review pause has lasted, None without one.
 
@@ -6285,7 +6331,7 @@ def _apply_bible(pid: str, params: dict) -> str:
         params["_director_cast"] = bibles.project_cast(
             bible, out_dir,
             characters=params.get("bible_characters"), locations=params.get("bible_locations"),
-            variants=params.get("bible_variants"),
+            props=params.get("bible_props"), variants=params.get("bible_variants"),
         )
         params["_director_bible_revision"] = bible.get("revision", 1)
         if bible.get("style") and not isinstance(params.get("_director_style_contract"), dict):
@@ -7483,6 +7529,7 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
          if p.get("_director_continuity_group")), "",
     )
     scene_masters: dict[str, str] = {}
+    character_needles, prop_needles = cast_ref_needles(params, out_dir)
 
     for i, plan in enumerate(clip_plans):
         if _pipelines[pid]["status"] == "cancelled":
@@ -7528,7 +7575,8 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
                 if blocking and blocking.lower() not in prompt.lower():
                     scene_prompt += f" Positions at the start of this shot: {blocking}"
                 _master, supplemental = scene_refs(
-                    image_model, scene_master, valid_character_refs,
+                    image_model, scene_master,
+                    shot_subject_refs(plan, prompt, character_needles, prop_needles, valid_character_refs),
                     [r for r in (previous_in_scene, ref_image_path) if r],
                 )
                 print(f"[Pipeline {pid}] Shot {i+1}: same scene as {os.path.basename(scene_master)}"
@@ -7548,7 +7596,8 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
                 # set rather than from the anchor of the first one.
                 source = ref_image_path if (group == first_group or not scene_location) else scene_location
                 sets = [scene_location] if scene_location and scene_location != source else []
-                start_img = _gen_image(prompt, source, supplemental_refs=sets + valid_character_refs)
+                start_img = _gen_image(prompt, source, supplemental_refs=sets + shot_subject_refs(
+                    plan, prompt, character_needles, prop_needles, valid_character_refs))
             else:
                 start_img = _gen_image(prompt, ref_image_path)
             clip_images.append(start_img)
