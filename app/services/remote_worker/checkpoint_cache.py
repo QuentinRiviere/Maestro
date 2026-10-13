@@ -33,6 +33,15 @@ from typing import Any
 log = logging.getLogger("maestro.remote_worker.cache")
 
 _SKIP_SUFFIXES = (".part", ".lock", ".incomplete", ".tmp")
+# huggingface_hub's local_dir bookkeeping: rewritten by every later download
+# into the same folder (so its cached size goes stale), and never needed since
+# Maestro only checks that the weights themselves are on disk.
+_SKIP_DIR = ".cache"
+
+
+def _cached_path(path: str) -> bool:
+    """Whether a root-relative path belongs in the cache."""
+    return not path.endswith(_SKIP_SUFFIXES) and _SKIP_DIR not in path.split("/")
 Runner = Callable[..., subprocess.CompletedProcess]
 # A publish that drops below this rate is abandoned: the cache only saves
 # time, and a stalled upload must never hold a generation hostage.
@@ -174,7 +183,7 @@ class R2CheckpointCache:
         files = [
             FileEntry(str(item["root"]), str(item["path"]), int(item["size"]), str(item.get("sha256") or ""))
             for item in payload.get("files") or []
-            if item.get("root") in self._roots and _safe_relative(item.get("path"))
+            if item.get("root") in self._roots and _safe_relative(item.get("path")) and _cached_path(item["path"])
         ]
         links = [
             LinkEntry(str(item["root"]), str(item["path"]), str(item["target"]))
@@ -205,12 +214,13 @@ class R2CheckpointCache:
         for root_name, root in self._roots.items():
             if not os.path.isdir(root):
                 continue
-            for directory, _dirs, names in os.walk(root):
+            for directory, dirs, names in os.walk(root):
+                dirs[:] = [d for d in dirs if d != _SKIP_DIR]
                 for name in names:
-                    if name.endswith(_SKIP_SUFFIXES):
-                        continue
                     full = os.path.join(directory, name)
                     rel = os.path.relpath(full, root).replace(os.sep, "/")
+                    if not _cached_path(rel):
+                        continue
                     if os.path.islink(full):
                         links[(root_name, rel)] = os.readlink(full)
                     elif os.path.isfile(full):

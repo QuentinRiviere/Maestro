@@ -159,6 +159,22 @@ class CheckpointCacheTests(unittest.TestCase):
         cache, _roots = self._pod("pod1")
         self.assertEqual(cache.read_manifest("evil"), ([], []))
 
+    def test_hf_download_bookkeeping_is_neither_published_nor_pulled(self):
+        first, roots = self._pod("pod1")
+        before = first.snapshot()
+        self._download(roots)
+        _write(os.path.join(roots["ckpts"], "mask", ".cache", "huggingface", "download", "sam.metadata"), b"m")
+        self.assertEqual(first.publish("m", before), 3)
+        # An older manifest that listed one (with a size gone stale) still hydrates.
+        manifest = os.path.join(self.tmp, "r2", "videogen", "maestro", "manifests", "m.json")
+        with open(manifest) as handle:
+            payload = handle.read()
+        with open(manifest, "w") as handle:
+            handle.write(payload.replace('"files": [', '"files": [{"root": "ckpts", '
+                                         '"path": "d/.cache/huggingface/download/x.metadata", "size": 9},', 1))
+        second, _roots = self._pod("pod2")
+        self.assertEqual(second.hydrate("m"), 3)
+
     def test_disabled_without_environment(self):
         for key in ("R2_ENDPOINT_URL", "MAESTRO_R2_BUCKET"):
             os.environ.pop(key, None)
