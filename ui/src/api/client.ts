@@ -995,8 +995,35 @@ export interface StyleContract {
   must_avoid?: string[]
 }
 
+export interface EpisodeReviewDefect {
+  at_sec: number | null
+  shot: number | null
+  severity: 'minor' | 'major' | 'critical'
+  criterion: string
+  root_cause: 'skill' | 'planner' | 'pipeline' | 'model_limit'
+  description: string
+}
+
+/** Scene-grammar review of the whole stitched episode. */
+export interface EpisodeReview {
+  status: 'running' | 'completed' | 'failed'
+  model?: string
+  source?: 'multiclip' | 'concat' | 'joined'
+  score?: number
+  scores?: Record<string, number | null>
+  verdict?: 'broadcast_ready' | 'needs_polish' | 'generic_ai' | 'broken'
+  summary?: string
+  defects?: EpisodeReviewDefect[]
+  skill_fixes?: Array<{ field: string; change: string }>
+  planner_fixes?: string[]
+  pipeline_fixes?: string[]
+  cost_usd?: number
+  error?: string
+}
+
 export interface VideoReview {
   status: 'running' | 'completed' | 'failed'
+  episode?: EpisodeReview
   phase?: 'takes'
   style_contract?: StyleContract | null
   takes?: VideoReviewTake[]

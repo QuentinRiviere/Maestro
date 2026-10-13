@@ -3,8 +3,11 @@
 Each shot is sent on its own (the pipeline knows the exact shot boundaries,
 so the judge never segments a video) to a video-capable LLM through fal's
 ``openrouter/router/video`` endpoint, together with the shot plan it was
-rendered from. The verdict is validated and stored beside the project; this
-stage never regenerates anything.
+rendered from. A second, stricter pass then judges the stitched episode as
+one scene (blocking, continuity across cuts, coverage, rhythm, AI tells) and
+traces each defect to the skill, the planner, the pipeline or the model. The
+verdicts are validated and stored beside the project; this stage never
+regenerates anything.
 """
 from __future__ import annotations
 
@@ -34,6 +37,22 @@ ACTIONS = ("accept", "retake_segment", "regenerate", "regenerate_start_image")
 POLL_SECONDS = 2.0
 TIMEOUT_SECONDS = 300
 
+# Episode review: the stitched video judged as one scene, by a stronger model.
+DEFAULT_EPISODE_MODEL = "google/gemini-3.1-pro-preview"
+EPISODE_TIMEOUT_SECONDS = 900
+EPISODE_CRITERIA = ("scene_geography", "cut_continuity", "motivated_camera", "coverage", "editing_rhythm",
+                    "acting", "lighting_continuity", "dialogue_audio", "authenticity")
+EPISODE_VERDICTS = ("broadcast_ready", "needs_polish", "generic_ai", "broken")
+ROOT_CAUSES = ("skill", "planner", "pipeline", "model_limit")
+SKILL_FIELDS = ("rules.goal", "rules.structure", "rules.pacing", "rules.camera", "rules.dialogue", "rules.sound",
+                "rules.do", "rules.dont", "shot_duration", "max_shots", "style_hint",
+                # Optional film grammar of the genre (custom skills).
+                "scene_grammar.coverage", "scene_grammar.cutting_rhythm", "scene_grammar.camera_default",
+                "scene_grammar.blocking", "scene_grammar.lighting_continuity", "scene_grammar.acting")
+# Strictness enforced after parsing: footage that reads as AI never scores above this.
+GENERIC_AI_SCORE_CAP = 5
+BROKEN_SCORE_CAP = 3
+
 SYSTEM_PROMPT = f"""You are the quality-control judge of an AI video pipeline. The goal is footage that looks
 like a professional production IN ITS OWN MEDIUM (live action, 3D animation, anime, cartoon, stop-motion...),
 never like a failed AI generation. You receive ONE generated shot, its plan and the project's style contract.
@@ -62,6 +81,55 @@ professional production in the project's medium (see the style contract) and fol
 Artifacts (morphing, flicker, identity drift, broken anatomy or physics for the style, vanishing objects,
 unnatural motion for the medium) weigh most. Video 1 is take A, video 2 is take B.
 Return ONLY JSON: {"winner": "A"|"B"|"tie", "confidence": 0-1, "reason": "one sentence"}"""
+
+EPISODE_PROMPT = f"""You are a senior editor and script supervisor reviewing a finished, AI-generated episode as
+if it were a cut delivered for broadcast in its genre (infer the genre from the brief: K-drama, sitcom, thriller,
+anime, commercial...). You receive the WHOLE stitched episode, its shot list with time ranges, the plan of every
+shot and the skill (the genre rules the planner followed). Per-shot artifacts were reviewed separately; here you
+judge SCENE GRAMMAR: would a professional crew in this genre have shot and cut it this way?
+
+Judge, comparing against real productions of the genre:
+- scene_geography: who is where, stable blocking across cuts, screen direction, 180-degree rule, matching eyelines.
+- cut_continuity: cut on action; the end state of shot N is the start state of shot N+1 (positions, hands,
+  props, gaze, posture); no jumps, resets or duplicated actions across a cut.
+- motivated_camera: the default is a static or discreetly handheld frame; every move (push-in, orbit, crane,
+  dolly) must be motivated by the story or a character; unmotivated drifting or orbiting is a defect.
+- coverage: a readable pattern (establishing or master, shot-reverse-shot, inserts, reaction close-ups) instead
+  of a string of unrelated beauty shots.
+- editing_rhythm: shot lengths fit the beat; reactions get time; no dead air, no cut mid-thought.
+- acting: restraint and micro-expressions, actions with intention; no filler motion (aimless walking, hair
+  touching, gazing into the distance) or stock gestures.
+- lighting_continuity: time of day, light direction, colour and weather consistent across the scene.
+- dialogue_audio: lines sized to their shot, attributed to the right speaker, lip sync, no looping or repeated
+  lines, ambience continuous across cuts.
+- authenticity: absence of AI tells: aesthetic boilerplate (glossy golden-hour look, bokeh everywhere, postcard
+  or symmetrical framing), floaty slow-motion filler, characters posing for the lens, generic stock staging.
+
+Be strict. Calibration: 9-10 = indistinguishable from a broadcast scene of the genre; 8 = a professional could
+air it with minor notes; 6-7 = clearly competent but a viewer notices something is off; 5 or less = generic
+AI-looking content, even when every shot is clean; 3 or less = the scene does not hold together. Footage that
+reads as AI content MUST get verdict "generic_ai" and score at most 5. Do not reward pretty images.
+
+Report only what you actually see or hear; at_sec is seconds from the start of the WHOLE episode and "shot" is
+the 1-based shot number from the shot list. For every defect name the root cause:
+- skill: the genre rules themselves push the planner the wrong way (e.g. camera rule asks for constant motion);
+- planner: the shot plan was wrong (blocking, coverage choice, lines, durations, missing transitions);
+- pipeline: assembly or conditioning (start images that break continuity, audio stitching, cut points);
+- model_limit: the video model could not render a correct plan.
+Then give concrete fixes: skill_fixes name the skill field to change ({", ".join(SKILL_FIELDS)}) and the new
+rule text; planner_fixes and pipeline_fixes are short imperative instructions.
+
+Return ONLY a JSON object, no prose, no markdown:
+{{"score": 0-10,
+ "scores": {{{", ".join(f'"{c}": 0-10' for c in EPISODE_CRITERIA)}}},
+ "verdict": "{'|'.join(EPISODE_VERDICTS)}",
+ "summary": "two or three sentences, as an editor's note",
+ "defects": [{{"at_sec": number, "shot": number, "severity": "{'|'.join(SEVERITIES)}",
+              "criterion": "{'|'.join(EPISODE_CRITERIA)}", "root_cause": "{'|'.join(ROOT_CAUSES)}",
+              "description": "short"}}],
+ "skill_fixes": [{{"field": "one of the skill fields", "change": "the rule to add or replace"}}],
+ "planner_fixes": ["short instruction"],
+ "pipeline_fixes": ["short instruction"]}}"""
 
 
 class JudgeError(RuntimeError):
@@ -218,18 +286,19 @@ def contract_text(contract: dict | None) -> str:
 
 
 def _ask(http: httpx.Client, fal_key: str, model: str, system: str, prompt: str, video_urls: list[str],
-         sleep: Callable[[float], None]) -> tuple[str, float | None]:
+         sleep: Callable[[float], None], *, max_tokens: int = 12000,
+         timeout: float = TIMEOUT_SECONDS) -> tuple[str, float | None]:
     """One fal openrouter/router/video call; returns (text, cost)."""
     headers = {"Authorization": f"Key {fal_key}"}
     submitted = http.post(f"{FAL_QUEUE_URL}/{FAL_ROUTER}", headers=headers, json={
         "model": model, "system_prompt": system, "prompt": prompt, "video_urls": video_urls,
         # Gemini 3.x Flash refuses requests without reasoning; give it room.
-        "reasoning": True, "temperature": 0.2, "max_tokens": 12000,
+        "reasoning": True, "temperature": 0.2, "max_tokens": max_tokens,
     })
     if submitted.status_code >= 400:
         raise JudgeError(f"fal.ai error {submitted.status_code}: {submitted.text[:300]}")
     handle = submitted.json()
-    deadline = time.monotonic() + TIMEOUT_SECONDS
+    deadline = time.monotonic() + timeout
     while http.get(handle["status_url"], headers=headers).json().get("status") != "COMPLETED":
         if time.monotonic() > deadline:
             raise JudgeError("The video judge timed out")
@@ -436,3 +505,259 @@ def select_takes(
             results.append(record)
             on_progress(results)
     return results
+
+
+# ── Episode review ────────────────────────────────────────────────────
+
+
+def _resolve(out_dir: str, name: str | None) -> str | None:
+    if not name:
+        return None
+    path = name if os.path.isabs(name) else os.path.join(out_dir, name)
+    return path if os.path.isfile(path) else None
+
+
+def find_stitched_video(output_files: list[str], out_dir: str) -> str | None:
+    """The latest ``*_multiclip`` join of the project, if it exists on disk."""
+    for name in reversed(output_files or []):
+        if "_multiclip" in os.path.splitext(os.path.basename(str(name)))[0].lower():
+            path = _resolve(out_dir, name)
+            if path:
+                return path
+    return None
+
+
+def concat_shots(paths: list[str], dest: str) -> str:
+    """Join per-shot files in order, re-encoded at a judge-friendly size."""
+    listing = f"{dest}.txt"
+    with open(listing, "w", encoding="utf-8") as handle:
+        for path in paths:
+            handle.write("file '" + os.path.abspath(path).replace("'", "'\\''") + "'\n")
+    command = ["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", listing,
+               "-vf", "scale='min(1280,iw)':-2", "-c:v", "libx264", "-preset", "veryfast", "-crf", "26",
+               "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", dest]
+    subprocess.run(command, check=True, capture_output=True, timeout=600)
+    return dest
+
+
+def episode_source(clips: list[dict], output_files: list[str], out_dir: str) -> tuple[list[str], str] | None:
+    """(paths, kind) of the episode to judge.
+
+    ``kind`` is "multiclip" (the stitched join), "concat" (per-shot files to
+    join here) or "joined" (a single seamless render); None when nothing exists.
+    """
+    stitched = find_stitched_video(output_files, out_dir)
+    if stitched:
+        return [stitched], "multiclip"
+    own = [_resolve(out_dir, clip.get("video_filename")) for clip in clips]
+    if clips and all(own):
+        return [path for path in own if path], "concat"
+    if any(own):  # some shots are missing: no complete episode to judge
+        return None
+    joined = next((path for path in (_resolve(out_dir, n) for n in reversed(output_files or [])) if path), None)
+    return ([joined], "joined") if joined else None
+
+
+def _probe_duration(path: str) -> float | None:
+    try:
+        result = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of",
+                                 "default=nw=1:nk=1", path], check=True, capture_output=True, text=True, timeout=30)
+        return float(result.stdout.strip())
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+def episode_timeline(clips: list[dict], out_dir: str,
+                     probe: Callable[[str], float | None] = _probe_duration) -> list[dict]:
+    """Shot time ranges in the stitched episode: real file lengths, else planned ones."""
+    timeline, cursor = [], 0.0
+    for index, clip in enumerate(clips):
+        planned = clip.get("planned_clip") or {}
+        path = _resolve(out_dir, clip.get("video_filename"))
+        duration = (probe(path) if path else None) or float(
+            planned.get("duration_sec") or clip.get("_director_duration_sec")
+            or max(0.0, float(planned.get("end") or 0) - float(planned.get("start") or 0)))
+        timeline.append({"shot": index + 1, "start_sec": round(cursor, 2), "end_sec": round(cursor + duration, 2)})
+        cursor += duration
+    return timeline
+
+
+def episode_context(state: Mapping[str, Any]) -> dict:
+    """What the episode judge needs to know about the project and its skill."""
+    params = state.get("_params_snapshot") or {}
+    skill_id = str(params.get("director_skill") or state.get("pipeline_type") or "").strip()
+    skill = None
+    if skill_id:
+        try:
+            from services.director.custom_skills import inspiration
+
+            spec = inspiration(skill_id)
+        except Exception:  # noqa: BLE001 - the skill is context, not a requirement
+            spec = None
+        if spec:
+            skill = {key: spec.get(key) for key in ("name", "description", "rules", "scene_grammar", "shot_duration",
+                                                     "max_shots", "style_hint") if spec.get(key) not in (None, "", [], {})}
+    return {key: value for key, value in {
+        "skill_id": skill_id or None,
+        "skill": skill,
+        "brief": str(state.get("scene_description") or "").strip()[:2000] or None,
+        "seamless": state.get("seamless"),
+    }.items() if value is not None}
+
+
+def _text_list(value: Any, limit: int = 8) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    items = [str(item).strip()[:300] for item in value if isinstance(item, (str, int, float))]
+    return [item for item in items if item][:limit]
+
+
+def parse_episode_verdict(text: str, duration: float | None, timeline: list[dict]) -> dict:
+    """Extract and normalise the episode judge's JSON; raise JudgeError when unusable."""
+    match = re.search(r"\{.*\}", text or "", re.S)
+    if not match:
+        raise JudgeError("The episode judge returned no JSON")
+    try:
+        raw = json.loads(match.group(0))
+    except ValueError as error:
+        raise JudgeError(f"The episode judge returned invalid JSON: {error}") from error
+    score = _clamp_score(raw.get("score"))
+    if score is None:
+        raise JudgeError("The episode judge returned no overall score")
+    scores = {c: _clamp_score((raw.get("scores") or {}).get(c)) for c in EPISODE_CRITERIA}
+    verdict = raw.get("verdict") if raw.get("verdict") in EPISODE_VERDICTS else None
+    # Enforce the calibration the prompt asks for: AI-looking footage never passes.
+    if verdict == "broken":
+        score = min(score, BROKEN_SCORE_CAP)
+    elif verdict == "generic_ai" or (scores["authenticity"] is not None and scores["authenticity"] <= 4):
+        score = min(score, GENERIC_AI_SCORE_CAP)
+    if verdict is None:
+        verdict = ("broadcast_ready" if score >= 8 else "needs_polish" if score >= 6
+                   else "generic_ai" if score > BROKEN_SCORE_CAP else "broken")
+    limit = float(duration) if duration else None
+    count = len(timeline)
+
+    def at_time(value):
+        try:
+            seconds = max(0.0, float(value))
+        except (TypeError, ValueError):
+            return None
+        return round(min(seconds, limit), 2) if limit else round(seconds, 2)
+
+    def shot_of(value, seconds):
+        try:
+            number = int(value)
+            if 1 <= number <= count:
+                return number
+        except (TypeError, ValueError):
+            pass
+        if seconds is not None:
+            return next((s["shot"] for s in timeline if s["start_sec"] <= seconds < s["end_sec"]),
+                        timeline[-1]["shot"] if timeline and seconds >= timeline[-1]["start_sec"] else None)
+        return None
+
+    defects = []
+    for defect in raw.get("defects") or []:
+        if not isinstance(defect, dict) or not str(defect.get("description") or "").strip():
+            continue
+        seconds = at_time(defect.get("at_sec"))
+        defects.append({
+            "at_sec": seconds,
+            "shot": shot_of(defect.get("shot"), seconds),
+            "severity": defect.get("severity") if defect.get("severity") in SEVERITIES else "minor",
+            "criterion": defect.get("criterion") if defect.get("criterion") in EPISODE_CRITERIA else "authenticity",
+            "root_cause": defect.get("root_cause") if defect.get("root_cause") in ROOT_CAUSES else "model_limit",
+            "description": str(defect["description"]).strip()[:400],
+        })
+    skill_fixes = []
+    for fix in raw.get("skill_fixes") or []:
+        if isinstance(fix, dict) and fix.get("field") in SKILL_FIELDS and str(fix.get("change") or "").strip():
+            skill_fixes.append({"field": fix["field"], "change": str(fix["change"]).strip()[:600]})
+    return {
+        "score": score,
+        "scores": scores,
+        "verdict": verdict,
+        "summary": str(raw.get("summary") or "").strip()[:800],
+        "defects": defects[:40],
+        "skill_fixes": skill_fixes[:8],
+        "planner_fixes": _text_list(raw.get("planner_fixes")),
+        "pipeline_fixes": _text_list(raw.get("pipeline_fixes")),
+    }
+
+
+def judge_episode(
+    video_url: str,
+    context: dict,
+    timeline: list[dict],
+    shots: list[dict],
+    *,
+    fal_key: str,
+    model: str = DEFAULT_EPISODE_MODEL,
+    style_contract: dict | None = None,
+    http: httpx.Client | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+) -> dict:
+    """Ask the video LLM for a scene-grammar verdict on the whole episode (one retry on bad JSON)."""
+    shot_list = [{**span, **brief} for span, brief in zip(timeline, shots)]
+    duration = timeline[-1]["end_sec"] if timeline else None
+    prompt = (contract_text(style_contract)
+              + "\n\nProject:\n" + json.dumps(context, ensure_ascii=False, indent=1)
+              + f"\n\nShot list ({len(shot_list)} shots, {duration or 'unknown'} s in total):\n"
+              + json.dumps(shot_list, ensure_ascii=False, indent=1))
+    owns_http = http is None
+    http = http or httpx.Client(timeout=120)
+    try:
+        last_error: Exception | None = None
+        total_cost = 0.0
+        for _ in range(2):
+            text, cost = _ask(http, fal_key, model, EPISODE_PROMPT, prompt, [video_url], sleep,
+                              max_tokens=24000, timeout=EPISODE_TIMEOUT_SECONDS)
+            total_cost += float(cost or 0)
+            try:
+                verdict = parse_episode_verdict(text, duration, timeline)
+            except JudgeError as error:
+                last_error = error
+                continue
+            verdict["model"] = model
+            verdict["cost_usd"] = round(total_cost, 5)
+            return verdict
+        raise last_error or JudgeError("The episode judge returned no verdict")
+    finally:
+        if owns_http:
+            http.close()
+
+
+def review_episode(
+    clips: list[dict],
+    output_files: list[str],
+    out_dir: str,
+    *,
+    context: dict,
+    fal_key: str,
+    publish: Callable[[str], str],
+    model: str = DEFAULT_EPISODE_MODEL,
+    style_contract: dict | None = None,
+    judge: Callable[..., dict] = judge_episode,
+    probe: Callable[[str], float | None] = _probe_duration,
+) -> dict:
+    """Judge the stitched episode as one scene. Failures are recorded, never raised."""
+    review: dict[str, Any] = {"status": "running", "model": model, "started_at": time.time()}
+    source = episode_source(clips, output_files, out_dir)
+    if source is None:
+        review.update(status="failed", error="No rendered episode to review", finished_at=time.time())
+        return review
+    paths, kind = source
+    review["source"] = kind
+    timeline = episode_timeline(clips, out_dir, probe)
+    try:
+        with tempfile.TemporaryDirectory(prefix="director-episode-") as tmp:
+            dest = os.path.join(tmp, "episode.mp4")
+            video = concat_shots(paths, dest) if kind == "concat" else cut_segment(paths[0], None, None, dest)
+            review.update(judge(publish(video), context, timeline, [shot_brief(clip) for clip in clips],
+                                fal_key=fal_key, model=model, style_contract=style_contract))
+        review["status"] = "completed"
+    except Exception as error:  # noqa: BLE001 - review is advisory
+        review.update(status="failed", error=str(error)[:300])
+    review["timeline"] = timeline
+    review["finished_at"] = time.time()
+    return review

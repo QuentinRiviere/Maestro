@@ -208,5 +208,127 @@ class StyleContractTests(unittest.TestCase):
         self.assertEqual(derive_style_contract("A cat", broken)["medium"], "unspecified")
 
 
+class EpisodeSourceTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir)
+
+    def touch(self, name):
+        open(os.path.join(self.dir, name), "wb").close()
+        return name
+
+    def test_stitched_multiclip_is_preferred(self):
+        clips = [clip(0, 4, video_filename=self.touch("a.mp4")), clip(4, 8, video_filename=self.touch("b.mp4"))]
+        outputs = ["a.mp4", "b.mp4", self.touch("old_multiclip.mp4"), self.touch("1_rejoin_multiclip.mp4"),
+                   "gone_multiclip.mp4"]
+        paths, kind = video_judge.episode_source(clips, outputs, self.dir)
+        self.assertEqual((kind, [os.path.basename(p) for p in paths]), ("multiclip", ["1_rejoin_multiclip.mp4"]))
+
+    def test_shots_are_concatenated_without_a_join(self):
+        clips = [clip(0, 4, video_filename=self.touch("a.mp4")), clip(4, 8, video_filename=self.touch("b.mp4"))]
+        paths, kind = video_judge.episode_source(clips, ["a.mp4", "b.mp4"], self.dir)
+        self.assertEqual((kind, [os.path.basename(p) for p in paths]), ("concat", ["a.mp4", "b.mp4"]))
+
+    def test_seamless_render_and_incomplete_projects(self):
+        joined = self.touch("seamless.mp4")
+        self.assertEqual(video_judge.episode_source([clip(0, 4), clip(4, 8)], [joined], self.dir)[1], "joined")
+        partial = [clip(0, 4, video_filename=self.touch("a.mp4")), clip(4, 8)]
+        self.assertIsNone(video_judge.episode_source(partial, ["a.mp4"], self.dir))
+
+    def test_timeline_uses_real_lengths_when_known(self):
+        clips = [clip(10, 14, video_filename=self.touch("a.mp4")), clip(14, 20)]
+        timeline = video_judge.episode_timeline(clips, self.dir, probe=lambda path: 4.5)
+        self.assertEqual(timeline, [{"shot": 1, "start_sec": 0.0, "end_sec": 4.5},
+                                    {"shot": 2, "start_sec": 4.5, "end_sec": 10.5}])
+
+
+TIMELINE = [{"shot": 1, "start_sec": 0.0, "end_sec": 4.0}, {"shot": 2, "start_sec": 4.0, "end_sec": 9.0}]
+
+
+class EpisodeVerdictTests(unittest.TestCase):
+    def test_defects_and_fixes_are_normalised(self):
+        text = """Here is my review:
+{"score": 7, "verdict": "needs_polish", "summary": "Coverage is thin.",
+ "scores": {"scene_geography": 6, "authenticity": 7, "acting": "11"},
+ "defects": [{"at_sec": 5.2, "shot": 9, "severity": "major", "criterion": "cut_continuity",
+              "root_cause": "planner", "description": "cup jumps hands across the cut"},
+             {"at_sec": 50, "severity": "nope", "criterion": "vibes", "root_cause": "gremlins",
+              "description": "orbiting camera without motivation"},
+             {"description": "  "}],
+ "skill_fixes": [{"field": "rules.camera", "change": "Static frames by default."},
+                 {"field": "rules.colour", "change": "x"}, {"field": "rules.pacing", "change": ""}],
+ "planner_fixes": ["Add a reverse shot for the reply", "", 3],
+ "pipeline_fixes": "not a list"}"""
+        verdict = video_judge.parse_episode_verdict(text, 9.0, TIMELINE)
+        self.assertEqual((verdict["score"], verdict["verdict"]), (7, "needs_polish"))
+        self.assertEqual(verdict["scores"]["acting"], 10)
+        self.assertIsNone(verdict["scores"]["coverage"])
+        self.assertEqual(verdict["defects"], [
+            {"at_sec": 5.2, "shot": 2, "severity": "major", "criterion": "cut_continuity", "root_cause": "planner",
+             "description": "cup jumps hands across the cut"},
+            {"at_sec": 9.0, "shot": 2, "severity": "minor", "criterion": "authenticity",
+             "root_cause": "model_limit", "description": "orbiting camera without motivation"}])
+        self.assertEqual(verdict["skill_fixes"], [{"field": "rules.camera", "change": "Static frames by default."}])
+        self.assertEqual(verdict["planner_fixes"], ["Add a reverse shot for the reply", "3"])
+        self.assertEqual(verdict["pipeline_fixes"], [])
+
+    def test_generic_ai_footage_is_capped(self):
+        capped = video_judge.parse_episode_verdict('{"score": 8, "verdict": "generic_ai"}', 9, TIMELINE)
+        self.assertEqual(capped["score"], 5)
+        tells = video_judge.parse_episode_verdict('{"score": 7, "scores": {"authenticity": 3}}', 9, TIMELINE)
+        self.assertEqual((tells["score"], tells["verdict"]), (5, "generic_ai"))
+        broken = video_judge.parse_episode_verdict('{"score": 6, "verdict": "broken"}', 9, TIMELINE)
+        self.assertEqual(broken["score"], 3)
+        inferred = video_judge.parse_episode_verdict('{"score": 9, "verdict": "great"}', 9, TIMELINE)
+        self.assertEqual(inferred["verdict"], "broadcast_ready")
+
+    def test_unusable_answers_raise(self):
+        for text in ("no json", '{"verdict": "generic_ai"}', "{oops}"):
+            with self.assertRaises(video_judge.JudgeError):
+                video_judge.parse_episode_verdict(text, 9, TIMELINE)
+
+
+class EpisodeJudgeTests(unittest.TestCase):
+    def test_request_uses_the_episode_prompt_and_logs_cost(self):
+        handler, requests = fake_fal(["not json", '{"score": 4, "verdict": "generic_ai"}'])
+        with httpx.Client(transport=httpx.MockTransport(handler)) as http:
+            verdict = video_judge.judge_episode(
+                "https://r2/episode.mp4", {"skill_id": "custom:kdrama", "brief": "A breakup at a cafe"},
+                TIMELINE, [{"label": "hook"}, {"label": "reply"}], fal_key="k", http=http, sleep=lambda _: None)
+        bodies = [json.loads(r.content) for r in requests if r.method == "POST"]
+        self.assertEqual(len(bodies), 2)
+        self.assertEqual(bodies[0]["model"], video_judge.DEFAULT_EPISODE_MODEL)
+        self.assertEqual(bodies[0]["system_prompt"], video_judge.EPISODE_PROMPT)
+        self.assertIn('"start_sec": 4.0', bodies[0]["prompt"])
+        self.assertIn("custom:kdrama", bodies[0]["prompt"])
+        self.assertEqual((verdict["score"], verdict["cost_usd"]), (4, 0.004))
+
+    def test_review_episode_records_failures(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp)
+        open(os.path.join(tmp, "x_multiclip.mp4"), "wb").close()
+        original = video_judge.cut_segment
+        video_judge.cut_segment = lambda src, start, end, dest: src
+        self.addCleanup(setattr, video_judge, "cut_segment", original)
+        clips = [clip(0, 4), clip(4, 9)]
+
+        def judge(url, context, timeline, shots, **kwargs):
+            self.assertTrue(url.endswith("x_multiclip.mp4"))
+            self.assertEqual(len(shots), 2)
+            return {"score": 5, "verdict": "generic_ai", "cost_usd": 0.03}
+        review = video_judge.review_episode(clips, ["x_multiclip.mp4"], tmp, context={}, fal_key="k",
+                                            publish=lambda p: "url:" + p, judge=judge, probe=lambda p: None)
+        self.assertEqual((review["status"], review["source"], review["score"]), ("completed", "multiclip", 5))
+        self.assertEqual(review["timeline"], TIMELINE)
+
+        def boom(*args, **kwargs):
+            raise video_judge.JudgeError("timeout")
+        failed = video_judge.review_episode(clips, ["x_multiclip.mp4"], tmp, context={}, fal_key="k",
+                                            publish=lambda p: p, judge=boom, probe=lambda p: None)
+        self.assertEqual((failed["status"], failed["error"]), ("failed", "timeout"))
+        missing = video_judge.review_episode(clips, [], tmp, context={}, fal_key="k", publish=lambda p: p)
+        self.assertEqual(missing["status"], "failed")
+
+
 if __name__ == "__main__":
     unittest.main()

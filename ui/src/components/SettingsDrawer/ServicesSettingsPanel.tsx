@@ -787,6 +787,21 @@ export function ServicesSettingsPanel() {
               aria-label="Video review model"
             />
           )}
+          {servicesConfig.director_video_review && (
+            <input
+              type="text"
+              defaultValue={servicesConfig.director_episode_review_model || ''}
+              placeholder="Episode review: google/gemini-3.1-pro-preview"
+              onBlur={e => {
+                const value = e.target.value.trim()
+                if (value !== (servicesConfig.director_episode_review_model || '')) {
+                  void updateConfig({ director_episode_review_model: value })
+                }
+              }}
+              className="mt-2 w-full bg-bg-tertiary border border-border rounded-lg px-3 py-1.5 text-xs text-text-primary focus:outline-none focus:border-accent-blue"
+              aria-label="Episode review model"
+            />
+          )}
         </div>
 
         {servicesConfig.r2_configured && (

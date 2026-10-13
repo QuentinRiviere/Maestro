@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Loader2, ScanEye } from 'lucide-react'
-import { fetchPipelineStatus, requestPipelineReview, type VideoReview, type VideoReviewShot, type VideoReviewTake } from '../../api/client'
+import { fetchPipelineStatus, requestPipelineReview, type EpisodeReview, type VideoReview, type VideoReviewShot, type VideoReviewTake } from '../../api/client'
 
 const SEVERITY_CLASS: Record<string, string> = {
   critical: 'text-chip-red',
@@ -21,6 +21,20 @@ const ACTION_LABEL: Record<string, string> = {
   retake_segment: 'Retake a segment',
   regenerate: 'Regenerate',
   regenerate_start_image: 'New start image',
+}
+
+const VERDICT_LABEL: Record<string, string> = {
+  broadcast_ready: 'Broadcast ready',
+  needs_polish: 'Needs polish',
+  generic_ai: 'Reads as generic AI',
+  broken: 'Scene does not hold',
+}
+
+const CAUSE_LABEL: Record<string, string> = {
+  skill: 'skill',
+  planner: 'planner',
+  pipeline: 'pipeline',
+  model_limit: 'model limit',
 }
 
 function scoreClass(score: number | null | undefined) {
@@ -81,6 +95,58 @@ function ShotRow({ shot, take }: { shot: VideoReviewShot; take?: VideoReviewTake
   )
 }
 
+function FixList({ title, items }: { title: string; items: string[] }) {
+  if (!items.length) return null
+  return (
+    <div className="mt-1">
+      <p className="text-[10px] text-text-muted">{title}</p>
+      <ul className="list-disc pl-4 space-y-0.5">
+        {items.map((item, i) => <li key={i} className="text-[10px] text-text-secondary leading-snug">{item}</li>)}
+      </ul>
+    </div>
+  )
+}
+
+function EpisodeSection({ episode }: { episode: EpisodeReview }) {
+  return (
+    <div className="mb-2 pb-2 border-b border-border/60">
+      <div className="flex items-center gap-2 text-[11px]">
+        {episode.status === 'running' ? (
+          <Loader2 size={10} className="animate-spin text-text-muted" />
+        ) : (
+          <span className={`px-1.5 py-0.5 rounded font-medium ${scoreClass(episode.score)}`}>
+            {episode.score ?? '–'}/10
+          </span>
+        )}
+        <span className="text-text-primary font-medium">Episode</span>
+        {episode.verdict && <span className="text-text-secondary">{VERDICT_LABEL[episode.verdict] ?? episode.verdict}</span>}
+        {episode.model && <span className="ml-auto text-[10px] text-text-muted truncate">{episode.model}</span>}
+      </div>
+      {episode.status === 'running' && (
+        <p className="text-[10px] text-text-muted mt-1">Judging the stitched episode as one scene…</p>
+      )}
+      {episode.error && <p className="text-[10px] text-chip-red mt-1">Episode review failed: {episode.error}</p>}
+      {episode.summary && <p className="text-[11px] text-text-secondary mt-1">{episode.summary}</p>}
+      {!!episode.defects?.length && (
+        <ul className="mt-1 space-y-0.5">
+          {episode.defects.map((defect, i) => (
+            <li key={i} className="text-[10px] leading-snug">
+              <span className={`font-medium ${SEVERITY_CLASS[defect.severity] ?? ''}`}>{defect.severity}</span>
+              {defect.shot != null && <span className="text-text-muted"> shot {defect.shot}</span>}
+              {defect.at_sec != null && <span className="text-text-muted"> @{formatTime(defect.at_sec)}</span>}
+              <span className="text-text-secondary"> — {defect.description}</span>
+              <span className="text-text-muted"> ({defect.criterion.replace(/_/g, ' ')}; {CAUSE_LABEL[defect.root_cause] ?? defect.root_cause})</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <FixList title="Skill fixes" items={(episode.skill_fixes ?? []).map(fix => `${fix.field}: ${fix.change}`)} />
+      <FixList title="Planner fixes" items={episode.planner_fixes ?? []} />
+      <FixList title="Pipeline fixes" items={episode.pipeline_fixes ?? []} />
+    </div>
+  )
+}
+
 /** Read-only AI quality review of a finished Director project. */
 export function QualityReviewPanel({ pipelineId, canReview }: { pipelineId: string; canReview: boolean }) {
   const [review, setReview] = useState<VideoReview | null>(null)
@@ -137,7 +203,7 @@ export function QualityReviewPanel({ pipelineId, canReview }: { pipelineId: stri
           <button
             onClick={start}
             disabled={running}
-            title="Ask a video-capable LLM (through fal.ai) to judge each shot against its plan. About one cent per shot."
+            title="Ask a video-capable LLM (through fal.ai) to judge each shot against its plan (about one cent per shot), then the whole episode as one scene with a stronger model."
             className="ml-auto flex items-center gap-1 px-2 py-1 text-[10px] bg-bg-tertiary border border-border rounded text-text-secondary hover:text-text-primary disabled:opacity-50"
           >
             {running ? <Loader2 size={10} className="animate-spin" /> : <ScanEye size={10} />}
@@ -166,6 +232,7 @@ export function QualityReviewPanel({ pipelineId, canReview }: { pipelineId: stri
           Rendering extra takes and keeping the best ({review.takes?.length ?? 0} shot(s) done)…
         </p>
       )}
+      {review?.episode && <EpisodeSection episode={review.episode} />}
       {!!review?.shots?.length && (
         <div className="space-y-2">
           {review.shots.map(shot => (
