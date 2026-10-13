@@ -77,6 +77,8 @@ SCENE_CRAFT = """SCENE CRAFT (this is what separates a real scene from generated
   production. Shot fields describe what the camera sees and what people do.
 - Dialogue: at most one line per shot, short enough to say inside keep_sec (about 2.5 words per second), then
   explicit silence (breath, stillness) until the end of the shot; never a line the model must repeat to fill time.
+- Write every field in English, whatever the language of the skill; only spoken_text uses the dialogue
+  language the skill or brief asks for.
 - keep_sec: the [start, end] seconds of the rendered shot the final edit keeps. Reactions and inserts keep
   1.5-3 s, exchanges 2-4 s, establishing shots 3-5 s; any dialogue and the decisive action fall inside it."""
 
@@ -88,7 +90,7 @@ From the brief, the skill rules and the cast, design the scenes. Return ONLY a J
   "props": ["objects that matter and which hand or place holds them"],
   "beats": ["the dramatic beats of this scene in order, each one action and its reaction"]}]
 Use as few scenes as the story needs (usually one or two for a short piece). Time and light only change
-between scenes, never inside one."""
+between scenes, never inside one. Write in English."""
 
 
 def scene_grammar_block(spec: dict) -> str:
