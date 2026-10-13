@@ -40,7 +40,8 @@ log = logging.getLogger("maestro.remote_worker.cache_warmer")
 RUN_NAME = "maestro-cache-warmer"
 FLEET_NAME = "maestro-cache"
 # Enough disk for the largest checkpoints Maestro ships (H3, LTX: ~50 GB each).
-CPU_RESOURCES = {"cpu": "4..", "memory": "8GB..", "disk": "120GB..", "gpu": 0}
+# 8 GB of RAM gets the download killed on a 20 GB single-file checkpoint (Qwen-Image-Edit 2511).
+CPU_RESOURCES = {"cpu": "4..", "memory": "32GB..", "disk": "120GB..", "gpu": 0}
 CPU_IMAGE_TAG = "cpu"
 # Backends with a ``community_cloud`` switch; they rent third-party hosts
 # unless it is explicitly off in the dstack server config.
