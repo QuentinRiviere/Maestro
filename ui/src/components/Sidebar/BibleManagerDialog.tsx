@@ -36,8 +36,11 @@ function useReadsImages(modelType: string): boolean {
   })
 }
 const BIBLE_MODEL_KEY = 'maestro.bibleImageModel'
-// Nano Banana keeps faces natural; Seedream 4 over-sharpens them (halos, waxy skin, odd ears).
-const PREFERRED_BIBLE_MODELS = ['cloud_fal_nano_banana', 'cloud_replicate_nano_banana', 'cloud_fal_seedream_4']
+// Qwen-Image-Edit 2511 keeps faces natural at full sheet size and follows the description closely;
+// Nano Banana is close behind; Seedream 4 over-sharpens faces (halos, waxy skin, odd ears).
+const PREFERRED_BIBLE_MODELS = [
+  'cloud_fal_qwen_image_edit_2511', 'cloud_fal_nano_banana', 'cloud_replicate_nano_banana', 'cloud_fal_seedream_4',
+]
 const readStoredModel = () => { try { return window.localStorage.getItem(BIBLE_MODEL_KEY) } catch { return null } }
 
 /** The image model bibles render with: picked on the Bibles page, apart from the Director's own model. */

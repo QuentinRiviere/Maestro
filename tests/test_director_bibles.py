@@ -553,7 +553,9 @@ class BibleRenderSettingsTests(unittest.TestCase):
                 time.sleep(0.02)
         self.assertEqual(len(sent), 4)
         self.assertTrue(all([os.path.basename(r) for r in p["image_refs"]] == [approved] for p in sent))
-        self.assertIn("exact side profile", sent[2]["prompt"])
+        self.assertIn("strict 90-degree side profile", sent[2]["prompt"])
+        self.assertNotIn("both eyes", sent[2]["prompt"])
+        self.assertIn("face is not visible", sent[3]["prompt"])
         self.assertEqual((sent[0]["resolution"], sent[3]["resolution"]), ("1024x1024", "1088x1920"))
         bible = bibles.get_bible("spring_rain")
         variant = bible["characters"][0]["variants"][0]

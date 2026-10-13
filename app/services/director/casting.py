@@ -199,10 +199,21 @@ _VIEW_SHOTS = {
     "face_front": "a close-up portrait: the head and the top of the shoulders fill a square frame, facing the camera",
     "face_three_quarter": "a close-up portrait: the head and the top of the shoulders fill a square frame, the head "
                           "turned three-quarters toward the left of the frame",
-    "face_profile": "a close-up portrait: the head and the top of the shoulders fill a square frame, in exact side "
-                    "profile looking toward the left of the frame",
-    "back": "a full-body view from behind, head to shoes, in a tall portrait frame: the back of the head, hair, "
-            "garments and shoes as seen from the back",
+    "face_profile": "a close-up portrait in strict 90-degree side profile: the camera sees the side of the head, "
+                    "the nose points to the left edge of the frame, only one eye and one ear are visible; the head "
+                    "and the top of the shoulders fill a square frame",
+    "back": "a full-body view from directly behind (the camera rotated 180 degrees around the person), head to "
+            "shoes, in a tall portrait frame: the person faces away "
+            "from the camera with the head straight, the face is not visible, only the back of the head, hair, "
+            "garments and shoes; the hair keeps the same length and is worn loose the same way, and front-only "
+            "details (pendants, badges, buttons, prints) stay hidden on the front of the body",
+}
+# Asking for two matching eyes turns a profile back toward the camera.
+_VIEW_EYES = {
+    "face_front": "both eyes sharp and matching with natural catchlights",
+    "face_three_quarter": "both eyes sharp and matching with natural catchlights",
+    "face_profile": "the visible eye sharp with a natural catchlight",
+    "back": "",
 }
 VIEW_RESOLUTIONS = {"face_front": "1024x1024", "face_three_quarter": "1024x1024", "face_profile": "1024x1024",
                     "back": SHEET_RESOLUTION}
@@ -215,7 +226,7 @@ def view_prompt(view: str, element: dict, variant: dict, style: str = "", *, ref
     return (
         f"The exact person of {label} 1, now in {_VIEW_SHOTS[view]}. Keep the same face, eyes, age, skin, "
         "hairstyle and hair color, build and wardrobe; plain light-grey studio background, even soft lighting, "
-        "neutral expression, sharp focus, both eyes sharp and matching with natural catchlights where visible, "
+        f"neutral expression, sharp focus, {_VIEW_EYES[view] + ', ' if _VIEW_EYES[view] else ''}"
         f"no text, no logo. Person: {element.get('description', '')}"
         + (f" Wearing: {wardrobe}." if wardrobe else "")
         + realism_clause("character", style)
