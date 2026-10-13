@@ -482,6 +482,13 @@ def _director_review_settings() -> tuple[bool, str]:
             str(services.get("director_video_review_model") or DEFAULT_MODEL))
 
 
+def _director_episode_review_model() -> str:
+    from services.director.video_judge import DEFAULT_EPISODE_MODEL
+
+    services = wgp.server_config.get("services", {})
+    return str(services.get("director_episode_review_model") or DEFAULT_EPISODE_MODEL)
+
+
 def _director_takes_per_shot() -> int:
     """Takes rendered per shot (1 = no extra take), used with auto review."""
     try:
@@ -543,7 +550,9 @@ def _judge_publisher(label: str):
 
 def _run_director_review(pid: str, base: str, wait_for_save: bool, takes: int = 1) -> None:
     from services import cloud_image
-    from services.director.video_judge import compare_takes, review_clips, save_review, select_takes
+    from services.director.video_judge import (
+        compare_takes, episode_context, review_clips, review_episode, save_review, select_takes,
+    )
     from services.director_pipeline import (
         _update_saved_pipeline, load_pipeline_state, rejoin_clips, rerun_clip_video,
     )
@@ -603,6 +612,20 @@ def _run_director_review(pid: str, base: str, wait_for_save: bool, takes: int = 
             compare_cost = sum(float(c.get("cost_usd") or 0) for r in take_results for c in r.get("comparisons") or [])
             review["cost_usd"] = round(float(review.get("cost_usd") or 0) + compare_cost, 4)
         save_review(state_dir, pid, review)
+        # Then the whole episode as one scene, with a stronger model.
+        episode_model = _director_episode_review_model()
+        print(f"[Director review] {pid}: judging the episode with {episode_model}")
+        review["episode"] = {"status": "running", "model": episode_model}
+        save_review(state_dir, pid, review)
+        review["episode"] = review_episode(
+            state.get("clips") or [], state.get("output_files") or [], state_dir,
+            context=episode_context(state), fal_key=fal_key, publish=publish, model=episode_model,
+            style_contract=contract)
+        review["cost_usd"] = round(float(review.get("cost_usd") or 0)
+                                   + float(review["episode"].get("cost_usd") or 0), 4)
+        save_review(state_dir, pid, review)
+        print(f"[Director review] {pid}: episode {review['episode'].get('status')} "
+              f"score={review['episode'].get('score')} cost=${review['episode'].get('cost_usd')}")
         print(f"[Director review] {pid}: {review.get('status')} score={review.get('score')} "
               f"cost=${review.get('cost_usd')}")
     except Exception as error:
@@ -8089,6 +8112,7 @@ def get_services_config():
         "lora_download_storage": services.get("lora_download_storage", "local"),
         "director_video_review": bool(services.get("director_video_review", False)),
         "director_video_review_model": services.get("director_video_review_model") or "",
+        "director_episode_review_model": services.get("director_episode_review_model") or "",
         "director_takes_per_shot": _director_takes_per_shot(),
         "r2_configured": _lora_r2_store() is not None,
         # Director v2 (layered architecture: structured shot planning,
@@ -8175,6 +8199,7 @@ async def update_services_config(request: Request):
         "google_api_key", "llm_remote_api_key", "openai_api_key", "openrouter_api_key",
         "anthropic_api_key", "fal_api_key", "replicate_api_key", "lora_download_storage",
         "director_video_review", "director_video_review_model", "director_takes_per_shot",
+        "director_episode_review_model",
         "use_director_v2", "nsfw_mode", "nsfw_accepted_at", "director_prompt_polish",
         "civitai_api_key", "voice_reference_enabled", "ltx_progressive_pipeline",
         "show_experimental", "auto_performance", "storage_allow_linked_removal",
@@ -8196,8 +8221,9 @@ async def update_services_config(request: Request):
             raise HTTPException(status_code=400, detail="director_takes_per_shot must be 1, 2 or 3.")
         if key == "director_video_review" and type(value) is not bool:
             raise HTTPException(status_code=400, detail="director_video_review must be true or false.")
-        if key == "director_video_review_model" and (not isinstance(value, str) or len(value) > 200):
-            raise HTTPException(status_code=400, detail="director_video_review_model must be a model ID.")
+        if key in ("director_video_review_model", "director_episode_review_model") and (
+                not isinstance(value, str) or len(value) > 200):
+            raise HTTPException(status_code=400, detail=f"{key} must be a model ID.")
         if key == "lora_download_storage":
             from services.lora_r2 import STORAGE_CHOICES
             if value not in STORAGE_CHOICES:
@@ -10954,7 +10980,7 @@ def director_skill_delete(skill_id: str):
 async def director_skill_test(request: Request):
     """Plan a sample brief with an unsaved definition; nothing is rendered."""
     from services import llm_service
-    from services.director.custom_skills import SkillError, validate_spec
+    from services.director.custom_skills import SkillError, lint_spec, validate_spec
     from services.director.planners.custom import CustomSkillPlanner
 
     body = await request.json()
@@ -10975,9 +11001,13 @@ async def director_skill_test(request: Request):
         raise HTTPException(status_code=502, detail=str(error)) from error
     return {"shots": [{"duration_sec": shot.duration_sec, "goal": shot.scene_goal, "type": shot.scene_type,
                        "actions": shot.action_beats, "camera": shot.camera_plan.to_dict(),
-                       "dialogue": [d.to_dict() for d in shot.dialogue_beats or []]}
+                       "dialogue": [d.to_dict() for d in shot.dialogue_beats or []],
+                       "scene": shot.metadata.get("continuity_group"), "keep_sec": shot.metadata.get("keep_sec"),
+                       "opening": shot.spatial_setup, "closing": shot.metadata.get("closing_blocking")}
                       for shot in plan.shots],
-            "total_duration_sec": plan.total_duration_sec}
+            "scenes": plan.continuity_notes[1:],
+            "total_duration_sec": plan.total_duration_sec,
+            "warnings": lint_spec(spec)}
 
 
 @api.post("/api/v1/director/pipeline/{pid}/review")

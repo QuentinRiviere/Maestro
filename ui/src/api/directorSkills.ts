@@ -30,6 +30,23 @@ export interface SkillRules {
   dont: string[]
 }
 
+/** Film grammar of the genre (optional; skills saved before it existed have none). */
+export interface SceneGrammar {
+  coverage: string
+  cutting_rhythm: string
+  camera_default: string
+  blocking: string
+  lighting_continuity: string
+  acting: string
+}
+
+/** Advisory lint result returned with drafts, saves and loads (never persisted). */
+export interface SkillWarning {
+  code: 'contradiction' | 'unrenderable' | 'rhythm_mismatch' | 'no_scene_grammar' | string
+  fields: string[]
+  message: string
+}
+
 export interface SkillSpec {
   id?: string
   name: string
@@ -41,11 +58,13 @@ export interface SkillSpec {
   max_shots: number
   style_hint: string
   rules: SkillRules
+  scene_grammar?: SceneGrammar
   options: SkillOption[]
   references: Array<{ kind: string; name: string; notes: string }>
   based_on?: string | null
   version?: number
   builtin?: boolean
+  warnings?: SkillWarning[]
 }
 
 export interface ReferenceAnalysis {

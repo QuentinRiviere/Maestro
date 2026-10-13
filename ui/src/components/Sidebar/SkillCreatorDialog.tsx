@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
-import { Loader2, Paperclip, Trash2, X } from 'lucide-react'
+import { AlertTriangle, Loader2, Paperclip, Trash2, X } from 'lucide-react'
 import { useStore } from '../../stores/useStore'
 import { uploadImage } from '../../api/client'
 import {
   deleteDirectorSkill, draftDirectorSkill, fetchDirectorSkill, saveDirectorSkill, testDirectorSkill,
-  type ReferenceAnalysis, type SkillOption, type SkillSpec,
+  type ReferenceAnalysis, type SceneGrammar, type SkillOption, type SkillSpec, type SkillWarning,
 } from '../../api/directorSkills'
 import { SKILL_ICONS } from '../../lib/skillIcons'
 
@@ -12,6 +12,17 @@ const RULES: Array<[keyof SkillSpec['rules'], string]> = [
   ['goal', 'Purpose'], ['structure', 'Structure'], ['pacing', 'Pacing'],
   ['camera', 'Camera'], ['dialogue', 'Dialogue'], ['sound', 'Sound'],
 ]
+const GRAMMAR: Array<[keyof SceneGrammar, string, string]> = [
+  ['coverage', 'Coverage', 'Master first, then shot-reverse-shot singles, inserts, reaction close-ups…'],
+  ['cutting_rhythm', 'Cutting rhythm', 'Reactions 1.5-3 s, dialogue 2-4 s, establishing 3-5 s…'],
+  ['camera_default', 'Default camera', 'Locked off; slow push-in only on emotional beats…'],
+  ['blocking', 'Blocking', 'Keep screen direction and the 180-degree line; eyelines match…'],
+  ['lighting_continuity', 'Lighting continuity', 'One time of day and light per scene unless the story moves…'],
+  ['acting', 'Acting', 'Restraint, micro-expressions, physical intention instead of filler motion…'],
+]
+const EMPTY_GRAMMAR: SceneGrammar = {
+  coverage: '', cutting_rhythm: '', camera_default: '', blocking: '', lighting_continuity: '', acting: '',
+}
 const input = 'w-full bg-bg-tertiary border border-border rounded-lg px-2.5 py-1.5 text-xs text-text-primary focus:outline-none focus:border-accent-blue'
 const label = 'text-[10px] text-text-muted uppercase tracking-wider block mb-1'
 
@@ -42,6 +53,25 @@ function OptionsEditor({ options, onChange }: { options: SkillOption[]; onChange
         <button onClick={() => onChange([...options, { key: '', label: '', values: [], default: '' }])}
           className="text-[10px] text-accent-blue hover:underline">+ Add an option</button>
       )}
+    </div>
+  )
+}
+
+/** Advisory lint results: contradictions, effects the video model cannot render, rhythm mismatches. */
+function SkillWarnings({ warnings }: { warnings: SkillWarning[] }) {
+  if (!warnings.length) return null
+  return (
+    <div className="flex items-start gap-2 text-[10px] text-indicator-warning bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2">
+      <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+      <div>
+        <p className="font-medium">
+          {warnings.length === 1 ? '1 thing to check' : `${warnings.length} things to check`}
+          <span className="font-normal text-text-muted"> (as of the last draft or save)</span>
+        </p>
+        <ul className="text-text-secondary mt-0.5 space-y-0.5">
+          {warnings.map((w, i) => <li key={i}>{w.message}</li>)}
+        </ul>
+      </div>
     </div>
   )
 }
@@ -105,7 +135,12 @@ export function SkillCreatorDialog({ editId, onClose, onSaved }: {
   const patch = (changes: Partial<SkillSpec>) => setSpec(current => (current ? { ...current, ...changes } : current))
   const patchRules = (changes: Partial<SkillSpec['rules']>) =>
     setSpec(current => (current ? { ...current, rules: { ...current.rules, ...changes } } : current))
+  const patchGrammar = (changes: Partial<SceneGrammar>) =>
+    setSpec(current => (current ? { ...current, scene_grammar: { ...EMPTY_GRAMMAR, ...current.scene_grammar, ...changes } } : current))
   const customSkills = skills.filter(s => !s.builtin)
+  const cleaned = (current: SkillSpec): SkillSpec => ({
+    ...current, rules: { ...current.rules, do: current.rules.do.filter(Boolean), dont: current.rules.dont.filter(Boolean) },
+  })
 
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true"
@@ -226,6 +261,14 @@ export function SkillCreatorDialog({ editId, onClose, onSaved }: {
                 <textarea className={`${input} min-h-[60px]`} value={spec.rules.dont.join('\n')}
                   onChange={e => patchRules({ dont: e.target.value.split('\n') })} /></label>
             </div>
+            <div className="border-t border-border pt-2 space-y-2">
+              <span className={label}>Scene grammar (how this genre covers and cuts a scene)</span>
+              {GRAMMAR.map(([key, title, hint]) => (
+                <label key={key} className="block"><span className={label}>{title}</span>
+                  <textarea className={`${input} min-h-[40px]`} value={spec.scene_grammar?.[key] ?? ''} placeholder={hint}
+                    maxLength={400} onChange={e => patchGrammar({ [key]: e.target.value })} /></label>
+              ))}
+            </div>
             <div><span className={label}>Options offered to users</span>
               <OptionsEditor options={spec.options} onChange={options => patch({ options })} /></div>
 
@@ -234,7 +277,7 @@ export function SkillCreatorDialog({ editId, onClose, onSaved }: {
               <div className="flex gap-1.5">
                 <input className={input} value={brief} onChange={e => setBrief(e.target.value)} placeholder="A sample brief" />
                 <button disabled={!brief.trim() || !!busy} onClick={() => run('test', async () => {
-                  setTestResult(await testDirectorSkill({ ...spec, rules: { ...spec.rules, do: spec.rules.do.filter(Boolean), dont: spec.rules.dont.filter(Boolean) } }, brief, {}))
+                  setTestResult(await testDirectorSkill(cleaned(spec), brief, {}))
                 })} className="px-2.5 text-xs rounded-lg border border-border text-text-secondary disabled:opacity-50 flex items-center gap-1">
                   {busy === 'test' && <Loader2 size={11} className="animate-spin" />}Test
                 </button>
@@ -248,10 +291,16 @@ export function SkillCreatorDialog({ editId, onClose, onSaved }: {
               )}
             </div>
 
+            <SkillWarnings warnings={spec.warnings ?? []} />
+
             <div className="flex items-center gap-2 pt-1">
               <button disabled={!!busy || !spec.name.trim()} onClick={() => run('save', async () => {
-                await saveDirectorSkill({ ...spec, rules: { ...spec.rules, do: spec.rules.do.filter(Boolean), dont: spec.rules.dont.filter(Boolean) } }, Boolean(editing))
-                onSaved(); onClose()
+                const saved = await saveDirectorSkill(cleaned(spec), Boolean(editing))
+                onSaved()
+                if (!saved.warnings?.some(w => w.code !== 'no_scene_grammar')) { onClose(); return }
+                // Saved, but the lint found real problems: stay open on the saved skill so they can be fixed.
+                setSpec(saved)
+                if (saved.id) setMode(`edit:${saved.id}`)
               })} className="px-3 py-1.5 text-xs rounded-lg bg-accent-blue text-white disabled:opacity-50 flex items-center gap-1.5">
                 {busy === 'save' && <Loader2 size={12} className="animate-spin" />}{editing ? 'Save changes' : 'Create skill'}
               </button>

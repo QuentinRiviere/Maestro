@@ -4,7 +4,10 @@ References (images, videos, audio) are analysed by a video-capable LLM through
 fal's ``openrouter/router/video`` (which only accepts video, so images become
 short stills and audio rides on a black frame). The analyses and the user's
 description, optionally starting from an existing skill, are turned into a
-skill definition that ``custom_skills.validate_spec`` then bounds.
+skill definition that ``custom_skills.validate_spec`` then bounds. The draft is
+linted (``custom_skills.lint_spec``); when the lint finds problems the LLM gets
+one repair pass, and the remaining warnings ride on the returned spec under
+``"warnings"`` (never persisted: ``validate_spec`` drops the key).
 """
 from __future__ import annotations
 
@@ -16,7 +19,7 @@ import tempfile
 import time
 from typing import Any, Callable
 
-from .custom_skills import ICONS, RULE_FIELDS, WORKFLOWS, validate_spec
+from .custom_skills import ICONS, RULE_FIELDS, SCENE_GRAMMAR_FIELDS, WORKFLOWS, lint_spec, validate_spec
 from .video_judge import DEFAULT_MODEL, JudgeError, _ask
 
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
@@ -27,15 +30,29 @@ MAX_REFERENCES = 8
 
 ANALYSIS_PROMPTS = {
     "video": ("Analyse this reference video as a director who wants to reproduce its CRAFT, not its content. "
-              "Describe: medium and visual style; structure and hook; average shot length and cut rhythm; "
-              "framing and camera movement; transitions; lighting and palette; motion language; on-screen text; "
-              "sound design, music and voice. Under 220 words, as reusable rules."),
+              "Describe: medium and visual style; structure and hook; scene coverage (establishing/master, "
+              "shot-reverse-shot, inserts, reaction close-ups); shot length per beat type (reactions, dialogue, "
+              "establishing) and cut rhythm; when the camera is static and what motivates its moves; blocking, "
+              "screen direction and eyelines; lighting and how it stays continuous within a scene; acting style; "
+              "transitions; palette; on-screen text; sound design, music and voice. Under 260 words, as reusable "
+              "rules."),
     "image": ("Analyse this reference image (shown as a still video) as an art director. Describe the medium, "
               "rendering or photographic style, palette, lighting, composition, lens and texture. Under 150 words, "
               "as reusable style rules."),
     "audio": ("Only the soundtrack matters (the picture is black). Analyse it as a sound designer: genre, tempo, "
               "energy curve, structure, voice style and delivery, sound effects, mixing. Under 150 words, as "
               "reusable rules for the pacing and sound of a video."),
+}
+
+_GRAMMAR_HINTS = {
+    "coverage": "how a scene is covered in this genre: establishing/master, shot-reverse-shot, inserts, "
+                "reaction close-ups, and in which order",
+    "cutting_rhythm": "typical shot length per beat type with seconds, e.g. reactions 1.5-3 s, dialogue 2-4 s, "
+                      "establishing 3-5 s (within shot_duration)",
+    "camera_default": "the default camera (e.g. static or slow push-in) and exactly when movement is allowed",
+    "blocking": "screen direction, 180-degree rule, eyelines, who stands where and how they move",
+    "lighting_continuity": "one time of day and one light per scene unless the story moves; what the light is",
+    "acting": "performance style: restraint, micro-expressions, physical intentions instead of filler motion",
 }
 
 DRAFT_SYSTEM = f"""You design a DIRECTOR SKILL: reusable writing rules that turn any brief into a shot plan for
@@ -48,9 +65,27 @@ Return ONLY JSON:
  "default_duration": seconds, "shot_duration": [min_seconds, max_seconds], "max_shots": number,
  "style_hint": "default look if the brief gives none, or empty",
  "rules": {{{", ".join(f'"{f}": "..."' for f in RULE_FIELDS)}, "do": ["..."], "dont": ["..."]}},
+ "scene_grammar": {{{", ".join(f'"{f}": "..."' for f in SCENE_GRAMMAR_FIELDS)}}},
  "options": [{{"key": "snake_case", "label": "Label", "values": ["..."], "default": "..."}}]}}
-Rules are concrete and actionable for a shot planner (what each shot must contain, how scenes progress,
-how long shots last, how the camera behaves). At most 4 options, only when users genuinely need to choose."""
+scene_grammar is the film grammar of the genre, from your knowledge of how it is really shot and edited (and
+from the reference media when given); each entry is one or two sentences, under 400 characters:
+{chr(10).join(f"- {f}: {hint}" for f, hint in _GRAMMAR_HINTS.items())}
+Write every rule as concrete filmmaking direction a crew could execute (shot sizes, lens feel, what the camera
+does and why, how long shots hold, where actors look, what the light is), never aesthetic adjectives
+("cinematic", "emotional", "dynamic", "beautiful"). Camera moves must be motivated by a story beat, never
+decorative. Each shot is generated alone by an image-to-video model: never ask for freeze frames, slow motion,
+speed ramps, split screens or on-screen text; describe the camera and the performance instead.
+Never let goal, structure, pacing or do ask for something that dont forbids; cutting_rhythm stays within
+shot_duration. At most 4 options, only when users genuinely need to choose."""
+
+REPAIR_SYSTEM = """You fix a DIRECTOR SKILL definition. Keep its intent, language and every field that has no
+problem; resolve each listed problem (remove contradictions by keeping the rule that fits the skill's intent,
+replace unrenderable effects with camera and performance direction, align cutting_rhythm with shot_duration,
+fill an empty scene_grammar from the genre's real film grammar). Rules are concrete filmmaking direction, never
+aesthetic adjectives. Return ONLY the full corrected JSON definition, same shape as the input."""
+
+_EDITABLE_KEYS = ("name", "description", "workflow", "default_duration", "shot_duration", "max_shots", "style_hint",
+                  "rules", "scene_grammar", "options")
 
 
 class SkillCreatorError(RuntimeError):
@@ -142,24 +177,58 @@ def draft_skill(
     if base:
         role = "Skill to EDIT (keep its intent; apply the description as changes)" if editing else \
             "Base skill for inspiration (adapt freely)"
-        parts.append(f"{role}:\n" + json.dumps({k: base.get(k) for k in (
-            "name", "description", "workflow", "default_duration", "shot_duration", "max_shots", "style_hint",
-            "rules", "options")}, ensure_ascii=False, indent=1))
+        parts.append(f"{role}:\n" + json.dumps({k: base.get(k) for k in _EDITABLE_KEYS},
+                                                ensure_ascii=False, indent=1))
     notes = [a for a in analyses or [] if a.get("notes")]
     if notes:
         parts.append("Craft patterns extracted from the reference media:\n"
                      + "\n".join(f"- [{a['kind']}] {a['name']}: {a['notes']}" for a in notes))
     prompt = "\n\n".join(parts)
+    skill_id = base.get("id") if editing and base else None
+
+    def finish(raw: dict) -> dict:
+        raw["references"] = [{"kind": a["kind"], "name": a["name"], "notes": a["notes"]} for a in notes]
+        if base and not editing:
+            raw["based_on"] = base.get("id")
+        return validate_spec(raw, skill_id=skill_id)
+
     last_error: Exception | None = None
+    spec: dict | None = None
     for _ in range(2):
-        text = generate(prompt=prompt, system_prompt=DRAFT_SYSTEM, max_new_tokens=2500, temperature=0.4,
+        text = generate(prompt=prompt, system_prompt=DRAFT_SYSTEM, max_new_tokens=3000, temperature=0.4,
                         enable_thinking=False)
         try:
-            raw = _json_object(text)
-            raw["references"] = [{"kind": a["kind"], "name": a["name"], "notes": a["notes"]} for a in notes]
-            if base and not editing:
-                raw["based_on"] = base.get("id")
-            return validate_spec(raw, skill_id=base.get("id") if editing and base else None)
+            spec = finish(_json_object(text))
+            break
         except (SkillCreatorError, ValueError) as error:
             last_error = error
-    raise SkillCreatorError(str(last_error or "No skill drafted"))
+    if spec is None:
+        raise SkillCreatorError(str(last_error or "No skill drafted"))
+    warnings = lint_spec(spec)
+    if warnings:
+        spec, warnings = repair_skill(spec, warnings, generate=generate, finish=finish)
+    return {**spec, "warnings": warnings}
+
+
+def repair_skill(
+    spec: dict,
+    warnings: list[dict],
+    *,
+    generate: Callable[..., str],
+    finish: Callable[[dict], dict] | None = None,
+) -> tuple[dict, list[dict]]:
+    """One LLM pass that fixes linted problems; keeps the original when it fails or is not better."""
+    prompt = ("Skill definition:\n" + json.dumps({k: spec.get(k) for k in ("icon", *_EDITABLE_KEYS)},
+                                                 ensure_ascii=False, indent=1)
+              + "\n\nProblems to fix:\n" + "\n".join(f"- {w['message']}" for w in warnings))
+    try:
+        text = generate(prompt=prompt, system_prompt=REPAIR_SYSTEM, max_new_tokens=3000, temperature=0.2,
+                        enable_thinking=False)
+        raw = _json_object(text)
+        for key in ("references", "based_on"):
+            raw.setdefault(key, spec.get(key))
+        repaired = (finish or (lambda r: validate_spec(r, skill_id=spec.get("id"))))(raw)
+    except Exception:  # noqa: BLE001 - the repair is best effort; the linted draft is still usable
+        return spec, warnings
+    remaining = lint_spec(repaired)
+    return (repaired, remaining) if len(remaining) <= len(warnings) else (spec, warnings)

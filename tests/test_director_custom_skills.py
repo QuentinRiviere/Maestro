@@ -44,6 +44,74 @@ class SpecTests(unittest.TestCase):
                 custom_skills.validate_spec(raw)
 
 
+GRAMMAR = {"coverage": "Master, then shot-reverse-shot singles, reaction close-ups.",
+           "cutting_rhythm": "Reactions 2-3 s, establishing 3-4 s.", "camera_default": "Locked off; push-in on reveals.",
+           "blocking": "Keep the 180-degree line.", "lighting_continuity": "One light per scene.",
+           "acting": "Restraint, micro-expressions."}
+
+
+class SceneGrammarTests(unittest.TestCase):
+    def test_absent_scene_grammar_is_backward_compatible(self):
+        spec = custom_skills.validate_spec(SPEC)
+        self.assertEqual(spec["scene_grammar"], {field: "" for field in custom_skills.SCENE_GRAMMAR_FIELDS})
+        self.assertEqual(custom_skills.validate_spec({**SPEC, "scene_grammar": "junk"})["scene_grammar"],
+                         spec["scene_grammar"])
+
+    def test_scene_grammar_is_bounded_and_known_fields_only(self):
+        spec = custom_skills.validate_spec({**SPEC, "scene_grammar": {
+            "coverage": "x" * 2000, "acting": "  Restraint  ", "evil": "code()", "blocking": None}})
+        grammar = spec["scene_grammar"]
+        self.assertEqual(set(grammar), set(custom_skills.SCENE_GRAMMAR_FIELDS))
+        self.assertEqual(len(grammar["coverage"]), custom_skills.SCENE_GRAMMAR_LIMIT)
+        self.assertEqual((grammar["acting"], grammar["blocking"]), ("Restraint", ""))
+
+
+class LintTests(unittest.TestCase):
+    def lint(self, rules, grammar=GRAMMAR, shot=(2, 4), **extra):
+        return custom_skills.lint_spec(custom_skills.validate_spec(
+            {"name": "K", "shot_duration": list(shot), "rules": rules, "scene_grammar": grammar, **extra}))
+
+    def codes(self, warnings):
+        return sorted(w["code"] for w in warnings)
+
+    def test_clean_skill_has_no_warnings(self):
+        self.assertEqual(self.lint({"goal": "End on a held close-up.", "dont": ["No freeze frames", "No crowds"]}), [])
+
+    def test_kdrama_freeze_frame_contradiction_english(self):
+        warnings = self.lint({"goal": "Culminate on a freeze frame.", "dont": ["Freeze frames"]})
+        self.assertEqual(self.codes(warnings), ["contradiction", "unrenderable"])
+        self.assertEqual(warnings[0]["fields"], ["rules.goal", "rules.dont[0]"])
+
+    def test_french_contradictions_and_negations(self):
+        warnings = self.lint({"structure": "Le climax se joue au ralenti dans la foule.",
+                              "pacing": "Pas d'arrêt sur image, jamais.",
+                              "dont": ["Pas de ralenti", "Éviter les foules", "Pas d'arrêt sur image"]})
+        contradictions = [w for w in warnings if w["code"] == "contradiction"]
+        self.assertEqual(len(contradictions), 2)  # slow motion and crowds; the negated freeze frame is fine
+        self.assertTrue(any("slow motion" in w["message"] for w in contradictions))
+        self.assertTrue(any("crowds" in w["message"] for w in contradictions))
+        self.assertFalse(any("freeze frame" in w["message"] for w in warnings))
+
+    def test_unrenderable_techniques_in_any_positive_field(self):
+        warnings = self.lint({"goal": "Tension.", "do": ["Split screen for phone calls", "Texte à l'écran pour l'heure"],
+                              "camera": "Speed ramps on every punch."},
+                             style_hint="slow-mo glow")
+        messages = " ".join(w["message"] for w in warnings if w["code"] == "unrenderable")
+        for label in ("split screen", "on-screen text", "speed ramp", "slow motion"):
+            self.assertIn(label, messages)
+
+    def test_rhythm_mismatch(self):
+        rhythm = {**GRAMMAR, "cutting_rhythm": "Réactions 1,5 à 3 s, plans d'ensemble 3-5 secondes."}
+        warnings = self.lint({"goal": "x"}, grammar=rhythm, shot=(3, 8))
+        self.assertEqual(self.codes(warnings), ["rhythm_mismatch"])
+        self.assertIn("1.5-5 s", warnings[0]["message"])
+        self.assertEqual(self.lint({"goal": "x"}, grammar=rhythm, shot=(2, 5)), [])
+
+    def test_missing_scene_grammar_is_flagged(self):
+        self.assertEqual(self.codes(self.lint({"goal": "x"}, grammar=None)), ["no_scene_grammar"])
+        self.assertEqual(custom_skills.lint_spec(None), [])
+
+
 class StorageTests(unittest.TestCase):
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp())
@@ -62,6 +130,9 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(ids[:3], ["music_video", "short_film", "viral_video"])
         self.assertIn("custom:recipe_reel", ids)
         self.assertEqual(custom_skills.get_custom("custom:recipe_reel")["description"], "v2")
+        self.assertIn("warnings", edited)
+        self.assertNotIn("warnings", json.loads((self.dir / "recipe_reel.json").read_text(encoding="utf-8")))
+        self.assertEqual(custom_skills.inspiration("recipe_reel")["warnings"][0]["code"], "no_scene_grammar")
         self.assertTrue(custom_skills.delete_custom("recipe_reel"))
         self.assertIsNone(custom_skills.get_custom("recipe_reel"))
         with self.assertRaises(custom_skills.SkillError):
@@ -139,7 +210,7 @@ class PlannerTests(unittest.TestCase):
 
 class CreatorTests(unittest.TestCase):
     def test_draft_validates_and_keeps_reference_notes(self):
-        answers = iter(["not json", json.dumps(SPEC)])
+        answers = iter(["not json", json.dumps({**SPEC, "scene_grammar": GRAMMAR})])
         calls = []
 
         def generate(**kwargs):
@@ -154,6 +225,46 @@ class CreatorTests(unittest.TestCase):
         self.assertIn("Base skill for inspiration", calls[0]["prompt"])
         self.assertEqual(spec["references"], [{"kind": "video", "name": "a.mp4", "notes": "Whip pans between steps."}])
         self.assertEqual(spec["based_on"], "viral_video")
+
+    def test_draft_prompt_asks_for_scene_grammar_and_clean_draft_skips_repair(self):
+        calls = []
+
+        def generate(**kwargs):
+            calls.append(kwargs)
+            return json.dumps({**SPEC, "scene_grammar": GRAMMAR})
+        spec = skill_creator.draft_skill("K-drama episodes", generate=generate)
+        self.assertEqual(len(calls), 1)
+        self.assertIn("scene_grammar", calls[0]["system_prompt"])
+        self.assertIn("never aesthetic adjectives", calls[0]["system_prompt"])
+        self.assertEqual(spec["scene_grammar"]["coverage"], GRAMMAR["coverage"])
+        self.assertEqual(spec["warnings"], [])
+
+    def test_contradictory_draft_gets_one_repair_pass(self):
+        broken = {**SPEC, "icon": "film", "scene_grammar": GRAMMAR,
+                  "rules": {"goal": "Culminer sur un arrêt sur image.", "dont": ["Pas d'arrêt sur image"]}}
+        fixed = {**broken, "rules": {"goal": "Culminer sur un gros plan tenu.", "dont": ["Pas d'arrêt sur image"]}}
+        answers = iter([json.dumps(broken), json.dumps(fixed)])
+        calls = []
+
+        def generate(**kwargs):
+            calls.append(kwargs)
+            return next(answers)
+        spec = skill_creator.draft_skill("K-drama", generate=generate,
+                                         analyses=[{"kind": "video", "name": "a.mp4", "notes": "Static two-shots."}])
+        self.assertEqual(len(calls), 2)
+        self.assertIs(calls[1]["system_prompt"], skill_creator.REPAIR_SYSTEM)
+        self.assertIn("forbids it", calls[1]["prompt"])
+        self.assertEqual(spec["rules"]["goal"], "Culminer sur un gros plan tenu.")
+        self.assertEqual((spec["warnings"], spec["icon"]), ([], "film"))
+        self.assertEqual(spec["references"][0]["notes"], "Static two-shots.")
+
+    def test_failed_repair_keeps_the_draft_and_its_warnings(self):
+        broken = {**SPEC, "scene_grammar": GRAMMAR, "rules": {"goal": "End on a freeze frame.", "dont": ["Freeze frames"]}}
+        answers = iter([json.dumps(broken), "sorry, no JSON"])
+        spec = skill_creator.draft_skill("x", generate=lambda **k: next(answers))
+        self.assertEqual(spec["rules"]["goal"], "End on a freeze frame.")
+        self.assertEqual(sorted(w["code"] for w in spec["warnings"]), ["contradiction", "unrenderable"])
+        self.assertNotIn("warnings", custom_skills.validate_spec(spec))
 
     def test_editing_keeps_the_skill_id(self):
         spec = skill_creator.draft_skill("shorter shots", generate=lambda **k: json.dumps({**SPEC, "name": "Other"}),
