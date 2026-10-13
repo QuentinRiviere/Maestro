@@ -4840,6 +4840,8 @@ SCENE_CONTINUITY_PREFIX = (
 # (Qwen-Image-Edit is trained on "Picture 1", Flux and Seedream on "image 1").
 _IMAGE_REF_PROFILES = (
     ("qwen_image", {"max_refs": 3, "label": "Picture"}),
+    ("cloud_fal_qwen_image", {"max_refs": 3, "label": "Picture"}),
+    ("cloud_fal_flux_2", {"max_refs": 4, "label": "image"}),
     ("cloud_fal_seedream", {"max_refs": 4, "label": "image"}),
     ("cloud_replicate_seedream", {"max_refs": 4, "label": "image"}),
     ("cloud_fal_nano_banana", {"max_refs": 4, "label": "image"}),

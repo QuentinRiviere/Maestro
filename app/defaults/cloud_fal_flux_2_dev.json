@@ -1,0 +1,35 @@
+{
+    "model": {
+        "name": "FLUX.2 Dev (fal.ai)",
+        "architecture": "cloud_image",
+        "description": "Open-weight FLUX.2 [dev] on fal.ai: text-to-image and editing with several reference images, custom size.",
+        "cloud": {
+            "provider": "fal",
+            "endpoint": "fal-ai/flux-2",
+            "edit_endpoint": "fal-ai/flux-2/edit",
+            "image_field": "image_urls",
+            "image_list": true,
+            "max_images_in": 4,
+            "size": "image_size",
+            "count_field": "num_images",
+            "max_count": 4,
+            "seed_field": "seed",
+            "steps_field": "num_inference_steps",
+            "guidance_field": "guidance_scale",
+            "defaults": {
+                "num_inference_steps": 28,
+                "guidance_scale": 2.5
+            },
+            "ranges": {
+                "guidance_scale": [0, 20],
+                "num_inference_steps": [4, 50]
+            },
+            "input": {
+                "output_format": "png",
+                "enable_safety_checker": false
+            }
+        }
+    },
+    "resolution": "1024x1024",
+    "batch_size": 1
+}

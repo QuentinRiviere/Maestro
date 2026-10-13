@@ -326,7 +326,7 @@ class LoraTests(unittest.TestCase):
 class ModelDefinitionTests(unittest.TestCase):
     def test_every_cloud_definition_is_valid(self):
         names = [n for n in os.listdir(os.path.join(_APP_DIR, "defaults")) if n.startswith("cloud_")]
-        self.assertEqual(len(names), 10)
+        self.assertEqual(len(names), 13)
         for name in names:
             spec = load_spec(name[:-5])
             self.assertIsNotNone(cloud_image.cloud_spec({"cloud": spec}), name)

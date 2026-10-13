@@ -1,0 +1,35 @@
+{
+    "model": {
+        "name": "Qwen-Image-Edit 2511 (fal.ai)",
+        "architecture": "cloud_image",
+        "description": "Open-weight Qwen-Image 2512 (text-to-image) and Qwen-Image-Edit 2511 (editing with up to 3 reference images) on fal.ai, custom size.",
+        "cloud": {
+            "provider": "fal",
+            "endpoint": "fal-ai/qwen-image-2512",
+            "edit_endpoint": "fal-ai/qwen-image-edit-2511",
+            "image_field": "image_urls",
+            "image_list": true,
+            "max_images_in": 3,
+            "size": "image_size",
+            "count_field": "num_images",
+            "max_count": 4,
+            "seed_field": "seed",
+            "steps_field": "num_inference_steps",
+            "guidance_field": "guidance_scale",
+            "defaults": {
+                "num_inference_steps": 28,
+                "guidance_scale": 4.5
+            },
+            "ranges": {
+                "guidance_scale": [1, 20],
+                "num_inference_steps": [1, 50]
+            },
+            "input": {
+                "output_format": "png",
+                "enable_safety_checker": false
+            }
+        }
+    },
+    "resolution": "1024x1024",
+    "batch_size": 1
+}

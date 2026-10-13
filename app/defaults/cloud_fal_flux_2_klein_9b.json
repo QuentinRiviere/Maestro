@@ -1,0 +1,32 @@
+{
+    "model": {
+        "name": "FLUX.2 Klein 9B (fal.ai)",
+        "architecture": "cloud_image",
+        "description": "Open-weight FLUX.2 [klein] 9B on fal.ai: fast distilled text-to-image and editing with reference images, custom size.",
+        "cloud": {
+            "provider": "fal",
+            "endpoint": "fal-ai/flux-2/klein/9b",
+            "edit_endpoint": "fal-ai/flux-2/klein/9b/edit",
+            "image_field": "image_urls",
+            "image_list": true,
+            "max_images_in": 4,
+            "size": "image_size",
+            "count_field": "num_images",
+            "max_count": 4,
+            "seed_field": "seed",
+            "steps_field": "num_inference_steps",
+            "defaults": {
+                "num_inference_steps": 8
+            },
+            "ranges": {
+                "num_inference_steps": [4, 8]
+            },
+            "input": {
+                "output_format": "png",
+                "enable_safety_checker": false
+            }
+        }
+    },
+    "resolution": "1024x1024",
+    "batch_size": 1
+}
