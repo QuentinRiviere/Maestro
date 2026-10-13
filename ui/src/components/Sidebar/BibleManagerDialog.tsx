@@ -1,11 +1,11 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
-import { AlertTriangle, Check, ChevronLeft, ChevronRight, Clock, ImagePlus, Loader2, Plus, RefreshCw, Sparkles, Trash2, X } from 'lucide-react'
+import { AlertTriangle, Check, ChevronLeft, ChevronRight, Clock, ImagePlus, Loader2, Plus, RefreshCw, Sparkles, Trash2, Undo2, X } from 'lucide-react'
 import { useStore } from '../../stores/useStore'
 import { AppModeToggle, MaestroBrand } from '../AppModeNavigation'
 import { BibleChat } from './BibleChat'
 import { useConfirm } from './ConfirmDialog'
 import {
-  approveBibleImage, BIBLE_PLURAL, createDirectorBible, deleteBibleImage, deleteDirectorBible,
+  approveBibleImage, BIBLE_PLURAL, unapproveBibleImage, createDirectorBible, deleteBibleImage, deleteDirectorBible,
   directorBibleImageUrl, fetchDirectorBible, fetchDirectorBibles, generateBibleAssets, renderBibleImage, updateDirectorBible,
   uploadBibleImage,
   type BibleElement, type BibleKind, type BibleVariant, type DirectorBible, type DirectorBibleSummary,
@@ -85,12 +85,16 @@ function ImageViewer({ bible, element, variant, index, onIndex, onClose, onBible
         <span className="text-white/60">{variant.label} · {index + 1}/{images.length}</span>
         {image.status === 'approved' && <span className="flex items-center gap-1 text-emerald-300"><Check size={12} /> Approved reference</span>}
         <div className="ml-auto flex items-center gap-2">
-          {image.status !== 'approved' && (
-            <button disabled={busy} onClick={() => void act(() => approveBibleImage(bible.id, element.id, variant.id, image.id))}
-              className="flex items-center gap-1 rounded bg-emerald-600 px-2.5 py-1 text-[11px] text-white disabled:opacity-50">
-              <Check size={12} /> Approve
-            </button>
-          )}
+          {image.status === 'approved'
+            ? <button disabled={busy} onClick={() => void act(() => unapproveBibleImage(bible.id, element.id, variant.id, image.id))}
+                title="Back to candidate: this look has no reference until you approve another image"
+                className="flex items-center gap-1 rounded border border-emerald-300/60 px-2.5 py-1 text-[11px] text-emerald-200 hover:text-white disabled:opacity-50">
+                <Undo2 size={12} /> Unapprove
+              </button>
+            : <button disabled={busy} onClick={() => void act(() => approveBibleImage(bible.id, element.id, variant.id, image.id))}
+                className="flex items-center gap-1 rounded bg-emerald-600 px-2.5 py-1 text-[11px] text-white disabled:opacity-50">
+                <Check size={12} /> Approve
+              </button>}
           <button disabled={busy} onClick={() => ask({
             title: 'Delete this image?', message: DELETE_IMAGE_NOTE, confirmLabel: 'Delete', danger: true,
             run: () => act(() => deleteBibleImage(bible.id, element.id, variant.id, image.id), true),

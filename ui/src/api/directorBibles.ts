@@ -137,6 +137,12 @@ export function approveBibleImage(bibleId: string, elementId: string, variantId:
     { method: 'POST' }, 'Could not approve the image')
 }
 
+/** Turn an approved image back into a candidate. */
+export function unapproveBibleImage(bibleId: string, elementId: string, variantId: string, imageId: string): Promise<DirectorBible> {
+  return bibleCall(`${variantUrl(bibleId, elementId, variantId)}/images/${encodeURIComponent(imageId)}/unapprove`,
+    { method: 'POST' }, 'Could not unapprove the image')
+}
+
 export function deleteBibleImage(bibleId: string, elementId: string, variantId: string, imageId: string): Promise<DirectorBible> {
   return bibleCall(`${variantUrl(bibleId, elementId, variantId)}/images/${encodeURIComponent(imageId)}`,
     { method: 'DELETE' }, 'Could not delete the image')

@@ -127,6 +127,14 @@ class BibleLookTests(unittest.TestCase):
         bible = bibles.delete_image("spring_rain", self.girl, "default", images[0]["id"])
         self.assertEqual(len(bible["characters"][0]["variants"][0]["images"]), 1)
 
+    def test_an_approved_image_can_go_back_to_candidate(self):
+        bibles.add_image("spring_rain", self.girl, "default", self.upload)
+        image = self._bible()["characters"][0]["variants"][0]["images"][0]
+        bible = bibles.unapprove_image("spring_rain", self.girl, "default", image["id"])
+        self.assertEqual(bible["characters"][0]["variants"][0]["images"][0]["status"], "candidate")
+        self.assertIsNone(bible["characters"][0]["image"])
+        self.assertIsNone(bibles.approved_image(self._bible()["characters"][0]))
+
     def test_a_render_slot_becomes_a_candidate_or_a_failure(self):
         _, slot = bibles.start_render("spring_rain", self.girl, "default")
         self.assertEqual(self._bible()["characters"][0]["variants"][0]["images"][0]["status"], "queued")

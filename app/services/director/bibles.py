@@ -502,6 +502,19 @@ def approve_image(bible_id: str, element_id: str, variant_id: str, image_id: str
     return _mutate(bible_id, change)[0]
 
 
+def unapprove_image(bible_id: str, element_id: str, variant_id: str, image_id: str) -> dict:
+    """Turn an approved image back into a candidate: the look has no reference until one is approved."""
+    def change(bible: dict) -> None:
+        _, element = find_element(bible, element_id)
+        variant = find_variant(element, variant_id)
+        chosen = next((i for i in variant["images"] if i["id"] == image_id), None)
+        if chosen is None:
+            raise BibleError("Unknown image")
+        if chosen["status"] == "approved":
+            chosen["status"] = "candidate"
+    return _mutate(bible_id, change)[0]
+
+
 def delete_image(bible_id: str, element_id: str, variant_id: str, image_id: str) -> dict:
     """Drop one image; its file is kept, an older project may still use a copy of it."""
     def change(bible: dict) -> None:

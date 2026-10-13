@@ -11098,6 +11098,12 @@ def director_bible_approve(bible_id: str, element_id: str, variant_id: str, imag
     return {"bible": _bible_call(approve_image, bible_id, element_id, variant_id, image_id)}
 
 
+@api.post(_BIBLE_IMAGE + "/images/{image_id}/unapprove")
+def director_bible_unapprove(bible_id: str, element_id: str, variant_id: str, image_id: str):
+    from services.director.bibles import unapprove_image
+    return {"bible": _bible_call(unapprove_image, bible_id, element_id, variant_id, image_id)}
+
+
 @api.delete(_BIBLE_IMAGE + "/images/{image_id}")
 def director_bible_image_delete(bible_id: str, element_id: str, variant_id: str, image_id: str):
     from services.director.bibles import delete_image
