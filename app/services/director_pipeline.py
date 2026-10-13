@@ -6380,8 +6380,16 @@ def image_model_reference_limit(image_model: str) -> Optional[int]:
     return image_ref_profile(image_model)["max_refs"]
 
 
+EDIT_MODELS_HINT = "Seedream 4, Nano Banana, FLUX Kontext, Klein or Qwen-Image-Edit"
+
+
+def _text_only_look_error(image_model: str) -> str:
+    return (f"{image_model} cannot read an image, so a look would come out as another person: render looks "
+            f"with an editing model ({EDIT_MODELS_HINT})")
+
+
 def _render_bible_slot(bible_id: str, element_id: str, variant_id: str, slot: str, *, image_model: str,
-                       image_params: dict, chain_from: Optional[list] = None) -> None:
+                       image_params: dict, chain_from: Optional[list] = None, base_image: Optional[str] = None) -> None:
     """Render one reserved bible slot now; the slot ends as a candidate (or approved) or a failure.
 
     The bible is read at render time, so a look rendered after its default
@@ -6396,14 +6404,17 @@ def _render_bible_slot(bible_id: str, element_id: str, variant_id: str, slot: st
             raise bibles.BibleError("Unknown bible")
         kind, element = bibles.find_element(bible, element_id)
         variant = bibles.find_variant(element, variant_id)
-        refs = [str(path) for path in bibles.reference_paths(bible, element, variant, chain_from)]
-        # A text-only model never sees references: its prompt must not name any.
         budget = image_model_reference_limit(image_model)
+        if variant["id"] != bibles.DEFAULT_VARIANT and budget == 0:
+            raise bibles.BibleError(_text_only_look_error(image_model))
+        refs = [str(path) for path in bibles.reference_paths(bible, element, variant, chain_from, base_image)]
+        # A text-only model never sees references: its prompt must not name any.
         if budget is not None:
             refs = refs[:budget]
         from_default = variant["id"] != bibles.DEFAULT_VARIANT and bool(refs)
         prompt = casting.bible_image_prompt(
-            kind, element, variant, casting.style_phrase(bible.get("style")),
+            kind, element, variant,
+            casting.asset_medium(bible.get("style"), (bible.get("world") or {}).get("look", "")),
             ref_label="Picture" if image_ref_profile(image_model)["label"] == "Picture" else "reference image",
             from_default=from_default, chained=len(refs) - (1 if from_default else 0),
         )
@@ -6457,6 +6468,8 @@ def render_bible_image(bible_id: str, element_id: str, variant_id: str, *, image
     if not bible:
         raise bibles.BibleError("Unknown bible")
     bibles.find_variant(bibles.find_element(bible, element_id)[1], variant_id)
+    if variant_id != bibles.DEFAULT_VARIANT and image_model_reference_limit(image_model or "flux2_klein_9b") == 0:
+        raise bibles.BibleError(_text_only_look_error(image_model))
     bible, slot = bibles.start_render(bible_id, element_id, variant_id)
     threading.Thread(
         target=_render_bible_slot, name=f"bible-render-{slot}", daemon=True,
@@ -6486,22 +6499,33 @@ def generate_bible_assets(bible_id: str, *, image_model: str = "", image_params:
     bible = bibles.get_bible(bible_id)
     if not bible:
         raise bibles.BibleError("Unknown bible")
+    image_model = image_model or "flux2_klein_9b"
     pending = bibles.missing_images(bible, every_look=every_look)
+    # A text-only model renders default looks only: other looks need an editor.
+    if image_model_reference_limit(image_model) == 0:
+        pending = [(e, v) for e, v in pending if v["id"] == bibles.DEFAULT_VARIANT]
     if not pending:
-        raise bibles.BibleError("Every look is already rendering" if every_look
-                                else "Every look already has an approved image")
+        raise bibles.BibleError(
+            _text_only_look_error(image_model) if image_model_reference_limit(image_model) == 0
+            and bibles.missing_images(bible, every_look=every_look)
+            else "Every look is already rendering" if every_look else "Every look already has an approved image")
     jobs = []
     for element, variant in pending:
         bible, slot = bibles.start_render(bible_id, element["id"], variant["id"])
-        jobs.append((element["id"], variant["id"], slot, []))
-    image_model = image_model or "flux2_klein_9b"
+        jobs.append((element["id"], variant["id"], slot))
 
     def run() -> None:
-        # Default looks first, then the other looks, edited from those defaults.
-        ordered = sorted(jobs, key=lambda job: job[1] != bibles.DEFAULT_VARIANT)
-        for element_id, variant_id, slot, chain in ordered:
+        # Default looks first; then the other looks, each edited from the
+        # default rendered in this batch (else from the approved one).
+        defaults: dict[str, str] = {}
+        for element_id, variant_id, slot in sorted(jobs, key=lambda job: job[1] != bibles.DEFAULT_VARIANT):
+            base = None
+            if variant_id != bibles.DEFAULT_VARIANT and element_id in defaults:
+                base = bibles.slot_file(bible_id, element_id, defaults[element_id])
             _render_bible_slot(bible_id, element_id, variant_id, slot, image_model=image_model,
-                               image_params=image_params or {}, chain_from=chain)
+                               image_params=image_params or {}, base_image=base)
+            if variant_id == bibles.DEFAULT_VARIANT:
+                defaults[element_id] = slot
 
     threading.Thread(target=run, name=f"bible-generate-{bible_id}", daemon=True).start()
     return bible

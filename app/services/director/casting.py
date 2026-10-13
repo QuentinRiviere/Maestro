@@ -204,7 +204,7 @@ def bible_image_prompt(kind: str, element: dict, variant: dict, style: str = "",
         entry["description"] = f"{element['description']} State: {change}"
     body = (character_sheet_prompt(entry, style) if kind == "character"
             else location_plate_prompt(entry, style) if kind == "location"
-            else prop_shot_prompt(entry, style))
+            else prop_shot_prompt(entry, style)) + realism_clause(kind, style)
     label = ref_label or "reference image"
     subject = {"character": "person", "location": "place", "prop": "object"}[kind]
     leads = []
@@ -216,6 +216,33 @@ def bible_image_prompt(kind: str, element: dict, variant: dict, style: str = "",
         names = ", ".join(f"{label} {first + i}" for i in range(chained))
         leads.append(f"Same world as {names}: match their architecture, materials, palette, period and light.")
     return " ".join(leads + [body])
+
+
+_PHOTOGRAPHIC = re.compile(
+    r"\b(?:photo\w*|live[- ]action|cinema\w*|film stock|shot on|camera|lens\w*|arri|alexa|kodak|fuji|"
+    r"35\s?mm|anamorphic|35mm)\b", re.IGNORECASE)
+
+
+def asset_medium(contract: dict | None, look: str = "") -> str:
+    """The medium a bible image is rendered in: the style contract's, else the look block's first sentence.
+
+    Reference sheets leave the look's atmosphere out (haze and depth of
+    field blur them) but never the medium: without one a model picks its
+    own, and a friendly round-faced student comes out as a 3D chibi doll.
+    """
+    medium = style_phrase(contract)
+    if not medium and look:
+        medium = _text(re.split(r"(?<=[.!?])\s", look.strip(), maxsplit=1)[0], 220)
+    return medium
+
+
+def realism_clause(kind: str, medium: str) -> str:
+    """For a photographic medium, say the subject is real, with real proportions."""
+    if not _PHOTOGRAPHIC.search(medium or ""):
+        return ""
+    return {"character": " A real person photographed in live action, natural adult human proportions.",
+            "prop": " A real object photographed.",
+            "location": " A real place photographed."}[kind]
 
 
 def style_phrase(contract: dict | None) -> str:

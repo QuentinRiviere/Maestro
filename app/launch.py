@@ -1029,6 +1029,8 @@ def list_models():
             "nsfw_only": bool(md.get("nsfw_only", False)),
             "loras_disabled": bool(md.get("loras_disabled", False)),
             "cloud_provider": (md.get("cloud") or {}).get("provider"),
+            # Cloud models read input images only through a declared field.
+            "cloud_reads_images": bool((md.get("cloud") or {}).get("image_field")),
         })
 
     return {"families": families, "models": models}

@@ -437,6 +437,20 @@ def mark_rendering(bible_id: str, element_id: str, variant_id: str, slot: str) -
     _mutate(bible_id, change)
 
 
+def slot_file(bible_id: str, element_id: str, slot: str) -> str | None:
+    """The image a finished render slot produced (None while rendering or after a failure)."""
+    bible = get_bible(bible_id) or {}
+    try:
+        _, element = find_element(bible, element_id)
+    except BibleError:
+        return None
+    for variant in element["variants"]:
+        for image in variant["images"]:
+            if image["id"] == slot and image["file"]:
+                return image["file"]
+    return None
+
+
 def active_renders() -> list[dict]:
     """Queued and running bible renders, oldest first, for the generation queue."""
     renders = []
@@ -500,18 +514,21 @@ def delete_image(bible_id: str, element_id: str, variant_id: str, image_id: str)
     return _mutate(bible_id, change)[0]
 
 
-def reference_paths(bible: dict, element: dict, variant: dict, chain_from: list[str] | None = None) -> list[Path]:
+def reference_paths(bible: dict, element: dict, variant: dict, chain_from: list[str] | None = None,
+                    base_image: str | None = None) -> list[Path]:
     """Approved images a new render of ``variant`` is edited from, most important first.
 
     A non-default look starts from the element's approved default (same person
     or place, changed as the variant says); ``chain_from`` names elements whose
     approved default the new image must match (the same building, the same
-    world). Without either, the render starts from text alone.
+    world). Without either, the render starts from text alone. ``base_image``
+    (a file of the bible) replaces the approved default, e.g. the default
+    just rendered in the same batch.
     """
     folder = _folder(bible["id"])
     files: list[str] = []
     if variant["id"] != DEFAULT_VARIANT:
-        files.append(approved_image(element) or "")
+        files.append(os.path.basename(base_image or "") or approved_image(element) or "")
     for element_id in chain_from or []:
         try:
             _, other = find_element(bible, element_id)

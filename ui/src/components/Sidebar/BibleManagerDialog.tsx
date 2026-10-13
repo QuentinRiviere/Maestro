@@ -28,6 +28,15 @@ const FIELDS: Record<BibleKind, Array<[keyof BibleElement, string, boolean]>> = 
 const pendingImages = (bible: DirectorBible) => (['characters', 'locations', 'props'] as const)
   .reduce((count, plural) => count + bible[plural].reduce((n, e) => n + e.variants
     .filter(v => !v.images.some(i => i.status === 'approved' || i.status === 'queued' || i.status === 'rendering')).length, 0), 0)
+/** Whether a model can edit from a reference image (looks need it to keep the same person or place). */
+function useReadsImages(modelType: string): boolean {
+  return useStore(s => {
+    const model = s.models.find(m => m.model_type === modelType)
+    return !model?.cloud_provider || !!model.cloud_reads_images
+  })
+}
+const TEXT_ONLY_NOTE = 'cannot read an image: looks other than Default need an editing model (Seedream 4, Nano Banana, FLUX Kontext, Klein, Qwen-Image-Edit) to keep the same person or place.'
+
 const lookCount = (bible: DirectorBible) => (['characters', 'locations', 'props'] as const)
   .reduce((count, plural) => count + bible[plural].reduce((n, e) => n + e.variants.length, 0), 0)
 const slug = (text: string) => text.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 32)
@@ -177,6 +186,7 @@ function ElementCard({ bible, element, saved, onChange, onRemove, onBible }: {
   onBible: (bible: DirectorBible) => void
 }) {
   const imageModel = useStore(s => s.selectedModelPerMode.image || 'flux2_klein_9b')
+  const readsImages = useReadsImages(imageModel)
   const [variantId, setVariantId] = useState('default')
   const [newLook, setNewLook] = useState<{ label: string; description: string } | null>(null)
   const [chain, setChain] = useState<string[]>([])
@@ -268,8 +278,12 @@ function ElementCard({ bible, element, saved, onChange, onRemove, onBible }: {
                 ))}
               </div>
             )}
+            {!readsImages && variant.id !== 'default' && (
+              <p className="text-[9px] text-amber-300">{imageModel} {TEXT_ONLY_NOTE}</p>
+            )}
             <div className="flex gap-1.5">
-              <button disabled={busy} onClick={() => void act(() => renderBibleImage(bible.id, element.id, variant.id, { image_model: imageModel, chain_from: chain }))}
+              <button disabled={busy || (!readsImages && variant.id !== 'default')}
+                onClick={() => void act(() => renderBibleImage(bible.id, element.id, variant.id, { image_model: imageModel, chain_from: chain }))}
                 title={`Render with ${imageModel}`}
                 className="flex-1 py-1 rounded border border-border text-[10px] text-text-secondary hover:text-text-primary hover:bg-bg-hover flex items-center justify-center gap-1 disabled:opacity-50">
                 {busy ? <Loader2 size={10} className="animate-spin" /> : <Sparkles size={10} />} Render
@@ -350,6 +364,7 @@ function BibleManagerPanel({ initialId, onClose }: { initialId?: string; onClose
   }, [isRendering, selected, applyServer])
 
   const imageModel = useStore(s => s.selectedModelPerMode.image || 'flux2_klein_9b')
+  const readsImages = useReadsImages(imageModel)
   // Generate saves the draft first: the server renders the stored bible.
   const generateAssets = async () => {
     if (!draft) return
@@ -458,7 +473,8 @@ function BibleManagerPanel({ initialId, onClose }: { initialId?: string; onClose
                   onClick={() => ask({
                     title: 'Regenerate every look?', confirmLabel: 'Regenerate all',
                     message: <>A new candidate for each of the {lookCount(draft)} looks, rendered with <b>{imageModel}</b>
-                      {dirty ? ', after saving your changes' : ''}. Approved images stay the references until you approve a new one.</>,
+                      {dirty ? ', after saving your changes' : ''}. Approved images stay the references until you approve a new one.
+                      {!readsImages && <span className="mt-2 block text-amber-300">{imageModel} {TEXT_ONLY_NOTE} Only Default looks will render.</span>}</>,
                     run: regenerateAll,
                   })}
                   className="flex items-center gap-1 rounded border border-border px-2.5 py-1 text-[11px] text-text-secondary hover:text-text-primary disabled:opacity-40">

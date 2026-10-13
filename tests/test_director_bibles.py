@@ -451,29 +451,71 @@ class BibleRenderSettingsTests(unittest.TestCase):
         self.assertEqual(pipeline.image_model_reference_limit("cloud_fal_flux_dev_lora"), 0)
         self.assertEqual(pipeline.image_model_reference_limit("cloud_fal_seedream_4"), 10)
 
-    def test_a_text_only_model_gets_no_reference_and_no_reference_wording(self):
+    def _bible(self, look="Shot on Arri Alexa with Cooke lenses. Rainy neon haze, shallow depth of field."):
         upload = os.path.join(self.tmp.name, "sheet.png")
         with open(upload, "wb") as handle:
             handle.write(b"png")
-        bible = bibles.save_bible({"name": "Spring Rain", "world": {"look": "Rainy neon haze."}, "characters": [
+        bible = bibles.save_bible({"name": "Spring Rain", "world": {"look": look}, "characters": [
             {**GIRL, "variants": [{"id": "default"}, {"id": "winter", "label": "Winter", "description": "camel coat"}]}]})
         girl = bible["characters"][0]["id"]
         bibles.add_image("spring_rain", girl, "default", upload)
-        _, slot = bibles.start_render("spring_rain", girl, "winter")
-        sent = {}
+        return girl
 
+    def _submit(self, sent):
         def submit(gen_params, **kwargs):
-            sent.update(gen_params)
-            return []
+            sent.append(gen_params)
+            name = f"render{len(sent)}.png"
+            with open(os.path.join(kwargs["out_dir"], name), "wb") as handle:
+                handle.write(b"png")
+            return [name]
+        return submit
 
-        with patch.object(pipeline, "_submit_and_wait", side_effect=submit):
-            pipeline._render_bible_slot("spring_rain", girl, "winter", slot,
+    def test_a_text_only_model_renders_sheets_in_the_series_medium_without_references(self):
+        girl = self._bible()
+        _, slot = bibles.start_render("spring_rain", girl, "default")
+        sent = []
+        with patch.object(pipeline, "_submit_and_wait", side_effect=self._submit(sent)):
+            pipeline._render_bible_slot("spring_rain", girl, "default", slot,
                                         image_model="cloud_fal_flux_dev_lora", image_params={})
-        self.assertEqual(sent["image_refs"], [])
-        self.assertIn("a young person aged 17", sent["prompt"])
-        self.assertNotIn("reference image", sent["prompt"])
-        self.assertNotIn("Rainy neon haze", sent["prompt"])  # the look is for places and shots
-        self.assertEqual((sent["num_inference_steps"], sent["guidance_scale"]), (28, 3.5))
+        prompt = sent[0]["prompt"]
+        self.assertEqual(sent[0]["image_refs"], [])
+        self.assertIn("a young person aged 17", prompt)
+        self.assertIn("Rendered as: Shot on Arri Alexa with Cooke lenses.", prompt)
+        self.assertIn("A real person photographed in live action", prompt)
+        self.assertNotIn("neon haze", prompt)  # the atmosphere is for places and shots
+        self.assertNotIn("reference image", prompt)
+        self.assertEqual((sent[0]["num_inference_steps"], sent[0]["guidance_scale"]), (28, 3.5))
+
+    def test_a_text_only_model_cannot_render_a_look(self):
+        girl = self._bible()
+        with self.assertRaises(bibles.BibleError):
+            pipeline.render_bible_image("spring_rain", girl, "winter", image_model="cloud_fal_flux_dev_lora")
+        with patch.object(pipeline, "_submit_and_wait", side_effect=self._submit([])):
+            bible = pipeline.generate_bible_assets("spring_rain", image_model="cloud_fal_flux_dev_lora",
+                                                   every_look=True)
+            for _ in range(200):
+                if not bibles.active_renders():
+                    break
+                time.sleep(0.02)
+        looks = bible["characters"][0]["variants"]
+        self.assertEqual([i["status"] for i in looks[1]["images"]], [])  # the look was left out
+        self.assertIn("queued", [i["status"] for i in looks[0]["images"]])
+
+    def test_regenerate_all_edits_each_look_from_the_default_it_just_rendered(self):
+        girl = self._bible()
+        old = bibles.get_bible("spring_rain")["characters"][0]["image"]
+        sent = []
+        with patch.object(pipeline, "_submit_and_wait", side_effect=self._submit(sent)):
+            pipeline.generate_bible_assets("spring_rain", image_model="cloud_fal_seedream_4", every_look=True)
+            for _ in range(200):
+                if not bibles.active_renders():
+                    break
+                time.sleep(0.02)
+        bible = bibles.get_bible("spring_rain")
+        new_default = bible["characters"][0]["variants"][0]["images"][-1]["file"]
+        self.assertNotEqual(new_default, old)
+        self.assertEqual([os.path.basename(r) for r in sent[1]["image_refs"]], [new_default])
+        self.assertEqual(bible["characters"][0]["image"], old)  # still the approved reference
 
 
 def test_regenerate_all_adds_a_candidate_to_every_idle_look():

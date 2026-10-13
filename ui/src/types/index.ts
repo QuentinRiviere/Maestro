@@ -88,6 +88,8 @@ export interface ModelDef {
   loras_disabled?: boolean
   /** Hosted provider for Cloud API models; null for local models. */
   cloud_provider?: 'fal' | 'replicate' | null
+  /** Cloud API model that takes input images (it can edit and follow references). */
+  cloud_reads_images?: boolean
 }
 
 export interface Resolution {

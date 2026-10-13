@@ -122,7 +122,7 @@ export function BibleChat({ bibleId, draft, onChange, onGenerate, pendingImages,
           <div className="rounded-lg border border-accent-blue/40 bg-accent-blue/10 p-2 space-y-1.5">
             <p className="text-[11px] text-text-primary">
               The bible is ready. Generate renders {pendingImages} image{pendingImages === 1 ? '' : 's'} with {imageModel}
-              {' '}(default looks first, places matched to the first one, then the other looks).
+              {' '}(default looks first, then the other looks edited from them).
             </p>
             <button onClick={() => void generate()} disabled={generating || rendering || pendingImages === 0}
               className="w-full flex items-center justify-center gap-1.5 rounded bg-accent-blue py-1.5 text-[11px] font-medium text-white disabled:opacity-40">
