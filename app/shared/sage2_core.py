@@ -69,7 +69,7 @@ import os
 
 # Architectures the worker image compiles kernels for; others (sm_100, sm_120)
 # would raise at run time, so they stay on sage (Triton) or sdpa.
-_SAGE2_ARCHS = {(8, 0), (8, 6), (8, 9), (9, 0)}
+_SAGE2_ARCHS = {(8, 0), (8, 6), (8, 9)}
 
 
 def is_sage2_supported():
