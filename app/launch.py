@@ -11004,6 +11004,32 @@ def director_bible_image(bible_id: str, name: str):
     return FileResponse(str(path))
 
 
+@api.post("/api/v1/director/bibles/{bible_id}/assistant")
+async def director_bible_assistant(bible_id: str, request: Request):
+    """One chat turn on a bible: a reply and a proposed bible (not saved).
+
+    ``bible`` is the client's draft (unsaved edits included); without it the
+    stored bible is used.
+    """
+    from services import llm_service
+    from services.director.bible_assistant import BibleAssistantError, assist
+    from services.director.bibles import _folder, get_bible
+
+    body = await request.json()
+    body = body if isinstance(body, dict) else {}
+    stored = _bible_call(get_bible, bible_id)
+    if not stored:
+        raise HTTPException(status_code=404, detail="Bible not found")
+    draft = body.get("bible") if isinstance(body.get("bible"), dict) else stored
+    draft = {**draft, "id": bible_id, "style": stored.get("style")}
+    _ensure_llm_loaded()
+    try:
+        return await asyncio.to_thread(assist, draft, body.get("messages"), generate=llm_service.generate,
+                                       folder=_folder(bible_id))
+    except BibleAssistantError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+
+
 _BIBLE_IMAGE = "/api/v1/director/bibles/{bible_id}/elements/{element_id}/variants/{variant_id}"
 
 

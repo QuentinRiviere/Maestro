@@ -1,6 +1,7 @@
 """Bibles keep a series' cast, style and world rules for every project made from them."""
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -292,3 +293,62 @@ class BiblePipelineTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BibleAssistantTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        patcher = patch.object(bibles, "BIBLES_DIR", Path(self.tmp.name) / "bibles")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        upload = os.path.join(self.tmp.name, "sheet.png")
+        with open(upload, "wb") as handle:
+            handle.write(b"png")
+        bible = bibles.save_bible({"name": "Spring Rain", "characters": [GIRL]})
+        self.girl = bible["characters"][0]["id"]
+        self.bible = bibles.add_image("spring_rain", self.girl, "default", upload)
+
+    def _assist(self, *answers):
+        from services.director import bible_assistant
+        replies = iter(answers)
+        prompts = []
+
+        def generate(**call):
+            prompts.append(call["prompt"])
+            return next(replies)
+
+        result = bible_assistant.assist(self.bible, [{"role": "user", "content": "Ajoute un lieu : le toit"}],
+                                        generate=generate, folder=bibles._folder("spring_rain"))
+        return result, prompts
+
+    def test_a_proposal_keeps_ids_and_images_and_adds_new_elements(self):
+        proposal = {"reply": "J'ai ajouté le toit.", "changes": ["Added location Rooftop"], "bible": {
+            "name": "Spring Rain", "world": {"look": "Soft pastel highlights."},
+            "characters": [{"id": self.girl, "name": "Eun-seo", "description": GIRL["description"],
+                            "variants": [{"id": "default", "label": "Default"}]}],
+            "locations": [{"name": "Rooftop", "description": "Flat concrete roof, green fence 120 cm high."}],
+        }}
+        result, prompts = self._assist(json.dumps(proposal))
+        bible = result["bible"]
+        self.assertEqual(result["changes"], ["Added location Rooftop"])
+        self.assertEqual(bible["characters"][0]["id"], self.girl)
+        self.assertEqual(bible["characters"][0]["image"], self.bible["characters"][0]["image"])
+        self.assertEqual(bible["locations"][0]["name"], "Rooftop")
+        self.assertEqual(bible["world"]["look"], "Soft pastel highlights.")
+        # The assistant reads text and ids, never image files.
+        self.assertIn('"has_image": true', prompts[0])
+        self.assertNotIn(self.bible["characters"][0]["image"], prompts[0])
+        # Nothing is saved until the user applies and saves.
+        self.assertEqual(bibles.get_bible("spring_rain")["locations"], [])
+
+    def test_bad_json_is_retried_once(self):
+        result, prompts = self._assist("not json", json.dumps({"reply": "ok", "changes": [], "bible": {}}))
+        self.assertEqual((result["reply"], len(prompts)), ("ok", 2))
+        self.assertEqual(result["bible"]["characters"][0]["id"], self.girl)
+
+    def test_the_last_message_must_be_the_users(self):
+        from services.director import bible_assistant
+        with self.assertRaises(bible_assistant.BibleAssistantError):
+            bible_assistant.assist(self.bible, [{"role": "assistant", "content": "hi"}],
+                                   generate=lambda **_: "{}", folder=bibles._folder("spring_rain"))

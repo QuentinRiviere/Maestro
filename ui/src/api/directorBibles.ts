@@ -139,3 +139,21 @@ export function saveCastToBible(pid: string, target: { bible_id?: string; name?:
 export function directorBibleImageUrl(bibleId: string, image: string): string {
   return `${BASE}/api/v1/director/bibles/${encodeURIComponent(bibleId)}/images/${encodeURIComponent(image)}`
 }
+
+export interface BibleChatMessage { role: 'user' | 'assistant'; content: string }
+
+export interface BibleAssistantAnswer {
+  reply: string
+  changes: string[]
+  /** The proposed bible (not saved): apply it to the draft, then save. */
+  bible: DirectorBible
+}
+
+/** One assistant turn on the bible being edited. */
+export async function askBibleAssistant(bibleId: string, draft: DirectorBible,
+  messages: BibleChatMessage[]): Promise<BibleAssistantAnswer> {
+  return json(await fetch(`${BASE}/api/v1/director/bibles/${encodeURIComponent(bibleId)}/assistant`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ bible: draft, messages }),
+  }), 'The assistant did not answer')
+}

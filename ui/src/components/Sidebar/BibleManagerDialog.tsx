@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { AlertTriangle, Check, ImagePlus, Loader2, Plus, Sparkles, Trash2, X } from 'lucide-react'
 import { useStore } from '../../stores/useStore'
 import { AppModeToggle, MaestroBrand } from '../AppModeNavigation'
+import { BibleChat } from './BibleChat'
 import {
   approveBibleImage, BIBLE_PLURAL, createDirectorBible, deleteBibleImage, deleteDirectorBible,
   directorBibleImageUrl, fetchDirectorBible, fetchDirectorBibles, renderBibleImage, updateDirectorBible,
@@ -386,6 +387,7 @@ function BibleManagerPanel({ initialId, onClose }: { initialId?: string; onClose
             </>
           )}
         </section>
+        {draft && <BibleChat key={draft.id} bibleId={draft.id} draft={draft} onApply={setDraft} />}
       </div>
   )
 }
@@ -394,7 +396,7 @@ export function BibleManagerDialog({ initialId, onClose }: { initialId?: string;
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true"
       aria-label="Bibles" onClick={e => { if (e.target === e.currentTarget) onClose() }}>
-      <div className="w-full max-w-5xl h-[90vh] border border-border rounded-xl overflow-hidden">
+      <div className="w-full max-w-6xl h-[90vh] border border-border rounded-xl overflow-hidden">
         <BibleManagerPanel initialId={initialId} onClose={onClose} />
       </div>
     </div>
