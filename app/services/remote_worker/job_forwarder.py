@@ -237,6 +237,7 @@ class RemoteJobForwarder:
         if (downloads.get(model_type) or {}).get("status") == "completed":
             return
         client.post_json(f"api/v1/models/{quote(model_type, safe='')}/download")
+        started = time.monotonic()
         while True:
             if is_cancelled():
                 raise RemoteJobCancelled()
@@ -250,7 +251,11 @@ class RemoteJobForwarder:
                 "pulling_cache": "Pulling weights from the R2 cache…",
                 "publishing_cache": "Saving new weights to the R2 cache…",
             }.get(entry.get("phase") or "", "Downloading model weights on the worker…")
-            update(phase="Remote worker", message=phase)
+            # The elapsed minutes are the job's heartbeat: callers that cancel
+            # a job without visible progress (Director waits) must not mistake
+            # a long first download or R2 upload for a stuck job.
+            minutes = int((time.monotonic() - started) // 60)
+            update(phase="Remote worker", message=f"{phase} ({minutes} min)" if minutes else phase)
             self._sleep(max(self._poll_interval, 3.0))
 
     def _send_file(self, client, store, path: str, *, kind: str, model_type: str = "", update) -> str:
