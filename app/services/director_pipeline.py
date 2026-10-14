@@ -55,6 +55,7 @@ from services.director_video_strategy import (
 from services.h3_window_planner import compute_h3_window_boundaries
 from services.text_integrity import repair_payload
 from models.minimax_h3.reference_manifest import (
+    MINIMAX_H3_MAX_REFERENCE_AUDIOS,
     split_exact_drive_audio_reference,
     validate_reference_manifest,
 )
@@ -2454,12 +2455,115 @@ def _director_reference_label(params: dict, kind: str, index: int) -> str:
     return f"{noun} {index + 1}"
 
 
+def _director_cast_voices(params: dict) -> dict[str, str]:
+    """Cast name -> voice file of every cast character linked to a library voice.
+
+    Bible characters carry ``voice_character_id``; the library resolves it to
+    the saved voice. A deleted character or a missing file is skipped, so the
+    shot falls back to the project voice instead of failing the render.
+    """
+    cast = params.get("_director_cast")
+    if not isinstance(cast, dict):
+        return {}
+    voices: dict[str, str] = {}
+    for entry in cast.get("characters") or []:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or "").strip()
+        character_id = str(entry.get("voice_character_id") or "").strip()
+        if not name or not character_id or name in voices:
+            continue
+        try:
+            from services import character_library
+
+            voice = character_library.get_character(character_id).get("voice")
+        except Exception:
+            continue
+        path = str((voice or {}).get("path") or "") if isinstance(voice, dict) else ""
+        if path and os.path.isfile(path):
+            voices[name] = path
+    return voices
+
+
+def _director_clip_speakers(plan: dict, params: dict) -> list[str]:
+    """Cast names of a shot's speakers, in the order of their first line.
+
+    Planners write ``speaker_id`` as a cast name, a bible tag, the planner's
+    ``char_N`` index into ``params["characters"]``, or a subject id whose
+    ``speaker_name`` is the cast name. Unresolved speakers are left out.
+    """
+    cast = params.get("_director_cast") if isinstance(params.get("_director_cast"), dict) else {}
+    by_key: dict[str, str] = {}
+    for entry in cast.get("characters") or []:
+        if not isinstance(entry, dict) or not str(entry.get("name") or "").strip():
+            continue
+        name = str(entry["name"]).strip()
+        for key in (name, entry.get("tag"), str(entry.get("tag") or "").lstrip("@"), entry.get("descriptor")):
+            if str(key or "").strip():
+                by_key.setdefault(str(key).strip().casefold(), name)
+    planner_names = [
+        str(c.get("name") or "").strip() if isinstance(c, dict) else ""
+        for c in params.get("characters") or []
+    ]
+    subject_names = {
+        str(s.get("character_id")).strip().casefold(): str(s.get("speaker_name") or "").strip()
+        for s in plan.get("_director_subjects_on_screen") or []
+        if isinstance(s, dict) and s.get("character_id")
+    }
+
+    def resolve(raw: str, seen: frozenset = frozenset()) -> str | None:
+        key = raw.strip().casefold()
+        if not key or key in seen:
+            return None
+        if key in by_key:
+            return by_key[key]
+        indexed = re.fullmatch(r"char_(\d+)", key)
+        if indexed and int(indexed.group(1)) < len(planner_names):
+            return by_key.get(planner_names[int(indexed.group(1))].casefold())
+        alias = subject_names.get(key, "")
+        return resolve(alias, seen | {key}) if alias else None
+
+    speakers: list[str] = []
+    for beat in plan.get("_director_dialogue_beats") or []:
+        if not isinstance(beat, dict) or not str(beat.get("spoken_text") or "").strip():
+            continue
+        name = resolve(str(beat.get("speaker_id") or ""))
+        if name and name not in speakers:
+            speakers.append(name)
+    return speakers
+
+
+def _director_voice_reference_mode(video_model: str) -> str:
+    """How a video model takes a voice ("id_lora", "native_reference" or "none")."""
+    try:
+        resolved = _director_model_assessment(video_model)
+    except Exception:
+        return "none"
+    return str(resolved[1].get("voice_reference_mode") or "none") if resolved else "none"
+
+
+def _director_clip_voice_references(params: dict, clip_plans: list[dict]) -> list[str]:
+    """The one voice each single-voice (LTX-2 ID-LoRA) clip speaks with.
+
+    A clip uses the voice of its first speaker that has a cast voice, else
+    the project ``voice_reference`` ("" when there is neither).
+    """
+    voices = _director_cast_voices(params)
+    fallback = str(params.get("voice_reference") or "").strip()
+    chosen: list[str] = []
+    for plan in clip_plans:
+        speakers = _director_clip_speakers(plan or {}, params) if voices else []
+        chosen.append(next((voices[name] for name in speakers if name in voices), fallback))
+    return chosen
+
+
 def _director_h3_reference_manifest(
     params: dict,
     clip_image_path: str | None,
     *,
     out_dir: str,
     drive_audio_path: str | None = None,
+    speakers: list[str] | None = None,
 ) -> list[dict]:
     """Compile Director assets into one Ref2VA manifest for a single shot.
 
@@ -2468,6 +2572,11 @@ def _director_h3_reference_manifest(
     original character/location uploads are mapped directly. Audio roles are
     explicit because H3 treats a song or dialogue timeline very differently
     from a voice sample.
+
+    Cast characters linked to a library voice get one voice reference each
+    for the shot's ``speakers`` (cast names; ``None`` means every voiced
+    character), named like their identity image so H3 pairs voice and face.
+    The project ``voice_reference`` is used only when no cast voice applies.
     """
 
     submitted_references = params.get("minimax_h3_references")
@@ -2562,6 +2671,7 @@ def _director_h3_reference_manifest(
         "identity",
     )
 
+    cast_voices = _director_cast_voices(params)
     for index, path in enumerate(params.get("character_ref_paths") or []):
         label = _director_reference_label(params, "character", index)
         add_image(
@@ -2569,6 +2679,8 @@ def _director_h3_reference_manifest(
             f"the identity and appearance of {label}",
             "identity",
         )
+        if label in cast_voices and images and images[-1]["path"] == path:
+            images[-1]["character_name"] = label
     for index, path in enumerate(params.get("location_ref_paths") or []):
         label = _director_reference_label(params, "location", index)
         add_image(
@@ -2586,12 +2698,36 @@ def _director_h3_reference_manifest(
             "audio_intent": "drive",
         })
 
+    drive_normalized = (
+        os.path.normcase(os.path.abspath(drive_audio_path))
+        if drive_audio_path else ""
+    )
+    voiced = [
+        name for name in (cast_voices if speakers is None else speakers)
+        if name in cast_voices
+    ]
+    seen_voices = {drive_normalized} if drive_normalized else set()
+    for name in voiced:
+        audio_count = sum(reference["type"] == "audio" for reference in references)
+        if audio_count >= MINIMAX_H3_MAX_REFERENCE_AUDIOS:
+            break
+        voice_normalized = os.path.normcase(os.path.abspath(cast_voices[name]))
+        if voice_normalized in seen_voices:
+            continue
+        seen_voices.add(voice_normalized)
+        references.append({
+            "type": "audio",
+            "path": cast_voices[name],
+            "role": f"the voice of {name}",
+            "audio_intent": "voice",
+            "character_name": name,
+        })
+
     voice_reference = str(params.get("voice_reference") or "").strip()
-    if voice_reference and os.path.isfile(voice_reference):
-        drive_normalized = (
-            os.path.normcase(os.path.abspath(drive_audio_path))
-            if drive_audio_path else ""
-        )
+    has_cast_voice = any(
+        reference.get("audio_intent") == "voice" for reference in references
+    )
+    if voice_reference and os.path.isfile(voice_reference) and not has_cast_voice:
         voice_normalized = os.path.normcase(os.path.abspath(voice_reference))
         if voice_normalized != drive_normalized:
             voice_role = str(params.get("voice_reference_role") or "").strip()
@@ -3096,6 +3232,15 @@ def _rerun_clip_video_impl(out_dir: str, pid: str, clip_index: int, prompt_overr
         video_params,
         execution_profile,
     )
+    if (
+        director_strategy != OMNI_REFERENCE
+        and _director_voice_reference_mode(video_model) == "id_lora"
+    ):
+        # Same voice as the full run: the clip's main speaker, else the project voice.
+        rerun_voice = _director_clip_voice_references(snapshot, [prompt_plan])[0]
+        if rerun_voice and os.path.isfile(rerun_voice):
+            gen_params["voice_reference"] = rerun_voice
+            gen_params["identity_guidance_scale"] = snapshot.get("identity_guidance_scale", 3.0)
     with _pipeline_lock:
         repair_control = _pipeline_repairs.get(pid)
         repair_operation_id = (
@@ -3234,6 +3379,7 @@ def _rerun_clip_video_impl(out_dir: str, pid: str, clip_index: int, prompt_overr
             # audio_guide/AD above. Only identity, scene, composition, and
             # optional voice references belong in the Omni manifest.
             drive_audio_path=None,
+            speakers=_director_clip_speakers(prompt_plan, manifest_params),
         )
         if not any(
             reference.get("type") in {"image", "video"}
@@ -8722,11 +8868,16 @@ def _run_video_generation(pid: str, params: dict, clip_plans: list[dict],
                 "MiniMax H3 Omni Director needs the uploaded soundtrack or "
                 "dialogue audio for this workflow."
             )
-        for clip_image in image_start_paths:
+        for clip_index, clip_image in enumerate(image_start_paths):
             manifest = _director_h3_reference_manifest(
                 params,
                 clip_image if uses_shot_images else None,
                 out_dir=out_dir,
+                speakers=(
+                    _director_clip_speakers(clip_plans[clip_index], params)
+                    if clip_index < len(clip_plans)
+                    else None
+                ),
                 # The project soundtrack is target conditioning, not an
                 # Omni style/voice reference. WGP slices it for each native
                 # task below and H3 freezes those target audio latents. A
@@ -9046,6 +9197,23 @@ def _run_video_generation(pid: str, params: dict, clip_plans: list[dict],
         execution_profile,
     )
     voice_ref = params.get("voice_reference")
+    clip_voices = (
+        _director_clip_voice_references(params, clip_plans)
+        if director_strategy != OMNI_REFERENCE
+        and _director_cast_voices(params)
+        and _director_voice_reference_mode(video_model) == "id_lora"
+        else []
+    )
+    if any(clip_voices):
+        # ID-LoRA takes one voice per job: each clip speaks with its main
+        # speaker's cast voice. A seamless run is one job, so it uses the
+        # first clip's voice for the whole sequence.
+        if seamless:
+            voice_ref = next(voice for voice in clip_voices if voice)
+        else:
+            gen_params["per_clip_voice_references"] = clip_voices
+            voice_ref = voice_ref or next(voice for voice in clip_voices if voice)
+        print(f"[Pipeline {pid}] Per-clip cast voices: {[os.path.basename(v) if v else '' for v in clip_voices]}")
     if voice_ref and director_strategy != OMNI_REFERENCE:
         gen_params["voice_reference"] = voice_ref
         gen_params["identity_guidance_scale"] = params.get("identity_guidance_scale", 3.0)

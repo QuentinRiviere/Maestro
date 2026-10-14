@@ -27358,6 +27358,11 @@ def _run_generation(job_id: str, *, finalize: bool = True, _slot_owned: bool = F
                 per_clip_continuations = raw_params.pop(
                     "per_clip_continue_from_previous", None,
                 )
+                # Director: the one voice each single-voice clip speaks with
+                # ("" = no voice for that clip).
+                per_clip_voices = raw_params.pop(
+                    "per_clip_voice_references", None,
+                )
                 multi_clip_concat_audio = raw_params.pop(
                     "multi_clip_concat_audio", None,
                 )
@@ -27477,6 +27482,14 @@ def _run_generation(job_id: str, *, finalize: bool = True, _slot_owned: bool = F
                         clip_params["minimax_h3_references"] = (
                             per_clip_h3_references[i]
                         )
+                    if isinstance(per_clip_voices, list):
+                        clip_voice = (
+                            per_clip_voices[i] if i < len(per_clip_voices) else ""
+                        )
+                        if clip_voice:
+                            clip_params["voice_reference"] = clip_voice
+                        else:
+                            clip_params.pop("voice_reference", None)
                     # Set per-clip image_prompt_type based on which images are present
                     has_start = bool(clip_params.get("image_start"))
                     has_end = bool(clip_end)
@@ -27615,6 +27628,11 @@ def _run_generation(job_id: str, *, finalize: bool = True, _slot_owned: bool = F
                             tail_params["prompt"]
                         ]
                     tail_params["image_start"] = last_se_clip_end_image
+                    if isinstance(per_clip_voices, list) and per_clip_voices:
+                        if per_clip_voices[-1]:
+                            tail_params["voice_reference"] = per_clip_voices[-1]
+                        else:
+                            tail_params.pop("voice_reference", None)
                     tail_params["image_end"] = None
                     tail_params["image_prompt_type"] = "S"  # start-only, no SE distortion
                     tail_params["video_length"] = tail_frames

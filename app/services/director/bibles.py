@@ -723,6 +723,8 @@ def project_cast(bible: dict, out_dir: str, *, characters: Any = None, locations
     ``variants`` maps an element to the look this project uses. A
     character's look replaces its wardrobe; a place's or a prop's look is
     added to its description. Props only feed shot references (by name).
+    A character keeps its ``voice_character_id`` (the library character
+    whose voice speaks its lines).
     """
     folder = _folder(bible["id"])
     os.makedirs(out_dir, exist_ok=True)
@@ -734,6 +736,10 @@ def project_cast(bible: dict, out_dir: str, *, characters: Any = None, locations
             entry = {field: element.get(field, "") for field in ("name", "role", "descriptor", "description",
                                                                  "wardrobe", "notes") if field in element}
             entry.update(bible_element=element["id"], bible_variant=look["id"], tag=element["tag"])
+            # The linked library voice is resolved at render time, so a voice
+            # re-recorded in the library reaches the next render of the project.
+            if kind == "character" and element.get("voice_character_id"):
+                entry["voice_character_id"] = element["voice_character_id"]
             if look["id"] != DEFAULT_VARIANT and look["description"]:
                 if kind == "character":
                     entry["wardrobe"] = look["description"]
