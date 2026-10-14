@@ -560,10 +560,14 @@ class BibleRenderSettingsTests(unittest.TestCase):
         self.assertTrue(all([os.path.basename(r) for r in p["image_refs"]] == [approved] for p in sent))
         # The approved image is the person, not the frame of the angle.
         self.assertEqual({p["video_prompt_type"] for p in sent}, {"I"})
-        self.assertIn("strict 90-degree side profile", sent[2]["prompt"])
-        self.assertNotIn("both eyes", sent[2]["prompt"])
-        self.assertIn("face is not visible", sent[3]["prompt"])
-        self.assertEqual((sent[0]["resolution"], sent[3]["resolution"]), ("1024x1024", "1088x1920"))
+        # The angles render side by side, in any order.
+        profile = next(p for p in sent if "side profile" in p["prompt"])
+        back = next(p for p in sent if "from directly behind" in p["prompt"])
+        face = next(p for p in sent if "facing the camera" in p["prompt"])
+        self.assertIn("strict 90-degree side profile", profile["prompt"])
+        self.assertNotIn("both eyes", profile["prompt"])
+        self.assertIn("face is not visible", back["prompt"])
+        self.assertEqual((face["resolution"], back["resolution"]), ("1024x1024", "1088x1920"))
         bible = bibles.get_bible("spring_rain")
         variant = bible["characters"][0]["variants"][0]
         # Each angle is approved on its own; the look's main image is unchanged.
