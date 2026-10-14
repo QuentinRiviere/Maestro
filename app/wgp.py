@@ -4566,9 +4566,11 @@ def load_models(model_type, override_profile = -1, output_type="video", preview_
         print(f"Unable to use LM Engine '{lm_decoder_engine_obtained}' as it requires a Memory Profile such as 1,3 or 3+ that loads entirely the Main Models in VRAM. Switching to Legacy LM Engine...")
         lm_decoder_engine_obtained = "legacy"
     torch.set_default_device('cpu')    
+    _load_started = time.time()
     wan_model, pipe = model_type_handler.load_model(
                 local_model_file_list, model_type, base_model_type, model_def, quantizeTransformer = quantizeTransformer, text_encoder_quantization = text_encoder_quantization,
                 dtype = transformer_dtype, VAE_dtype = VAE_dtype, mixed_precision_transformer = mixed_precision_transformer, save_quantized = save_quantized, submodel_no_list   = model_submodel_no_list, text_encoder_filename = text_encoder_filename, profile=profile, lm_decoder_engine=lm_decoder_engine_obtained, **model_kwargs )
+    print(f"[LoadTiming] {model_type}: weights read and models built in {time.time() - _load_started:.1f}s")
 
     # LTX-2.5 ships against Transformers 5.x while Maestro's established
     # model families still share Transformers 4.x. Its handler therefore owns
@@ -4644,8 +4646,10 @@ def load_models(model_type, override_profile = -1, output_type="video", preview_
     # kwargs["pinnedMemory"] = "text_encoder"
     previous_last_offload = getattr(offload, "last_offload_obj", None)
     preview_profile_failed = False
+    _profile_started = time.time()
     try:
         offloadobj = offload.profile(pipe, profile_no= mmgp_profile, compile = compile_modules, quantizeTransformer = False, loras = loras_transformer, perc_reserved_mem_max = perc_reserved_mem_max , vram_safety_coefficient = vram_safety_coefficient , convertWeightsFloatTo = transformer_dtype, **kwargs)
+        print(f"[LoadTiming] {model_type}: memory profile {mmgp_profile} (pinning, VRAM placement) in {time.time() - _profile_started:.1f}s")
     except Exception as error:
         if preview_decoder is None or isinstance(error, offload.LoadingCancelled):
             raise

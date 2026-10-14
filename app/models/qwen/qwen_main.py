@@ -4,7 +4,7 @@ import inspect
 from typing import Any, Callable, Dict, List, Optional, Union
 
 import numpy as np
-import torch, json, os
+import torch, json, os, time
 import math
 
 from diffusers.image_processor import VaeImageProcessor
@@ -19,6 +19,17 @@ from .pipeline_qwenimage import QwenImagePipeline
 from PIL import Image
 from shared.utils.utils import calculate_new_dimensions, convert_tensor_to_image
 from shared.utils import files_locator as fl 
+
+def _log_load(part, path, started):
+    """Load time and read rate of one weight file (diagnoses slow pod disks)."""
+    seconds = time.time() - started
+    try:
+        size = os.path.getsize(path) / 1e9
+    except (OSError, TypeError):
+        size = 0
+    rate = f", {size / seconds:.2f} GB/s" if size and seconds > 0 else ""
+    print(f"[LoadTiming] Qwen {part}: {size:.1f} GB in {seconds:.1f}s{rate}")
+
 
 _QWEN_FUSED_SPLIT_MAP = {
     "attn.to_qkv": {"mapped_modules": ("attn.to_q", "attn.to_k", "attn.to_v")},
@@ -86,10 +97,12 @@ class model_factory():
             transformer = QwenImageTransformer2DModel(**transformer_config)
         source =  model_def.get("source", None)
 
+        started = time.time()
         if source is not None:
             offload.load_model_data(transformer, source, fused_split_map=_QWEN_FUSED_SPLIT_MAP, writable_tensors=False)
         else:
             offload.load_model_data(transformer, transformer_filename, fused_split_map=_QWEN_FUSED_SPLIT_MAP, writable_tensors=False)
+        _log_load("transformer", source or transformer_filename, started)
         # transformer = offload.fast_load_transformers_model("transformer_quanto.safetensors", writable_tensors= True , modelClass=QwenImageTransformer2DModel, defaultConfigPath="transformer_config.json")
 
         if not source is None:
@@ -100,7 +113,9 @@ class model_factory():
             from wgp import save_quantized_model
             save_quantized_model(transformer, model_type, model_filename[0], dtype, base_config_file)
 
+        started = time.time()
         text_encoder = offload.fast_load_transformers_model(text_encoder_filename,  writable_tensors= True , modelClass=Qwen2_5_VLForConditionalGeneration,  defaultConfigPath= fl.locate_file(os.path.join("Qwen2.5-VL-7B-Instruct", "config.json")) )
+        _log_load("text encoder", text_encoder_filename, started)
         # text_encoder = offload.fast_load_transformers_model(text_encoder_filename, do_quantize=True,  writable_tensors= True , modelClass=Qwen2_5_VLForConditionalGeneration, defaultConfigPath="text_encoder_config.json", verboseLevel=2)
         # text_encoder.to(torch.float16)
         # offload.save_model(text_encoder, "text_encoder_quanto_fp16.safetensors", do_quantize= True)

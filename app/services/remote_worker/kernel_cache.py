@@ -130,6 +130,8 @@ class KernelCache:
             while True:
                 time.sleep(interval)
                 count = _file_count(self._root)
+                if count != previous:
+                    print(f"[Worker] kernel cache: {count} files ({self._key})", flush=True)
                 if count == previous and count > self._published:
                     try:
                         if self.publish_if_grown():
