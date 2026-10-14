@@ -7600,13 +7600,16 @@ def _resolve_image_ref_fit(model_def, auto_aspect):
     canvas. Models such as SCAIL-2 transform reference RGB and semantic masks
     together in a custom postprocessor, so padding here would become permanent
     conditioning content and would also misalign a separately recovered alpha.
+    Editors such as Qwen-Image-Edit read references at their own aspect ratio:
+    a letterboxed source comes back with its padding bars.
     """
     model_def = model_def or {}
     ref_fit = model_def.get("fit_into_canvas_image_refs", 1)
     postprocessor_handles_canvas = model_def.get(
         "custom_image_ref_postprocessor_handles_canvas", False,
     )
-    if not auto_aspect and ref_fit == 0 and not postprocessor_handles_canvas:
+    native_aspect = model_def.get("image_refs_native_aspect", False)
+    if not auto_aspect and ref_fit == 0 and not postprocessor_handles_canvas and not native_aspect:
         return 1
     return ref_fit
 

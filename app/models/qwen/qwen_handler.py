@@ -57,6 +57,9 @@ class family_handler():
             if base_model_type in ["qwen_image_edit_plus_20B", "qwen_image_edit_plus2_20B"]:
                 extra_model_def["inpaint_video_prompt_type"]= "VAGI"            
             extra_model_def["image_ref_inpaint"]=  base_model_type in ["qwen_image_edit_plus_20B", "qwen_image_edit_plus2_20B"]
+            # The editor reads references at their own aspect ratio (as hosted Qwen-Edit does);
+            # letterboxing a tall sheet into a square output makes it copy the bars.
+            extra_model_def["image_refs_native_aspect"] = True
             extra_model_def["image_ref_choices"] = {
             "choices": [
                 ("None", ""),

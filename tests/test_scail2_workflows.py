@@ -323,6 +323,12 @@ class TestScail2RecastRelightingSettings(unittest.TestCase):
 
 
 class TestScail2ControlVideoFraming(unittest.TestCase):
+    def test_fixed_aspect_keeps_native_aspect_refs_of_editors_that_ask_for_it(self):
+        resolve_fit = _load_functions(_WGP_PATH, ("_resolve_image_ref_fit",))["_resolve_image_ref_fit"]
+        self.assertEqual(resolve_fit({"fit_into_canvas_image_refs": 0}, auto_aspect=False), 1)
+        qwen_edit = {"fit_into_canvas_image_refs": 0, "image_refs_native_aspect": True}
+        self.assertEqual(resolve_fit(qwen_edit, auto_aspect=False), 0)
+
     def test_fixed_aspect_does_not_letterbox_scail_reference_before_crop(self):
         try:
             import torch
