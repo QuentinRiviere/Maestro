@@ -7575,6 +7575,8 @@ def _run_planning_v2(pid: str, params: dict, pipeline_type: str):
             "skill_options": params.get("skill_options") or {},
             "audio_path": params.get("audio_path") if pipeline_type == "short_film_audio" else None,
             "clips": planned_clips if pipeline_type == "short_film_audio" else None,
+            # Shots planned at their final length, filmed as H3 sequences.
+            "sequence_shots": h3_sequences_enabled(params, selected_video_def),
         })
     elif skill_type == "viral_video":
         planner_kwargs.update({
