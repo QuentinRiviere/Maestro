@@ -4,7 +4,8 @@ States exposed to the UI:
 
 * ``not_configured`` – no dstack server/project/token yet.
 * ``stopped``        – no active run (a failed last run carries ``message``).
-* ``starting``       – run submitted, waiting for a GPU / pulling the image.
+* ``starting``       – run submitted, waiting for a GPU / pulling the image
+                       (also while a slow host is replaced, see below).
 * ``booting``        – container running, Maestro not answering probes yet.
 * ``ready``          – the service proxy routes to the worker.
 * ``stopping``       – stop requested, dstack is terminating the pod.
@@ -13,6 +14,15 @@ The idle stop is Maestro's job: dstack ignores ``idle_duration`` on RunPod.
 The idle clock only starts once the worker is ready and pauses while a job
 is using it; ``max_duration``/``max_price`` in the run spec are the backstop
 if Maestro itself is not running.
+
+Slow hosts: nothing of Maestro runs on the pod while it pulls the ~20 GB
+worker image, and some hosts pull it at a few tens of MB/s. A run that stays
+in dstack ``provisioning`` past ``slow_pull_seconds`` is stopped and submitted
+again (same models to preload), up to ``slow_pull_max_retries`` times; after
+that the current host is kept. Queued jobs keep waiting meanwhile: the pod
+reports ``starting``. A data center is not blamed for one slow host (its
+machines sit on different networks), but two slow hosts in a row from the same
+one keep it out of the run's ``regions`` for ``slow_region_exclusion_seconds``.
 """
 from __future__ import annotations
 
@@ -56,6 +66,8 @@ QUEUE_EMPTY_GRACE_SECONDS = 30.0
 REVIEW_HOLD_SECONDS = 30 * 60
 # Startup steps are read from the run logs at most this often.
 BOOT_LOG_POLL_SECONDS = 3.0
+# Slow hosts in a row from one data center before it is excluded.
+SLOW_HOSTS_TO_EXCLUDE_REGION = 2
 
 
 class RemoteWorkerManager:
@@ -120,6 +132,18 @@ class RemoteWorkerManager:
         self._fetch_downloads: Callable[[str, str], dict[str, Any]] = _worker_downloads
         self._downloads: dict[str, Any] = {}
         self._downloads_polled_at = 0.0
+        # Slow image pull watchdog (per pod): when the current submission was
+        # first seen provisioning, restarts so far, and a pending restart.
+        self._provisioning_submission: str | None = None
+        self._provisioning_since: float | None = None
+        self._provisioning_settled: str | None = None
+        self._slow_retries = 0
+        self._slow_cap_logged = False
+        self._slow_restart: dict[str, Any] | None = None
+        # Shared by the pool through the first pod: the last slow host's data
+        # center and the excluded ones with their expiry.
+        self._last_slow_region: str | None = None
+        self._excluded_regions: dict[str, float] = {}
 
     # ── settings ───────────────────────────────────────────────────────────
 
@@ -208,6 +232,7 @@ class RemoteWorkerManager:
             "network_filter": self._network_filter or None,
             "preload_models": list(self._preload_models),
             "review_hold": self._review_hold_active(),
+            **self._slow_host_status(),
         }
         if not settings.configured:
             return base
@@ -215,9 +240,18 @@ class RemoteWorkerManager:
             run = self.client().get_run(self.run_name)
         except (DstackError, RemoteWorkerError) as exc:
             return {**base, "state": "unknown", "message": str(exc)}
-        return {**base, **self._describe(run)}
+        described = self._describe(run)
+        # Read after _describe, which may just have replaced a slow host.
+        return {**base, **described, **self._slow_host_status()}
+
+    def _slow_host_status(self) -> dict[str, Any]:
+        return {"slow_host_retries": self._slow_retries,
+                "excluded_regions": self._root.excluded_regions()}
 
     def _describe(self, run: Mapping[str, Any] | None) -> dict[str, Any]:
+        replacing = self._replace_slow_host(run)
+        if replacing is not None:
+            return replacing
         if not run or run.get("deleted"):
             self._mark_not_ready()
             return {"state": "stopped"}
@@ -255,6 +289,9 @@ class RemoteWorkerManager:
             self._mark_not_ready()
             return {**details, "state": "stopping"}
         if run_status in _STARTING_RUN or run_status != "running":
+            slow = self._check_slow_pull(run_status, submission, provisioning)
+            if slow is not None:
+                return {**details, **slow}
             pull = submission.get("image_pull_progress") or {}
             if pull.get("total_bytes"):
                 details["image_pull_percent"] = int(
@@ -262,6 +299,7 @@ class RemoteWorkerManager:
                 )
             details["boot"] = self._boot(run, submission, "starting")
             return {**details, "state": "starting"}
+        self._settle_provisioning(submission)
         if not _probes_ready(run, submission):
             details["boot"] = self._boot(run, submission, "booting")
             return {**details, "state": "booting"}
@@ -392,27 +430,207 @@ class RemoteWorkerManager:
             run = client.get_run(run_name)
             if run and str(run.get("status") or "") not in _FINISHED_RUN and not run.get("deleted"):
                 return self.status()
-            output_scope = f"{run_name}-{uuid.uuid4().hex[:12]}"
-            keys = self.pod_r2_keys(settings, run_name, output_scope=output_scope)
-            for name, value in dstack_secrets(settings, keys).items():
-                client.set_secret(name, value)
-            if settings.manage_fleet and settings.fleet:
-                client.apply_fleet(build_fleet_spec(settings))
-            self._stop_reason = None
-            self._last_activity = self._clock()
-            self._preload_models = self._models_to_preload(model_type)
-            run_spec = build_run_spec(settings, output_scope, preload_models=self._preload_models,
-                                      run_name=run_name)
-            try:
-                self._network_filter = pin_fast_offers(
-                    run_spec, lambda spec: client.get_plan(spec, max_offers=PLAN_OFFERS), settings,
-                )
-            except VastFilterError as exc:
-                self._revoke_pod_keys(run_name)
-                raise RemoteWorkerError(str(exc)) from exc
-            client.apply(run_spec)
+            self._slow_retries = 0
+            self._slow_cap_logged = False
+            self._slow_restart = None
+            self._submit(settings, client, self._models_to_preload(model_type))
             log.info("remote worker %s submitted (model %s)", run_name, model_type or "-")
         return self.status()
+
+    def _submit(self, settings: RemoteWorkerSettings, client: DstackClient,
+                preload_models: list[str]) -> None:
+        """Push the pod's secrets and fleet, then submit its run (caller holds the lock)."""
+        run_name = self.run_name
+        output_scope = f"{run_name}-{uuid.uuid4().hex[:12]}"
+        keys = self.pod_r2_keys(settings, run_name, output_scope=output_scope)
+        for name, value in dstack_secrets(settings, keys).items():
+            client.set_secret(name, value)
+        if settings.manage_fleet and settings.fleet:
+            client.apply_fleet(build_fleet_spec(settings))
+        self._stop_reason = None
+        self._last_activity = self._clock()
+        self._preload_models = list(preload_models)
+        self._provisioning_submission = self._provisioning_since = None
+        run_spec = build_run_spec(settings, output_scope, preload_models=self._preload_models,
+                                  run_name=run_name)
+        self._root.restrict_regions(run_spec, client)
+        try:
+            self._network_filter = pin_fast_offers(
+                run_spec, lambda spec: client.get_plan(spec, max_offers=PLAN_OFFERS), settings,
+            )
+        except VastFilterError as exc:
+            self._revoke_pod_keys(run_name)
+            raise RemoteWorkerError(str(exc)) from exc
+        client.apply(run_spec)
+
+    # ── slow image pull watchdog ───────────────────────────────────────────
+
+    @property
+    def _root(self) -> "RemoteWorkerManager":
+        """The first pod, which keeps the data center bookkeeping of the pool."""
+        return self._parent or self
+
+    def _check_slow_pull(self, run_status: str, submission: Mapping[str, Any],
+                         provisioning: Mapping[str, Any]) -> dict[str, Any] | None:
+        """Replace the host when the run pulls its image for too long.
+
+        Returns the ``starting`` status to show while the run is replaced,
+        or None to describe the run as usual.
+        """
+        threshold = self.settings.slow_pull_seconds
+        if threshold <= 0 or run_status != "provisioning":
+            return None
+        submission_id = str(submission.get("id") or "")
+        now = self._clock()
+        with self._lock:
+            if submission_id != self._provisioning_submission:
+                self._provisioning_submission = submission_id
+                self._provisioning_since = now
+                return None
+            elapsed = now - (self._provisioning_since or now)
+            if elapsed <= threshold:
+                return None
+            region = str(provisioning.get("region") or "")
+            limit = self.settings.slow_pull_max_retries
+            if self._slow_retries >= limit:
+                if not self._slow_cap_logged:
+                    self._slow_cap_logged = True
+                    log.info("remote worker %s: image pull slow for %ds on %s, %d host retries used: "
+                             "keeping this host", self.run_name, elapsed, region or "?", limit)
+                return None
+            try:
+                # Only ever this manager's own run, like stop().
+                self.client().stop_run(self.run_name, abort=False)
+            except (DstackError, RemoteWorkerError) as exc:
+                log.warning("remote worker %s: could not stop the slow host: %s", self.run_name, exc)
+                return None
+            self._slow_retries += 1
+            self._provisioning_settled = submission_id
+            message = f"Slow image pull on {region or 'this host'}, trying another host"
+            self._slow_restart = {"region": region, "message": message}
+            self._mark_not_ready()
+            log.info("remote worker %s: image pull still running after %ds on %s (host %s): "
+                     "stopping it, slow-host retry %d/%d", self.run_name, elapsed, region or "?",
+                     provisioning.get("hostname") or "?", self._slow_retries, limit)
+        self._root.note_slow_host(region)
+        return self._replacing_status()
+
+    def _replace_slow_host(self, run: Mapping[str, Any] | None) -> dict[str, Any] | None:
+        """While a slow host is being replaced: submit the new run once the old one ended."""
+        with self._lock:
+            if self._slow_restart is None:
+                return None
+            finished = not run or run.get("deleted") or str(run.get("status") or "") in _FINISHED_RUN
+            if not finished:
+                return self._replacing_status(run)
+            pending, self._slow_restart = self._slow_restart, None
+            try:
+                self._submit(self.settings, self.client(), self._preload_models)
+            except (DstackError, RemoteWorkerError) as exc:
+                log.warning("remote worker %s: new host after a slow pull not submitted: %s",
+                            self.run_name, exc)
+                self._stop_reason = f"Could not replace the slow host: {exc}"
+                return None
+            log.info("remote worker %s: new run submitted after the slow host on %s",
+                     self.run_name, pending.get("region") or "?")
+        try:
+            return self._describe(self.client().get_run(self.run_name))
+        except (DstackError, RemoteWorkerError) as exc:
+            return {"state": "unknown", "message": str(exc)}
+
+    def _replacing_status(self, run: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        message = (self._slow_restart or {}).get("message") or "Trying another host"
+        return {
+            "state": "starting",
+            "run_status": str((run or {}).get("status") or "terminating"),
+            "message": message,
+            "boot": {"steps": [{"phase": "host", "label": "GPU host found and image pulled",
+                                "state": "started", "started_at": None, "ended_at": None}],
+                     "submitted_at": None, "message": message},
+        }
+
+    def _settle_provisioning(self, submission: Mapping[str, Any]) -> None:
+        """A run that left ``provisioning`` in time breaks the slow-host streak."""
+        submission_id = str(submission.get("id") or "")
+        with self._lock:
+            if (not submission_id or submission_id != self._provisioning_submission
+                    or submission_id == self._provisioning_settled):
+                return
+            self._provisioning_settled = submission_id
+            elapsed = self._clock() - (self._provisioning_since or self._clock())
+            slow = elapsed > self.settings.slow_pull_seconds > 0
+        if not slow:
+            self._root.clear_slow_streak()
+
+    def note_slow_host(self, region: str) -> None:
+        """Count a slow host; the second in a row from one data center excludes it."""
+        settings = self.settings
+        with self._lock:
+            streak_region = self._last_slow_region
+            if not region:
+                self._last_slow_region = None
+                return
+            if region != streak_region:
+                self._last_slow_region = region
+                log.info("remote worker: slow host in %s, data center kept (first in a row)", region)
+                return
+            self._last_slow_region = None
+            if settings.slow_region_exclusion_seconds <= 0:
+                return
+            self._excluded_regions[region] = self._clock() + settings.slow_region_exclusion_seconds
+            log.info("remote worker: %d slow hosts in a row in %s, excluding it for %ds",
+                     SLOW_HOSTS_TO_EXCLUDE_REGION, region, settings.slow_region_exclusion_seconds)
+
+    def clear_slow_streak(self) -> None:
+        with self._lock:
+            self._last_slow_region = None
+
+    def excluded_regions(self) -> list[dict[str, Any]]:
+        """Data centers kept out for now, with their expiry (expired ones are dropped)."""
+        now = self._clock()
+        with self._lock:
+            for region, until in list(self._excluded_regions.items()):
+                if until <= now:
+                    del self._excluded_regions[region]
+                    log.info("remote worker: data center %s no longer excluded", region)
+            return [{"region": region, "until": until, "expires_in_seconds": int(until - now)}
+                    for region, until in sorted(self._excluded_regions.items())]
+
+    def restrict_regions(self, run_spec: dict[str, Any], client: DstackClient) -> None:
+        """Limit ``run_spec`` to the data centers its offers come from, minus the excluded ones.
+
+        dstack only takes an allow list (``regions``), so it is read from the
+        plan's offers, one plan per backend like ``pin_fast_offers``.
+        """
+        excluded = {entry["region"] for entry in self.excluded_regions()}
+        if not excluded:
+            return
+        configuration = run_spec["configuration"]
+        regions: list[str] = []
+        try:
+            for backend in configuration.get("backends") or []:
+                planned = {k: v for k, v in configuration.items() if k != "fleets"}
+                planned["backends"] = [backend]
+                job_plans = client.get_plan({**run_spec, "configuration": planned},
+                                            max_offers=PLAN_OFFERS).get("job_plans") or [{}]
+                for offer in job_plans[0].get("offers") or []:
+                    region = str(offer.get("region") or "")
+                    if region and region not in regions:
+                        regions.append(region)
+        except DstackError as exc:
+            log.warning("remote worker: data center exclusion skipped, no plan: %s", exc)
+            return
+        allowed = [region for region in regions if region not in excluded]
+        if not allowed:
+            # Never exclude every data center: drop the exclusion instead.
+            with self._lock:
+                self._excluded_regions.clear()
+            log.info("remote worker: excluding %s would leave no offer, exclusion dropped",
+                     ", ".join(sorted(excluded)))
+            return
+        configuration["regions"] = allowed
+        log.info("remote worker: data centers %s excluded, run limited to %s",
+                 ", ".join(sorted(excluded)), ", ".join(allowed))
 
     def _models_to_preload(self, model_type: str | None) -> list[str]:
         models = [model_type] if model_type else []
@@ -433,6 +651,7 @@ class RemoteWorkerManager:
                 client.stop_run(self.run_name, abort=False)
                 log.info("remote worker %s stop requested: %s", self.run_name, reason)
             self._stop_reason = reason
+            self._slow_restart = None
             self._mark_not_ready()
         self._revoke_pod_keys(self.run_name)
         return self.status()
