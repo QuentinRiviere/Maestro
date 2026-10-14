@@ -82,6 +82,15 @@ SCENE_CRAFT = """SCENE CRAFT (this is what separates a real scene from generated
 - keep_sec: the [start, end] seconds of the rendered shot the final edit keeps. Reactions and inserts keep
   1.5-3 s, exchanges 2-4 s, establishing shots 3-5 s; any dialogue and the decisive action fall inside it."""
 
+# The renderer starts a continuing shot from the true last frame of the shot
+# before it, so the flag must stay rare: a chained shot cannot reframe.
+CONTINUES_PREVIOUS_RULE = """continues_previous: true ONLY when this shot is the same camera setup (same framing, same angle,
+same camera movement) carrying on the previous shot's action past what one render can hold (a long run, a long
+walk, one unbroken gesture). It is rendered from the previous shot's last frame, so it opens exactly there and
+cannot reframe. false for every cut: shot/reverse-shot, a new angle, a close-up after a wide, an insert, a
+reaction, and always false for the first shot of a scene. When true, the previous shot's closing_blocking is this
+shot's opening_blocking."""
+
 SCENE_DESIGN_SYSTEM = """You are the director preparing the scenes of a short production before shooting.
 From the brief, the skill rules and the cast, design the scenes. Return ONLY a JSON array, one object per scene:
 [{"scene_id": "short_snake_case", "location": "the cast location this scene is shot in, by its exact name",
@@ -218,7 +227,10 @@ OUTPUT FORMAT — respond with ONLY a JSON array of shot objects:
                   "motivation": "why the camera moves, or empty"}},
   "audio_plan": {{"mode": "generated_audio", "ambience": "the room tone of this place at this moment",
                  "effects": ["timed sounds, e.g. '2.0s: the books thud on the floor'"]}},
-  "closing_blocking": "exact positions and poses at the last frame"}}]
+  "closing_blocking": "exact positions and poses at the last frame",
+  "continues_previous": false}}]
+
+{CONTINUES_PREVIOUS_RULE}
 
 {timing_rule} Go:"""
         if kwargs.get("polish_block"):
@@ -255,6 +267,10 @@ OUTPUT FORMAT — respond with ONLY a JSON array of shot objects:
                 scene_id = shots[-1].metadata.get("continuity_group", scene_ids[0]) if shots else scene_ids[0]
             previous_group = shots[-1].metadata.get("continuity_group") if shots else None
             same_scene = bool(scene_id) and scene_id == previous_group
+            # Same camera carrying the previous shot's action on: render it
+            # from that shot's last frame. Ordinary same-scene cuts stay
+            # independent renders with their own start image.
+            continues_previous = same_scene and str(raw.get("continues_previous")).strip().lower() == "true"
             closing = str(raw.get("closing_blocking") or raw.get("ending_beat") or "")
             scene = scene_by_id.get(scene_id) or {}
             performance = raw.get("performance")
@@ -269,7 +285,9 @@ OUTPUT FORMAT — respond with ONLY a JSON array of shot objects:
                 scene_type=raw.get("scene_type", "scene"),
                 source_mode_preference="i2v" if has_reference else "t2v",
                 image_strategy="reference_edit" if has_reference else "fresh_generation",
-                continuity_strategy="continuous" if same_scene else "independent",
+                continuity_strategy=(
+                    "extend_previous" if continues_previous else "continuous" if same_scene else "independent"
+                ),
                 subjects_on_screen=[SubjectRef.from_dict(s) if isinstance(s, dict) else SubjectRef(visual_description=str(s))
                                     for s in raw.get("subjects_on_screen", [])],
                 spatial_setup=raw.get("opening_blocking") or raw.get("spatial_setup", ""),
@@ -301,6 +319,16 @@ OUTPUT FORMAT — respond with ONLY a JSON array of shot objects:
                     **({"keep_sec": keep} if (keep := normalize_keep(raw.get("keep_sec"), duration)) else {}),
                 },
             ))
+            if continues_previous:
+                # The handoff frame is the previous shot's last frame, so the
+                # edit keeps that shot to its end and this one from its start.
+                for shot, edge in ((shots[-2], 1), (shots[-1], 0)):
+                    keep = shot.metadata.pop("keep_sec", None)
+                    if keep:
+                        keep = list(keep)
+                        keep[edge] = shot.duration_sec if edge else 0.0
+                        if (keep := normalize_keep(keep, shot.duration_sec)):
+                            shot.metadata["keep_sec"] = keep
         return ProductionPlan(
             skill_type=self.skill_type,
             title=None,

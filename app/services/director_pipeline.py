@@ -2610,18 +2610,19 @@ def _director_h3_reference_manifest(
     )
 
 
-def _director_same_logical_scene(
+def _director_extends_previous(
     first_plan: dict,
     first_clip: dict,
     second_plan: dict,
     second_clip: dict,
 ) -> bool:
-    """Whether adjacent bounded shots should share a final-frame handoff."""
+    """Whether the second shot is the same camera continuing the first.
 
-    # Native H3 planning can deliberately mark a pair as one uninterrupted
-    # shot continued across the model's duration boundary. Only that explicit
-    # strategy may use the true final frame as the next start frame; ordinary
-    # same-scene editorial cuts remain independent renders.
+    Planners mark such a shot ``extend_previous`` (Red Flag: the last frame
+    of a clip becomes the first frame of the next). Ordinary same-scene
+    editorial cuts are ``continuous`` and remain independent renders.
+    """
+
     first_group = str(
         first_clip.get("_director_continuity_group")
         or first_plan.get("_director_continuity_group")
@@ -2637,10 +2638,56 @@ def _director_same_logical_scene(
         or second_plan.get("_director_continuity_strategy")
         or ""
     ).strip().lower()
-    if (
+    return bool(
         first_group
         and first_group == second_group
         and second_strategy == "extend_previous"
+    )
+
+
+def _director_chains_last_frame(model_def: Optional[dict]) -> bool:
+    """Whether a video model can start a shot from a previous clip's frame."""
+
+    if video_strategy(model_def) == OMNI_REFERENCE:
+        return False
+    allowed = str((model_def or {}).get("image_prompt_types_allowed") or "S")
+    return "S" in allowed
+
+
+def _director_chained_shots(
+    clip_plans: list[dict],
+    planned_clips: list[dict],
+    model_def: Optional[dict],
+) -> list[bool]:
+    """Per shot: render it from the previous clip's true last frame."""
+
+    chained = [False] * len(clip_plans)
+    if not _director_chains_last_frame(model_def):
+        return chained
+    for index in range(1, len(clip_plans)):
+        chained[index] = _director_extends_previous(
+            clip_plans[index - 1],
+            planned_clips[index - 1] if index - 1 < len(planned_clips) else {},
+            clip_plans[index],
+            planned_clips[index] if index < len(planned_clips) else {},
+        )
+    return chained
+
+
+def _director_same_logical_scene(
+    first_plan: dict,
+    first_clip: dict,
+    second_plan: dict,
+    second_clip: dict,
+) -> bool:
+    """Whether adjacent bounded shots should share a final-frame handoff."""
+
+    # A planner can deliberately mark a pair as one uninterrupted shot
+    # continued across the model's duration boundary. Only that explicit
+    # strategy may use the true final frame as the next start frame; ordinary
+    # same-scene editorial cuts remain independent renders.
+    if _director_extends_previous(
+        first_plan, first_clip, second_plan, second_clip,
     ):
         return True
 
@@ -2673,8 +2720,14 @@ def _director_same_logical_scene(
 def _extract_director_continuation_frame(
     video_path: str,
     destination: str,
+    tail_skip: int = 0,
 ) -> str:
-    """Write the true final frame of one bounded H3 segment as a PNG."""
+    """Write the final frame of one clip as a PNG.
+
+    ``tail_skip`` matches the worker's multi-clip continuation: bounded
+    models hand off their true final frame, rolling-window models skip their
+    distortion-prone tail.
+    """
 
     import decord
     from PIL import Image as PILImage
@@ -2683,7 +2736,7 @@ def _extract_director_continuation_frame(
     try:
         if len(reader) <= 0:
             raise ValueError("video contains no frames")
-        frame = reader[len(reader) - 1].asnumpy()
+        frame = reader[max(0, len(reader) - max(0, int(tail_skip)) - 1)].asnumpy()
     finally:
         del reader
     PILImage.fromarray(frame).save(destination)
@@ -2788,20 +2841,6 @@ def _rerun_clip_video_impl(out_dir: str, pid: str, clip_index: int, prompt_overr
     pipeline_file = _find_pipeline_file(out_dir, pid)
     clip_out_dir = os.path.dirname(pipeline_file) if pipeline_file else out_dir
 
-    # Generated-image projects retain the strict I2V contract. Prompt-only
-    # and direct-reference projects intentionally have no start-image file.
-    start_path = ""
-    if uses_shot_images:
-        start_img = clip.get("start_image_filename")
-        if _invalid_saved_media_numbers(
-            [start_img], 1, clip_out_dir, "image",
-        ):
-            raise ValueError(
-                "This clip has no valid start image. Regenerate its start image "
-                "before regenerating video."
-            )
-        start_path = os.path.join(clip_out_dir, start_img)
-
     # Reconstruct the SAME carried frame schedule used by a full Director run.
     # Generators only accept lengths on a model-specific latent lattice. A
     # standalone rerun previously floored this one clip independently, losing
@@ -2815,6 +2854,44 @@ def _rerun_clip_video_impl(out_dir: str, pid: str, clip_index: int, prompt_overr
             fps = model_def["fps"]
     except Exception:
         pass
+
+    # A shot planned as the same camera continuing the previous one starts
+    # from that clip's last frame, exactly like the full run.
+    chained_from_previous = (
+        clip_index > 0
+        and _director_chains_last_frame(model_def)
+        and _director_extends_previous(
+            clips[clip_index - 1].get("planned_clip") or {},
+            clips[clip_index - 1],
+            clip.get("planned_clip") or {},
+            clip,
+        )
+    )
+    chains_into_next = (
+        clip_index + 1 < len(clips)
+        and _director_chains_last_frame(model_def)
+        and _director_extends_previous(
+            clip.get("planned_clip") or {},
+            clip,
+            clips[clip_index + 1].get("planned_clip") or {},
+            clips[clip_index + 1],
+        )
+    )
+
+    # Generated-image projects retain the strict I2V contract. Prompt-only
+    # and direct-reference projects intentionally have no start-image file.
+    start_path = ""
+    if uses_shot_images and not chained_from_previous:
+        start_img = clip.get("start_image_filename")
+        if _invalid_saved_media_numbers(
+            [start_img], 1, clip_out_dir, "image",
+        ):
+            raise ValueError(
+                "This clip has no valid start image. Regenerate its start image "
+                "before regenerating video."
+            )
+        start_path = os.path.join(clip_out_dir, start_img)
+
     rerun_strengths = {
         "video_model": video_model,
         "video_params": video_params,
@@ -2945,37 +3022,40 @@ def _rerun_clip_video_impl(out_dir: str, pid: str, clip_index: int, prompt_overr
     )
 
     continuation_path = None
-    if (
-        director_strategy == BOUNDED_START_END
-        and not uses_shot_images
-        and clip_index > 0
+    if clip_index > 0 and (
+        chained_from_previous
+        or (
+            director_strategy == BOUNDED_START_END
+            and not uses_shot_images
+            and _director_same_logical_scene(
+                clips[clip_index - 1],
+                clips[clip_index - 1].get("planned_clip") or {},
+                clip,
+                clip.get("planned_clip") or {},
+            )
+        )
     ):
-        previous_clip = clips[clip_index - 1]
-        if _director_same_logical_scene(
-            previous_clip,
-            previous_clip.get("planned_clip") or {},
-            clip,
-            clip.get("planned_clip") or {},
+        previous_video = clips[clip_index - 1].get("video_filename")
+        if _invalid_saved_media_numbers(
+            [previous_video], 1, clip_out_dir, "video",
         ):
-            previous_video = previous_clip.get("video_filename")
-            if _invalid_saved_media_numbers(
-                [previous_video], 1, clip_out_dir, "video",
-            ):
-                raise ValueError(
-                    "This shot continues the preceding H3 segment. "
-                    "Regenerate the preceding video clip first."
-                )
-            pid_token = re.sub(r"[^A-Za-z0-9_-]", "_", pid)[:32]
-            continuation_path = os.path.join(
-                clip_out_dir,
-                f"_director_h3_continue_{pid_token}_c{clip_index}_"
-                f"{uuid.uuid4().hex[:8]}.png",
+            raise ValueError(
+                "This shot continues the preceding shot. "
+                "Regenerate the preceding video clip first."
             )
-            _extract_director_continuation_frame(
-                os.path.join(clip_out_dir, previous_video),
-                continuation_path,
-            )
-            start_path = continuation_path
+        pid_token = re.sub(r"[^A-Za-z0-9_-]", "_", pid)[:32]
+        continuation_path = os.path.join(
+            clip_out_dir,
+            f"_director_h3_continue_{pid_token}_c{clip_index}_"
+            f"{uuid.uuid4().hex[:8]}.png",
+        )
+        _extract_director_continuation_frame(
+            os.path.join(clip_out_dir, previous_video),
+            continuation_path,
+            # Same handoff frame as the worker's multi-clip continuation.
+            tail_skip=0 if director_strategy != ROLLING_WINDOW else 8,
+        )
+        start_path = continuation_path
 
     gen_params = {
         "model_type": video_model,
@@ -3029,6 +3109,7 @@ def _rerun_clip_video_impl(out_dir: str, pid: str, clip_index: int, prompt_overr
         uses_shot_images
         and director_strategy == BOUNDED_START_END
         and clip_index + 1 < len(clips)
+        and not chains_into_next
     ):
         next_clip = clips[clip_index + 1]
         first_plan = clip.get("planned_clip") or {}
@@ -3245,6 +3326,12 @@ def _rerun_clip_video_impl(out_dir: str, pid: str, clip_index: int, prompt_overr
     def _update(s):
         s["clips"][clip_index]["video_filename"] = new_filename
         s["clips"][clip_index]["video_stale"] = False
+        # The next shot started from this clip's last frame, which just
+        # changed: its video no longer matches and must be rerun too.
+        if chains_into_next and clip_index + 1 < len(s["clips"]):
+            s["clips"][clip_index + 1]["video_stale"] = bool(
+                s["clips"][clip_index + 1].get("video_filename")
+            )
         s["clips"][clip_index]["video_prompt"] = prompt
         s["clips"][clip_index]["_director_vocal_contract"] = (
             prompt_plan.get("_director_vocal_contract")
@@ -3276,7 +3363,14 @@ def _rerun_clip_video_impl(out_dir: str, pid: str, clip_index: int, prompt_overr
             snapshot_video_params["resolution"] = gen_params["resolution"]
     _update_saved_pipeline(out_dir, pid, _update)
 
-    return {"filename": new_filename, "clip_index": clip_index}
+    result = {"filename": new_filename, "clip_index": clip_index}
+    if chains_into_next and clips[clip_index + 1].get("video_filename"):
+        result["stale_clip_indices"] = [clip_index + 2]
+        result["warning"] = (
+            f"Shot {clip_index + 2} continues from this shot's last frame; "
+            "regenerate its video too."
+        )
+    return result
 
 
 _DIRECTOR_SINGLE_ASSET_KEYS = (
@@ -8233,8 +8327,13 @@ def _run_video_generation(pid: str, params: dict, clip_plans: list[dict],
                                 keyframe_images.append(kf_path)
                                 keyframe_frame_positions.append(kf_pos + 1)  # 1-indexed for wgp parser
 
-            # Scene boundary keyframe: inject next scene's start image at the end of this scene
-            if uses_shot_images and i < len(clip_plans) - 1:
+            # Scene boundary keyframe: inject next scene's start image at the end of this scene.
+            # A shot continuing this one with the same camera already flows on
+            # inside the single generation; pinning its image would jump.
+            if uses_shot_images and i < len(clip_plans) - 1 and not _director_extends_previous(
+                plan, pc, clip_plans[i + 1],
+                planned_clips[i + 1] if i + 1 < len(planned_clips) else {},
+            ):
                 next_img = clip_images[i + 1] if i + 1 < len(clip_images) else ""
                 if next_img:
                     next_path = os.path.join(out_dir, next_img)
@@ -8367,6 +8466,12 @@ def _run_video_generation(pid: str, params: dict, clip_plans: list[dict],
         if music_cap is not None:
             bounded_maximum = music_cap
         bounded_step = int(model_def.get("frames_steps") or _fs or 1)
+        # Same camera continuing the previous shot: the worker starts it from
+        # that clip's true last frame instead of its own start image, and the
+        # previous clip ends freely instead of aiming at that image.
+        chained_shots = _director_chained_shots(
+            clip_plans, planned_clips, model_def,
+        )
 
         for i, plan in enumerate(clip_plans):
             wp = plan.get("window_prompts") or []
@@ -8386,6 +8491,7 @@ def _run_video_generation(pid: str, params: dict, clip_plans: list[dict],
             img_file = (
                 clip_images[i]
                 if uses_shot_images and i < len(clip_images)
+                and not chained_shots[i]
                 else ""
             )
             if img_file:
@@ -8400,6 +8506,7 @@ def _run_video_generation(pid: str, params: dict, clip_plans: list[dict],
                 uses_shot_images
                 and director_strategy == BOUNDED_START_END
                 and i + 1 < len(clip_plans)
+                and not chained_shots[i + 1]
                 and pc.get("music_timing_version") != 1
             ):
                 next_pc = planned_clips[i + 1] if i + 1 < len(planned_clips) else {}
@@ -8736,7 +8843,10 @@ def _run_video_generation(pid: str, params: dict, clip_plans: list[dict],
             uses_shot_images
             and director_strategy == BOUNDED_START_END
             and (
-            not image_start_paths or not all(image_start_paths)
+            not image_start_paths or not all(
+                path or chained_shots[index]
+                for index, path in enumerate(image_start_paths)
+            )
             )
         ):
             raise RuntimeError(
@@ -8748,11 +8858,12 @@ def _run_video_generation(pid: str, params: dict, clip_plans: list[dict],
         if not has_any_end:
             image_end_paths = []
 
-        # Prompt-only FL2VA shots may continue from the preceding generated
-        # final frame when they are duration-split segments or the planner
-        # explicitly marks a literal same-composition continuation. Ordinary
-        # editorial cuts remain true T2V shots and do not inherit composition.
-        per_clip_continue_from_previous = [False] * len(clip_plans)
+        # A shot the planner marks as the same camera continuing the previous
+        # one starts from that clip's final frame on every start-image model.
+        # Prompt-only FL2VA duration-split segments continue the same way.
+        # Ordinary editorial cuts remain independent renders and do not
+        # inherit composition.
+        per_clip_continue_from_previous = list(chained_shots)
         if director_strategy == BOUNDED_START_END and not uses_shot_images:
             for index in range(1, len(clip_plans)):
                 previous_clip = (
@@ -8766,7 +8877,8 @@ def _run_video_generation(pid: str, params: dict, clip_plans: list[dict],
                     else {}
                 )
                 per_clip_continue_from_previous[index] = (
-                    _director_same_logical_scene(
+                    per_clip_continue_from_previous[index]
+                    or _director_same_logical_scene(
                         clip_plans[index - 1],
                         previous_clip,
                         clip_plans[index],

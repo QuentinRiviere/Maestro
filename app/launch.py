@@ -27489,8 +27489,10 @@ def _run_generation(job_id: str, *, finalize: bool = True, _slot_owned: bool = F
                     # Rolling-window multi-clip keeps its historic automatic
                     # continuation. Bounded models opt in per clip: Director
                     # uses this for duration-split FL2VA segments or an
-                    # explicitly planned literal continuation, never across
-                    # an ordinary editorial cut.
+                    # explicitly planned same-camera continuation, never
+                    # across an ordinary editorial cut. Bounded models use
+                    # the true final frame; rolling-window models keep the
+                    # default tail skip over their distortion-prone tail.
                     if not has_start and i > 0:
                         bounded_continuation = bool(
                             per_clip_continuations
@@ -27499,7 +27501,7 @@ def _run_generation(job_id: str, *, finalize: bool = True, _slot_owned: bool = F
                         )
                         if not _mc_bounded_director or bounded_continuation:
                             clip_params["_continuation"] = True
-                            if bounded_continuation:
+                            if bounded_continuation and _mc_bounded_director:
                                 clip_params["_continuation_tail_skip"] = 0
                     clip_frames = per_clip_frames[i] if per_clip_frames and i < len(per_clip_frames) else sw_size
                     if _mc_bounded_director:
