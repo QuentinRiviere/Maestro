@@ -15,6 +15,17 @@ FRAMINGS = ("wide", "medium", "close-up")
 # Horizontal field of view drawn for each framing, in degrees.
 _FOV = {"wide": 70.0, "medium": 42.0, "close-up": 22.0}
 _MAX_SUBJECTS = 6
+# Share of the half field of view a subject may use, so its disc stays in the wedge.
+_FIT = 0.8
+# Nearest a subject may stand in front of the lens, in room widths.
+_MIN_DEPTH = 0.06
+# Farthest a close-up camera stands from what it frames.
+_CLOSE_UP_REACH = 0.3
+# Where a camera with no usable position stands from its subjects.
+_DEFAULT_DISTANCE = {"wide": 0.6, "medium": 0.35, "close-up": 0.18}
+# A camera may stand outside the room (a tight shot of people far apart is taken
+# from far back); farther still is noise.
+_CAMERA_RANGE = (-10.0, 11.0)
 
 
 def normalize_framing(text: Any) -> str:
@@ -46,15 +57,26 @@ def _angle(value: Any) -> Optional[float]:
     return number % 360.0 if math.isfinite(number) else None
 
 
+def _camera_coordinate(value: Any) -> Optional[float]:
+    """A camera may stand outside the room (behind a wall it shoots through)."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) and _CAMERA_RANGE[0] <= number <= _CAMERA_RANGE[1] else None
+
+
 def parse_blocking_map(raw: Any, fallback_framing: Any = "") -> Optional[dict]:
-    """A clean blocking map, or None when the camera or every subject is unusable."""
+    """A clean blocking map, or None when the camera or every subject is unusable.
+
+    The camera is then aimed at the people it frames (see ``aim_camera``):
+    planners often leave the example facing in place, which would draw the
+    subject of a close-up outside the field of view.
+    """
     if not isinstance(raw, dict):
         return None
     camera = raw.get("camera")
     if not isinstance(camera, dict):
-        return None
-    x, y, facing = _coordinate(camera.get("x")), _coordinate(camera.get("y")), _angle(camera.get("facing_deg"))
-    if x is None or y is None or facing is None:
         return None
     subjects = []
     for item in raw.get("subjects") or []:
@@ -67,11 +89,71 @@ def parse_blocking_map(raw: Any, fallback_framing: Any = "") -> Optional[dict]:
         subjects.append({"name": name, "x": sx, "y": sy, "facing_deg": _angle(item.get("facing_deg"))})
     if not subjects:
         return None
-    return {
-        "camera": {"x": x, "y": y, "facing_deg": facing,
+    blocking = {
+        "camera": {"x": _camera_coordinate(camera.get("x")), "y": _camera_coordinate(camera.get("y")),
+                   "facing_deg": _angle(camera.get("facing_deg")),
                    "framing": normalize_framing(camera.get("framing") or fallback_framing)},
         "subjects": subjects[:_MAX_SUBJECTS],
     }
+    return aim_camera(blocking)
+
+
+def subjects_in_view(blocking: dict, fit: float = 1.0) -> bool:
+    """Whether every subject stands in front of the camera, inside its field of view."""
+    half = math.radians(_FOV.get(blocking["camera"]["framing"], _FOV["medium"]) / 2 * fit)
+    for subject in blocking["subjects"]:
+        lateral, depth = _to_camera(blocking, subject["x"], subject["y"])
+        if depth < _MIN_DEPTH - 1e-9 or abs(lateral) > depth * math.tan(half) + 1e-9:
+            return False
+    return True
+
+
+def aim_camera(blocking: dict) -> dict:
+    """Point the camera at the subjects it frames and keep them inside its field of view.
+
+    A camera whose facing already frames everyone (and, for a close-up, stands
+    close) is kept. Otherwise it turns toward the subjects' centroid from where
+    it stands, then slides along that line: back until everyone fits the
+    wedge, or in for a close-up planned too far away. A missing position puts
+    the camera in front of the subjects, toward the front of the room.
+    """
+    camera = blocking["camera"]
+    subjects = blocking["subjects"]
+    framing = camera["framing"]
+    cx = sum(s["x"] for s in subjects) / len(subjects)
+    cy = sum(s["y"] for s in subjects) / len(subjects)
+    placed = camera["x"] is not None and camera["y"] is not None
+    distance = math.hypot(camera["x"] - cx, camera["y"] - cy) if placed else 0.0
+    # Unit vector from the subjects to the camera; the camera looks back along it.
+    if placed and distance > 1e-6:
+        ux, uy = (camera["x"] - cx) / distance, (camera["y"] - cy) / distance
+    else:
+        ux, uy = 0.0, 1.0
+        distance = _DEFAULT_DISTANCE.get(framing, _DEFAULT_DISTANCE["medium"])
+    tan_half = math.tan(math.radians(_FOV.get(framing, _FOV["medium"]) / 2 * _FIT))
+    needed = 0.0
+    for subject in subjects:
+        ox, oy = subject["x"] - cx, subject["y"] - cy
+        toward = ox * ux + oy * uy  # how far the subject stands toward the camera
+        across = abs(ox * -uy + oy * ux)
+        needed = max(needed, toward + _MIN_DEPTH, toward + across / tan_half)
+    reach = max(_CLOSE_UP_REACH, needed) + 1e-3
+    if (placed and camera["facing_deg"] is not None and (framing != "close-up" or distance <= reach)
+            and subjects_in_view(blocking, _FIT * 1.01)):
+        return blocking
+
+    if framing == "close-up":
+        distance = min(distance, _CLOSE_UP_REACH)
+    distance = max(distance, needed)
+    camera = {**camera, "x": round(cx + ux * distance, 4), "y": round(cy + uy * distance, 4),
+              # Facing 0 looks toward -y and 90 toward +x: the direction (-ux, -uy).
+              "facing_deg": round(math.degrees(math.atan2(-ux, uy)) % 360.0, 2)}
+    aimed = {**blocking, "camera": camera}
+    if not subjects_in_view(aimed, _FIT * 1.01):
+        # Rounding pushed an edge subject out: step back a little more.
+        scale = 1.05
+        camera.update(x=round(cx + ux * distance * scale, 4), y=round(cy + uy * distance * scale, 4))
+    return aimed
 
 
 def _to_camera(blocking: dict, x: float, y: float) -> tuple[float, float]:

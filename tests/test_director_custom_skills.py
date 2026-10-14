@@ -14,6 +14,7 @@ if _APP_DIR not in sys.path:
     sys.path.insert(0, _APP_DIR)
 
 from services.director import custom_skills, skill_creator  # noqa: E402
+from services.director.blocking_map import subjects_in_view  # noqa: E402
 from services.director.planners.custom import CustomSkillPlanner, skill_rules_block  # noqa: E402
 
 SPEC = {
@@ -218,9 +219,12 @@ class PlannerTests(unittest.TestCase):
         self.assertIn("blocking_map: a top view of the scene floor", planner.prompts[-1]["system_prompt"])
         self.assertIn('"blocking_map": {"camera"', planner.prompts[-1]["system_prompt"])
         first, second = plan.shots
-        self.assertEqual(first.metadata["blocking_map"], {
-            "camera": {"x": 0.5, "y": 0.9, "facing_deg": 0.0, "framing": "close-up"},
-            "subjects": [{"name": "Mina", "x": 0.4, "y": 0.4, "facing_deg": 180.0}]})
+        blocking = first.metadata["blocking_map"]
+        self.assertEqual(blocking["subjects"], [{"name": "Mina", "x": 0.4, "y": 0.4, "facing_deg": 180.0}])
+        # The example facing missed Mina; the close-up camera turns to her and comes closer.
+        self.assertEqual(blocking["camera"]["framing"], "close-up")
+        self.assertTrue(subjects_in_view(blocking))
+        self.assertLess(blocking["camera"]["y"], 0.9)
         self.assertNotIn("blocking_map", second.metadata)
 
     CAST = [{"name": "Mina", "description": "a new student"}, {"name": "Joon", "description": "a quiet boy"}]

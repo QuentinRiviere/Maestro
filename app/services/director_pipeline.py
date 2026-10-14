@@ -2281,17 +2281,7 @@ def _rerun_clip_image_impl(out_dir: str, pid: str, clip_index: int, prompt_overr
     if not prompt:
         raise ValueError("No image prompt for this clip")
 
-    # Reference art-style lock: reruns re-apply the detected style prefix
-    # (the pipeline prepends it at generation time, so the saved
-    # image_prompt does not carry it). Motion-effect strip mirrors
-    # _gen_image for the same reason.
-    prompt = _strip_motion_effects(prompt)
-    _style_prefix = _style_prefix_for((state.get("_params_snapshot") or {}).get("_reference_style") or "")
-    if _style_prefix and not prompt.lower().startswith("maintain the same"):
-        prompt = _style_prefix + prompt
-    bible_look = str((state.get("_params_snapshot") or {}).get("_director_bible_look") or "").strip()
-    if bible_look and bible_look not in prompt:
-        prompt = f"{prompt.rstrip()} {bible_look}"
+    snapshot = state.get("_params_snapshot") or {}
 
     # Get image gen params from the saved pipeline state
     image_model = state.get("image_model") or "flux2_klein_9b"
@@ -2334,27 +2324,49 @@ def _rerun_clip_image_impl(out_dir: str, pid: str, clip_index: int, prompt_overr
                 anchor_to_persist = saved_start
                 break
 
-    # Build refs: main + character + location
-    all_refs = []
-    seen_refs = set()
-    if ref_path:
-        resolved_ref = os.path.normcase(os.path.realpath(ref_path))
-        seen_refs.add(resolved_ref)
-        all_refs.append(ref_path)
-    for cp in (state.get("character_ref_paths") or []):
-        resolved = os.path.normcase(os.path.realpath(cp)) if cp else ""
-        if cp and os.path.isfile(cp) and resolved not in seen_refs:
-            seen_refs.add(resolved)
-            all_refs.append(cp)
-    for lp in (state.get("location_ref_paths") or []):
-        resolved = os.path.normcase(os.path.realpath(lp)) if lp else ""
-        if lp and os.path.isfile(lp) and resolved not in seen_refs:
-            seen_refs.add(resolved)
-            all_refs.append(lp)
-    all_refs = _limit_director_image_refs(
-        image_model,
-        all_refs,
-        pid=pid,
+    # The same references as the storyboard run (see _run_image_generation):
+    # the scene's master or its own set, the people the shot names, and the
+    # shot's layout diagram, so a rerun keeps the scene's place and light.
+    character_ref_paths = state.get("character_ref_paths") or snapshot.get("character_ref_paths") or []
+    location_ref_paths = state.get("location_ref_paths") or snapshot.get("location_ref_paths") or []
+    valid_character_refs = [p for p in character_ref_paths if p and os.path.isfile(p)]
+    valid_location_refs = [p for p in location_ref_paths if p and os.path.isfile(p)]
+    location_by_name, first_group = director_scene_locations(snapshot, location_ref_paths, clips)
+    group = str(clip.get("_director_continuity_group") or "")
+    scene_master = ""
+    for earlier in clips[:clip_index] if group else []:
+        name = earlier.get("start_image_filename") or ""
+        if (str(earlier.get("_director_continuity_group") or "") == group and name
+                and os.path.basename(name) == name and os.path.isfile(os.path.join(clip_out_dir, name))):
+            scene_master = os.path.join(clip_out_dir, name)
+            break
+    layout_ref, prompt = director_shot_layout(pid, clip_index, clip, prompt, image_model, clip_out_dir)
+    character_needles, prop_needles = cast_ref_needles(
+        {**snapshot, "character_ref_paths": character_ref_paths}, clip_out_dir,
+    )
+    request = director_shot_image_request(
+        image_model, clip, prompt,
+        scene_master=scene_master, anchor=ref_path,
+        scene_location=location_by_name.get(str(clip.get("_director_location") or "")) or "",
+        first_scene=group == first_group, scene_sets=bool(group and location_by_name),
+        subject_refs=shot_subject_refs(clip, prompt, character_needles, prop_needles, valid_character_refs),
+        extra_refs=valid_character_refs + valid_location_refs, layout=bool(layout_ref),
+    )
+
+    # Reference art-style lock: reruns re-apply the detected style prefix
+    # (the pipeline prepends it at generation time, so the saved
+    # image_prompt does not carry it). Motion-effect strip mirrors
+    # _gen_image for the same reason.
+    prompt = _strip_motion_effects(request["prompt"])
+    _style_prefix = _style_prefix_for(snapshot.get("_reference_style") or "")
+    if _style_prefix and not prompt.lower().startswith("maintain the same"):
+        prompt = _style_prefix + prompt
+    bible_look = str(snapshot.get("_director_bible_look") or "").strip()
+    if bible_look and bible_look not in prompt:
+        prompt = f"{prompt.rstrip()} {bible_look}"
+    all_refs, prompt = assemble_director_image_refs(
+        image_model, prompt, request["source"], request["supplemental"],
+        layout_ref=layout_ref, bible_look=bible_look, pid=pid,
     )
 
     gen_params = {
@@ -2368,7 +2380,7 @@ def _rerun_clip_image_impl(out_dir: str, pid: str, clip_index: int, prompt_overr
         # A legacy no-reference pipeline must bootstrap with plain T2I.  Once
         # this image is saved below it becomes the durable anchor for every
         # later clip rerun.
-        "video_prompt_type": _director_image_prompt_type(image_model, all_refs),
+        "video_prompt_type": director_shot_prompt_type(image_model, all_refs, request["canvas"]),
         "resolution": image_params.get("resolution", "1280x720"),
         "seed": -1,
         "settings_version": 2.52,
@@ -5285,13 +5297,6 @@ def _submit_and_wait(
     raise _GenerationTimeoutError(_director_job_outputs(settled))
 
 
-# Prompt lead for a shot edited from its scene's master image (reference 1).
-SCENE_CONTINUITY_PREFIX = (
-    "Same scene and same moment as reference image 1: keep the same location, set dressing, props, light "
-    "and time of day, the same people in the same clothes and hairstyles, and where each one stands in the "
-    "space. Only the camera setup changes, as follows: "
-)
-
 # How each image editor takes references for a storyboard shot: how many it
 # handles before it starts collaging them, and how its prompts name them
 # (Qwen-Image-Edit is trained on "Picture 1", Flux and Seedream on "image 1").
@@ -5314,33 +5319,15 @@ def image_ref_profile(image_model: str) -> dict:
     return {"max_refs": None, "label": "image"}
 
 
-def scene_continuity_prefix(image_model: str) -> str:
-    """The scene lead, naming reference 1 the way the editor was trained to read it."""
-    if image_ref_profile(image_model)["label"] == "Picture":
-        return SCENE_CONTINUITY_PREFIX.replace("reference image 1", "Picture 1")
-    return SCENE_CONTINUITY_PREFIX
-
-
-# Scene lead when a layout diagram gives the framing: the master keeps the
-# place and the people, but the editor must not copy its camera setup.
-SCENE_LAYOUT_PREFIX = (
-    "Same place and same moment as reference image 1, seen from a new camera position: keep its set dressing, "
-    "props, surfaces, light and time of day and the same people in the same clothes and hairstyles, but not its "
-    "framing. The camera setup of this shot is: "
-)
-
-
-def scene_layout_prefix(image_model: str) -> str:
-    if image_ref_profile(image_model)["label"] == "Picture":
-        return SCENE_LAYOUT_PREFIX.replace("reference image 1", "Picture 1")
-    return SCENE_LAYOUT_PREFIX
+def _ref_name(image_model: str, index: int) -> str:
+    """Reference ``index`` (1-based) named the way the editor was trained to read it."""
+    label = image_ref_profile(image_model)["label"]
+    return f"{label} {index}" if label == "Picture" else f"reference image {index}"
 
 
 def layout_role_text(image_model: str, index: int) -> str:
     """What the diagram (reference ``index``) and the photos are for, in the editor's words."""
-    label = image_ref_profile(image_model)["label"]
-    name = f"{label} {index}" if label == "Picture" else f"reference image {index}"
-    first = "Picture 1" if label == "Picture" else "reference image 1"
+    name, first = _ref_name(image_model, index), _ref_name(image_model, 1)
     return (
         f" {name} is a top-view layout diagram: it only gives where the camera stands (at the bottom, looking "
         "up the page, so the page's left is the frame's left), how tight the framing is and where each person "
@@ -5383,25 +5370,148 @@ def layout_diagram_fits(image_model: str) -> bool:
     return director_image_reads_refs(image_model) and (budget is None or budget >= 2)
 
 
-def scene_refs(image_model: str, master: str, characters: list[str], extras: list[str],
-               reserve: int = 0) -> tuple[str, list[str]]:
-    """Source and supplemental refs for a scene shot, trimmed to what the editor handles.
+# Lead of a later shot of a scene. The editor gets no canvas: the master
+# image as reference 1 would be edited in place and keep its framing whatever
+# the text and the diagram say, so it comes after the people, or not at all.
+SCENE_SHOT_PREFIX = "Same place and same moment of the scene, from a new camera position and framing. "
 
-    The master (the scene's set, light and blocking) always comes first, then
-    the character sheets (identity), then the previous shot and the anchor.
-    ``reserve`` keeps slots free for references added later (the layout
-    diagram), so the previous shot and the anchor give way before identity.
+
+def shot_is_tight(plan: dict) -> bool:
+    """A close-up or an insert: the frame shows a face or an object, hardly any set."""
+    from services.director.blocking_map import normalize_framing
+
+    framing = str(plan.get("_director_camera_framing") or "").strip()
+    if not framing:
+        blocking = plan.get("_director_blocking_map")
+        camera = blocking.get("camera") if isinstance(blocking, dict) else None
+        framing = str((camera or {}).get("framing") or "") if isinstance(camera, dict) else ""
+    return normalize_framing(f"{framing} {plan.get('_director_scene_type') or ''}") == "close-up"
+
+
+def scene_shot_refs(image_model: str, plan: dict, prompt: str, *, master: str, identity: list[str],
+                    layout: bool = False) -> tuple[list[str], str]:
+    """References and prompt of a scene shot that is not the scene's master.
+
+    The people (character sheets, named props) come first, for identity; the
+    master follows only to give the set's surfaces and light, with a prompt
+    that says so, and is dropped for close-ups and inserts, whose set the text
+    describes. ``layout`` keeps the last slot free for the blocking diagram.
+    The editor must take these refs without a canvas (see ``director_shot_prompt_type``).
     """
-    maximum = image_ref_profile(image_model)["max_refs"]
-    if maximum:
-        maximum = max(1, maximum - reserve)
-    ordered = list(dict.fromkeys(r for r in [*extras, *characters] if r and r != master))
-    if maximum:
-        keep = [r for r in characters if r in ordered][: maximum - 1]
-        keep += [r for r in extras if r in ordered and r not in keep][: maximum - 1 - len(keep)]
-        ordered = [r for r in [*extras, *characters] if r in keep]
-        ordered = list(dict.fromkeys(ordered))
-    return master, ordered
+    budget = director_image_ref_budget(image_model)
+    slots = None if budget is None else max(1, budget - (1 if layout else 0))
+    people = list(dict.fromkeys(r for r in identity if r and r != master))
+    keep_master = bool(master) and not shot_is_tight(plan)
+    if slots is not None:
+        people = people[: max(1, slots - (1 if keep_master else 0))]
+        keep_master = keep_master and len(people) < slots
+    refs = people + ([master] if keep_master else [])
+
+    lead = SCENE_SHOT_PREFIX
+    if people:
+        names = ", ".join(_ref_name(image_model, n) for n in range(1, len(people) + 1))
+        lead += (f"{names} {'show' if len(people) > 1 else 'shows'} who and what is in this shot: keep faces, "
+                 "clothes and hairstyles, not their pose or framing. ")
+    if keep_master:
+        lead += (f"{_ref_name(image_model, len(refs))} only shows the set's surfaces and light; do not copy its "
+                 "framing or camera position. ")
+    else:
+        setting = str(plan.get("_director_environment") or plan.get("_director_location") or "").strip()
+        if setting and setting.lower() not in prompt.lower():
+            lead += f"Setting: {setting.rstrip('.')}. "
+    return refs, f"{lead}The camera setup of this shot is: {prompt}"
+
+
+def director_shot_prompt_type(image_model: str, refs: list[str], canvas: bool = True) -> str:
+    """The editor's reference mode; without a canvas, "KI" becomes "I" as for bible angles.
+
+    With "K" a local editor edits reference 1 in place (its framing and its
+    size); "I" makes every reference a plain reference image.
+    """
+    prompt_type = _director_image_prompt_type(image_model, refs)
+    return "I" if not canvas and prompt_type == "KI" else prompt_type
+
+
+def director_shot_image_request(image_model: str, plan: dict, prompt: str, *, scene_master: str = "",
+                                anchor: str = "", scene_location: str = "", first_scene: bool = True,
+                                scene_sets: bool = False, subject_refs: Optional[list[str]] = None,
+                                extra_refs: Optional[list[str]] = None, layout: bool = False) -> dict:
+    """Prompt, source, supplemental refs and canvas mode of a shot's start image.
+
+    Shared by the storyboard run and the Dashboard rerun, so a rerun gets the
+    same set, people and diagram as the run did. A later shot of a scene uses
+    ``scene_shot_refs``; the first shot of a scene (its master) starts from the
+    anchor or its own set; a shot outside any scene keeps every reference.
+    """
+    subject_refs = list(subject_refs or [])
+    if scene_master:
+        refs, scene_prompt = scene_shot_refs(image_model, plan, prompt, master=scene_master,
+                                             identity=subject_refs or [anchor], layout=layout)
+        blocking = str(plan.get("_director_opening_blocking") or "").strip()
+        if blocking and blocking.lower() not in prompt.lower():
+            scene_prompt += f" Positions at the start of this shot: {blocking}"
+        return {"prompt": scene_prompt, "source": refs[0] if refs else "", "supplemental": refs[1:],
+                "canvas": False}
+    if scene_sets:
+        # First shot of a scene: its own set (not every location of the
+        # project) plus the cast. A later scene starts from its set rather
+        # than from the anchor of the first one.
+        source = anchor if (first_scene or not scene_location) else scene_location
+        sets = [scene_location] if scene_location and scene_location != source else []
+        return {"prompt": prompt, "source": source, "supplemental": sets + subject_refs, "canvas": True}
+    return {"prompt": prompt, "source": anchor, "supplemental": list(extra_refs or []), "canvas": True}
+
+
+def director_scene_locations(params: dict, location_ref_paths: list[str],
+                             clip_plans: list[dict]) -> tuple[dict[str, str], str]:
+    """(location name -> set image, the first scene's group) for the shots' references."""
+    location_by_name = {
+        str(label): path for label, path in zip(params.get("location_ref_labels") or [], location_ref_paths or [])
+        if label and path and os.path.isfile(path)
+    }
+    first_group = next(
+        (str(p.get("_director_continuity_group") or "") for p in clip_plans
+         if p.get("_director_continuity_group")), "",
+    )
+    return location_by_name, first_group
+
+
+def assemble_director_image_refs(image_model: str, prompt: str, source_ref: str, extras: list[str], *,
+                                 layout_ref: str = "", bible_look: str = "", pid: str = "") -> tuple[list[str], str]:
+    """The refs an image job submits and its prompt with the diagram's role.
+
+    Missing and duplicate files are dropped and the list is trimmed to what
+    the editor handles; ``layout_ref`` (the blocking diagram) then takes the
+    last slot and the prompt says what it is for, before the bible look.
+    """
+    all_refs: list[str] = []
+    seen_refs = set()
+    for candidate in [source_ref, *extras]:
+        if not candidate or not os.path.isfile(candidate):
+            continue
+        resolved = os.path.normcase(os.path.realpath(candidate))
+        if resolved in seen_refs:
+            continue
+        seen_refs.add(resolved)
+        all_refs.append(candidate)
+    all_refs = _limit_director_image_refs(image_model, all_refs, pid=pid)
+    # Past this many references the editor collages them instead of
+    # editing reference 1 (see image_ref_profile).
+    ref_budget = image_ref_profile(image_model)["max_refs"]
+    if ref_budget and len(all_refs) > ref_budget:
+        all_refs = all_refs[:ref_budget]
+    if layout_ref and all_refs and os.path.isfile(layout_ref):
+        layout_budget = director_image_ref_budget(image_model)
+        if layout_budget:
+            all_refs = all_refs[: max(1, layout_budget - 1)]
+        all_refs.append(layout_ref)
+        role = layout_role_text(image_model, len(all_refs))
+        # Keep the bible look last, as for every other image prompt.
+        if bible_look and prompt.endswith(bible_look):
+            prompt = f"{prompt[:-len(bible_look)].rstrip()}{role} {bible_look}"
+        else:
+            prompt = f"{prompt.rstrip()}{role}"
+    return all_refs, prompt
 
 
 def _shot_text(plan: dict, prompt: str) -> str:
@@ -8211,6 +8321,21 @@ def blocking_framing_line(blocking_map: dict) -> str:
     return framing_line(parse_blocking_map(blocking_map))
 
 
+def director_shot_layout(pid: str, index: int, plan: dict, prompt: str, image_model: str,
+                         out_dir: str) -> tuple[str, str]:
+    """(diagram path or "", prompt): a scene shot's top view as an image, or as a sentence.
+
+    Editors that cannot take the diagram (text-only, or one reference) read
+    the same layout appended to the prompt.
+    """
+    blocking_map = plan.get("_director_blocking_map") if plan.get("_director_continuity_group") else None
+    if not isinstance(blocking_map, dict):
+        return "", prompt
+    layout_ref = _render_shot_layout(pid, index, blocking_map, out_dir) if layout_diagram_fits(image_model) else ""
+    layout_text = "" if layout_ref else blocking_framing_line(blocking_map)
+    return layout_ref, f"{prompt.rstrip()} {layout_text}".strip() if layout_text else prompt
+
+
 def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_dir: str = None, workspace: str = None) -> tuple[list[str], list[list[str]]]:
     """Generate start images and keyframe images per clip.
 
@@ -8371,12 +8496,14 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
         include_extra_refs: bool = True,
         supplemental_refs: Optional[list[str]] = None,
         layout_ref: str = "",
+        canvas: bool = True,
     ) -> str:
         """Generate a single image using source_ref + optional extra refs.
 
         ``layout_ref`` is the shot's blocking diagram: it goes last, after the
         other references are trimmed to leave it a slot, and the prompt says
-        what it is for.
+        what it is for. ``canvas=False`` keeps the editor from editing
+        reference 1 in place (see director_shot_prompt_type).
         """
         nonlocal image_count
         _pre_strip = prompt
@@ -8388,42 +8515,14 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
         # Last, so a scene lead naming reference 1 stays at the start.
         if _bible_look and _bible_look not in prompt:
             prompt = f"{prompt.rstrip()} {_bible_look}"
-        all_refs = []
-        seen_refs = set()
         selected_extra_refs = (
             extra_refs if supplemental_refs is None else supplemental_refs
         )
-        for candidate in [source_ref] + (
-            selected_extra_refs if include_extra_refs else []
-        ):
-            if not candidate or not os.path.isfile(candidate):
-                continue
-            resolved = os.path.normcase(os.path.realpath(candidate))
-            if resolved in seen_refs:
-                continue
-            seen_refs.add(resolved)
-            all_refs.append(candidate)
-        all_refs = _limit_director_image_refs(
-            image_model,
-            all_refs,
-            pid=pid,
+        all_refs, prompt = assemble_director_image_refs(
+            image_model, prompt, source_ref,
+            selected_extra_refs if include_extra_refs else [],
+            layout_ref=layout_ref, bible_look=_bible_look, pid=pid,
         )
-        # Past this many references the editor collages them instead of
-        # editing reference 1 (see image_ref_profile).
-        ref_budget = image_ref_profile(image_model)["max_refs"]
-        if ref_budget and len(all_refs) > ref_budget:
-            all_refs = all_refs[:ref_budget]
-        if layout_ref and all_refs and os.path.isfile(layout_ref):
-            layout_budget = director_image_ref_budget(image_model)
-            if layout_budget:
-                all_refs = all_refs[: max(1, layout_budget - 1)]
-            all_refs.append(layout_ref)
-            role = layout_role_text(image_model, len(all_refs))
-            # Keep the bible look last, as for every other image prompt.
-            if _bible_look and prompt.endswith(_bible_look):
-                prompt = f"{prompt[:-len(_bible_look)].rstrip()}{role} {_bible_look}"
-            else:
-                prompt = f"{prompt.rstrip()}{role}"
         print(f"[Pipeline {pid}] _gen_image: {len(all_refs)} refs: {[os.path.basename(r) for r in all_refs]}")
         gen_params: dict = {
             "model_type": image_model,
@@ -8433,7 +8532,7 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
             "image_prompt_type": "",
             "num_inference_steps": steps,
             "guidance_scale": guidance,
-            "video_prompt_type": _director_image_prompt_type(image_model, all_refs),
+            "video_prompt_type": director_shot_prompt_type(image_model, all_refs, canvas),
             "resolution": resolution,
             "seed": -1,
             "settings_version": 2.52,
@@ -8544,18 +8643,11 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
         print(f"[Pipeline {pid}] Adopted establishing image as shared reference: {anchor_file}")
 
     # Shots of one scene share its set, light, wardrobe and blocking. The
-    # first image of a scene becomes its master: every later shot of that
-    # scene is edited from the master (and from the shot just before it), so
-    # a new camera angle does not re-invent the room or the costumes.
-    location_labels = list(params.get("location_ref_labels") or [])
-    location_by_name = {
-        str(label): path for label, path in zip(location_labels, location_ref_paths)
-        if label and path and os.path.isfile(path)
-    }
-    first_group = next(
-        (str(p.get("_director_continuity_group") or "") for p in clip_plans
-         if p.get("_director_continuity_group")), "",
-    )
+    # first image of a scene becomes its master; every later shot of that
+    # scene takes the people first and the master only for its surfaces and
+    # light (see scene_shot_refs), so a new camera angle neither re-invents
+    # the room nor copies the master's framing.
+    location_by_name, first_group = director_scene_locations(params, location_ref_paths, clip_plans)
     scene_masters: dict[str, str] = {}
     character_needles, prop_needles = cast_ref_needles(params, out_dir)
 
@@ -8568,12 +8660,6 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
         source_ref = ref_image_path  # default: user's original reference
         group = str(plan.get("_director_continuity_group") or "")
         scene_master = scene_masters.get(group) if group else None
-        previous_in_scene = ""
-        if (
-            scene_master and i > 0 and clip_images[i - 1]
-            and str(clip_plans[i - 1].get("_director_continuity_group") or "") == group
-        ):
-            previous_in_scene = os.path.join(out_dir, clip_images[i - 1])
         scene_location = location_by_name.get(str(plan.get("_director_location") or ""))
 
         if scene_master:
@@ -8598,35 +8684,11 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
         # The shot's top view fixes framing and camera position; the scene's
         # photos only give surfaces and light. Editors that cannot take it
         # (text-only, or one reference) read the same layout as a sentence.
-        layout_ref, layout_text = "", ""
-        blocking_map = plan.get("_director_blocking_map") if group else None
-        if isinstance(blocking_map, dict):
-            if layout_diagram_fits(image_model):
-                layout_ref = _render_shot_layout(pid, i, blocking_map, out_dir)
-            if not layout_ref:
-                layout_text = blocking_framing_line(blocking_map)
-        if layout_text:
-            prompt = f"{prompt.rstrip()} {layout_text}".strip()
+        layout_ref, prompt = director_shot_layout(pid, i, plan, prompt, image_model, out_dir)
 
         img_t0 = time.time()
         try:
-            if scene_master:
-                blocking = str(plan.get("_director_opening_blocking") or "").strip()
-                lead = scene_layout_prefix(image_model) if layout_ref else scene_continuity_prefix(image_model)
-                scene_prompt = lead + prompt
-                if blocking and blocking.lower() not in prompt.lower():
-                    scene_prompt += f" Positions at the start of this shot: {blocking}"
-                _master, supplemental = scene_refs(
-                    image_model, scene_master,
-                    shot_subject_refs(plan, prompt, character_needles, prop_needles, valid_character_refs),
-                    [r for r in (previous_in_scene, ref_image_path) if r],
-                    reserve=1 if layout_ref else 0,
-                )
-                print(f"[Pipeline {pid}] Shot {i+1}: same scene as {os.path.basename(scene_master)}"
-                      + (f", after {os.path.basename(previous_in_scene)}" if previous_in_scene else ""))
-                start_img = _gen_image(scene_prompt, scene_master, supplemental_refs=supplemental,
-                                       layout_ref=layout_ref)
-            elif image_source == "previous" and source_ref != ref_image_path:
+            if image_source == "previous" and not scene_master and source_ref != ref_image_path:
                 # Dual reference: previous scene output as primary + original reference for character identity
                 # _gen_image puts source_ref first, then extra_refs (which includes character/location refs).
                 # We temporarily prepend the original ref to extra_refs so the model sees both.
@@ -8634,16 +8696,23 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
                 extra_refs.insert(0, ref_image_path)
                 start_img = _gen_image(prompt, source_ref, include_extra_refs=True, layout_ref=layout_ref)
                 extra_refs[:] = saved_extras  # restore
-            elif group and location_by_name:
-                # First shot of a scene: its own set (not every location of
-                # the project) plus the cast. A later scene starts from its
-                # set rather than from the anchor of the first one.
-                source = ref_image_path if (group == first_group or not scene_location) else scene_location
-                sets = [scene_location] if scene_location and scene_location != source else []
-                start_img = _gen_image(prompt, source, supplemental_refs=sets + shot_subject_refs(
-                    plan, prompt, character_needles, prop_needles, valid_character_refs), layout_ref=layout_ref)
             else:
-                start_img = _gen_image(prompt, ref_image_path, layout_ref=layout_ref)
+                request = director_shot_image_request(
+                    image_model, plan, prompt,
+                    scene_master=scene_master or "", anchor=ref_image_path or "",
+                    scene_location=scene_location or "", first_scene=group == first_group,
+                    scene_sets=bool(group and location_by_name),
+                    subject_refs=shot_subject_refs(plan, prompt, character_needles, prop_needles,
+                                                   valid_character_refs),
+                    extra_refs=extra_refs, layout=bool(layout_ref),
+                )
+                if scene_master:
+                    print(f"[Pipeline {pid}] Shot {i+1}: same scene as {os.path.basename(scene_master)}"
+                          + ("" if scene_master in request["supplemental"] + [request["source"]]
+                             else " (set described in text, master not sent)"))
+                start_img = _gen_image(request["prompt"], request["source"],
+                                       supplemental_refs=request["supplemental"],
+                                       layout_ref=layout_ref, canvas=request["canvas"])
             clip_images.append(start_img)
             if group and start_img and group not in scene_masters:
                 scene_masters[group] = os.path.join(out_dir, start_img)
