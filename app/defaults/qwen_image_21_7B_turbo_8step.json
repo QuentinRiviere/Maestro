@@ -1,0 +1,43 @@
+{
+    "model": {
+        "name": "Qwen Image 2.1 7B Turbo 8-Step",
+        "architecture": "qwen_image_21_7B",
+        "description": "Official Qwen-Image-2.1-Turbo checkpoint: generation and multi-reference editing (up to 10 reference images) in 8 steps at CFG 1 with the checkpoint's own sigma schedule and the reference KV cache. Small requests render on a ~1.3 MP canvas of the same aspect ratio and are downscaled afterwards; references are reduced to 768 px on their long side. BF16 transformer only (about 14.2 GB in two shards). Qwen Research License: non-commercial research/evaluation only; commercial use requires a separate license from Qwen. Viggle Turbo LoRAs do not apply to this checkpoint.",
+        "URLs": [
+            "qwen_image_21_7B_turbo_bf16_part1of2.safetensors"
+        ],
+        "URLs2": [
+            "qwen_image_21_7B_turbo_bf16_part2of2.safetensors"
+        ],
+        "download_sources": {
+            "qwen_image_21_7B_turbo_bf16_part1of2.safetensors": {
+                "url": "https://huggingface.co/Qwen/Qwen-Image-2.1-Turbo/resolve/fc13ba1986fcb905854dc8de2f52eee395f49b5b/transformer/diffusion_pytorch_model-00001-of-00002.safetensors",
+                "sha256": "6cccd922767f01694461bdcf1f34ea7b771f3442e4d5e338ea9aa55277431cc0",
+                "size_bytes": 9968332504
+            },
+            "qwen_image_21_7B_turbo_bf16_part2of2.safetensors": {
+                "url": "https://huggingface.co/Qwen/Qwen-Image-2.1-Turbo/resolve/fc13ba1986fcb905854dc8de2f52eee395f49b5b/transformer/diffusion_pytorch_model-00002-of-00002.safetensors",
+                "sha256": "69f53ebb063d2f606bdaff7e22e0e2144f28d978d73dc75e6e4293fc5982eab5",
+                "size_bytes": 4261951904
+            }
+        },
+        "source_repo": "https://huggingface.co/Qwen/Qwen-Image-2.1-Turbo",
+        "source_revision": "fc13ba1986fcb905854dc8de2f52eee395f49b5b",
+        "license_name": "Qwen Research License Agreement",
+        "license_url": "https://huggingface.co/Qwen/Qwen-Image-2.1-Turbo/blob/main/LICENSE",
+        "qwen21_sharded_transformer": true,
+        "qwen21_sampling_profile": "qwen_turbo_8step",
+        "qwen21_kv_cache_default": "Enabled",
+        "qwen21_min_render_pixels": 1327104,
+        "qwen21_reference_max_side": 768,
+        "image_outputs": true
+    },
+    "prompt": "",
+    "resolution": "864x1536",
+    "num_inference_steps": 8,
+    "guidance_scale": 1.0,
+    "sample_solver": "qwen_turbo_8step",
+    "batch_size": 1,
+    "image_mode": 1,
+    "video_prompt_type": "I"
+}
