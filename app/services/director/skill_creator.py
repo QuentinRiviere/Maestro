@@ -64,7 +64,8 @@ Return ONLY JSON:
  "workflow": "{'|'.join(WORKFLOWS)}" (story = written from the brief, audio = cut on uploaded audio),
  "default_duration": seconds, "shot_duration": [min_seconds, max_seconds], "max_shots": number,
  "style_hint": "default look if the brief gives none, or empty",
- "rules": {{{", ".join(f'"{f}": "..."' for f in RULE_FIELDS)}, "do": ["..."], "dont": ["..."]}},
+ "rules": {{{", ".join(f'"{f}": "..."' for f in RULE_FIELDS)}, "do": ["..."], "dont": ["..."],
+           "dialogue_density": "low|medium|high (how often characters speak; medium when unsure)"}},
  "scene_grammar": {{{", ".join(f'"{f}": "..."' for f in SCENE_GRAMMAR_FIELDS)}}},
  "options": [{{"key": "snake_case", "label": "Label", "values": ["..."], "default": "..."}}]}}
 scene_grammar is the film grammar of the genre, from your knowledge of how it is really shot and edited (and

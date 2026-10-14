@@ -223,6 +223,89 @@ class PlannerTests(unittest.TestCase):
             "subjects": [{"name": "Mina", "x": 0.4, "y": 0.4, "facing_deg": 180.0}]})
         self.assertNotIn("blocking_map", second.metadata)
 
+    CAST = [{"name": "Mina", "description": "a new student"}, {"name": "Joon", "description": "a quiet boy"}]
+
+    def test_dialogue_speakers_are_required_and_mapped_to_cast_names(self):
+        spec = {**self.spec, "workflow": "story", "shot_duration": [2, 5]}
+        planner = FakePlanner(spec, [
+            {"scene_goal": "a", "subjects_on_screen": [{"name": "mina", "visual_description": "a girl"}],
+             "dialogue_beats": [{"speaker": "MINA", "spoken_text": "Who are you?", "delivery": "wary"}]},
+            {"scene_goal": "b", "subjects_on_screen": [{"visual_description": "Joon by the window"}],
+             "dialogue_beats": [{"speaker": "the boy", "spoken_text": "Nobody."}]},
+            {"scene_goal": "c", "subjects_on_screen": [{"name": "Joon", "visual_description": "x"},
+                                                      {"name": "Mina", "visual_description": "y"}],
+             "dialogue_beats": [{"spoken_text": "Wait."}, {"speaker_id": "Mina", "spoken_text": "Why?"}]},
+            {"scene_goal": "d", "subjects_on_screen": [{"visual_description": "an empty hallway"}],
+             "dialogue_beats": [{"speaker": "Joon", "spoken_text": "Here."}, {"speaker": "ghost", "spoken_text": "Boo"}]},
+        ])
+        plan = planner.plan(scene_description="A new student meets a mysterious boy", characters=self.CAST)
+        prompt = planner.prompts[-1]["system_prompt"]
+        self.assertIn('"speaker": "exact cast name of who says it"', prompt)
+        self.assertIn("every line has a speaker", prompt)
+        self.assertIn("CAST NAMES (use them exactly for subjects_on_screen.name and the dialogue speaker): Mina, Joon",
+                      prompt)
+        speakers = [[b.speaker_id for b in shot.dialogue_beats] for shot in plan.shots]
+        # Exact name, the only one in frame, the first one in frame, and an
+        # off-screen cast speaker kept (an unresolvable one is left as given).
+        self.assertEqual(speakers, [["Mina"], ["Joon"], ["Joon", "Mina"], ["Joon", "ghost"]])
+        first = plan.shots[0].subjects_on_screen[0]
+        self.assertEqual((first.speaker_name, first.character_id), ("Mina", "char_0"))
+        self.assertEqual(plan.shots[1].subjects_on_screen[0].character_id, "char_1")
+        self.assertIsNone(plan.shots[3].subjects_on_screen[0].speaker_name)
+
+    def test_clip_speakers_resolve_from_custom_plan(self):
+        from services.director_pipeline import _director_clip_speakers
+        spec = {**self.spec, "workflow": "story", "shot_duration": [2, 5]}
+        plan = FakePlanner(spec, [
+            {"scene_goal": "a", "subjects_on_screen": [{"name": "Joon", "visual_description": "a boy"}],
+             "dialogue_beats": [{"speaker": "", "spoken_text": "Nobody."}]},
+        ]).plan(scene_description="x", characters=self.CAST)
+        shot = plan.shots[0].to_dict()
+        clip = {"_director_dialogue_beats": shot["dialogue_beats"],
+                "_director_subjects_on_screen": shot["subjects_on_screen"]}
+        params = {"characters": self.CAST, "_director_cast": {"characters": self.CAST}}
+        self.assertEqual(_director_clip_speakers(clip, params), ["Joon"])
+
+    def test_filmable_action_and_reaction_share_rules(self):
+        spec = {**self.spec, "workflow": "story"}
+        planner = FakePlanner(spec, [{"scene_goal": "a"}])
+        planner.plan(scene_description="x")
+        prompt = planner.prompts[-1]["system_prompt"]
+        self.assertIn("Filmable action only", prompt)
+        self.assertIn("pupils dilating", prompt)
+        self.assertIn("Reaction shots are at most about one third of the shots", prompt)
+        self.assertNotIn("micro-expression", prompt)
+
+    def test_dialogue_density_rule_option_and_default(self):
+        spec = {**self.spec, "workflow": "story"}
+        planner = FakePlanner(spec, [{"scene_goal": "a"}])
+        planner.plan(scene_description="x")
+        self.assertIn("DIALOGUE DENSITY (medium): in exchanges, about one line every 2-3 shots",
+                      planner.prompts[-1]["system_prompt"])
+        dense = custom_skills.validate_spec({**SPEC, "workflow": "story",
+                                             "rules": {**SPEC["rules"], "dialogue_density": " High "}})
+        self.assertEqual(dense["rules"]["dialogue_density"], "high")
+        self.assertNotIn("dialogue_density", custom_skills.validate_spec(
+            {**SPEC, "rules": {**SPEC["rules"], "dialogue_density": "chatty"}})["rules"])
+        planner = FakePlanner(dense, [{"scene_goal": "a"}])
+        planner.plan(scene_description="x")
+        self.assertIn("DIALOGUE DENSITY (high)", planner.prompts[-1]["system_prompt"])
+        planner.plan(scene_description="x", skill_options={"dialogue_density": "low"})
+        self.assertIn("DIALOGUE DENSITY (low)", planner.prompts[-1]["system_prompt"])
+        self.assertIn("one-line-per-shot", planner.prompts[-1]["system_prompt"])
+
+    def test_sequence_shots_keep_their_range_with_speakers(self):
+        spec = {**self.spec, "workflow": "story"}
+        planner = FakePlanner(spec, [
+            {"scene_goal": "a", "duration_sec": 9, "keep_sec": [0, 2],
+             "dialogue_beats": [{"speaker": "Mina", "spoken_text": "Hi."}]},
+            {"scene_goal": "b", "duration_sec": 1, "continues_previous": True},
+        ])
+        plan = planner.plan(scene_description="x", characters=self.CAST, sequence_shots=True)
+        self.assertEqual([s.duration_sec for s in plan.shots], [5.0, 1.5])
+        self.assertNotIn("keep_sec", plan.shots[0].metadata)
+        self.assertEqual(plan.shots[0].dialogue_beats[0].speaker_id, "Mina")
+
     def test_block_without_options(self):
         self.assertIn("SKILL: Recipe Reel", skill_rules_block(self.spec, {}))
 

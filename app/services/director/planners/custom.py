@@ -17,6 +17,7 @@ from ..schema import (
     SubjectRef,
 )
 from ..blocking_map import parse_blocking_map
+from ..custom_skills import DIALOGUE_DENSITIES
 from ..edit_cut import normalize_keep
 from .base import BasePlanner
 
@@ -73,15 +74,23 @@ SCENE_CRAFT = """SCENE CRAFT (this is what separates a real scene from generated
   eyelines match across shot/reverse-shot.
 - Cut on action: a shot opens exactly where the previous shot of the same scene ended (same pose, same grip,
   same distance). Write opening_blocking and closing_blocking as concrete positions and poses.
-- Action is performance, second by second: a physical intention, the micro-expression it causes, the reaction.
-  No filler motion (aimless walking, hair touching, looking around) to fill time.
+- Action is performance, second by second: a physical intention, the visible expression change it causes, the
+  reaction. No filler motion (aimless walking, hair touching, looking around) to fill time.
+- Filmable action only: an action beat describes what a viewer can see at the shot's framing in a short, low
+  resolution render: a head turn, a posture change, a hand action, a step, a visible expression change (a smile
+  fading, a frown, eyes closing, a look away). Never micro-details the frame cannot show, e.g. pupils dilating,
+  lips parting a millimeter, a throat swallowing, a pulse in the neck, a single tear forming, eyelashes
+  trembling, a jaw muscle twitching.
+- Reaction shots are at most about one third of the shots; the scene moves forward through action and dialogue,
+  not through a chain of silent looks.
 - Camera is static (locked-off) by default. Move only when the story motivates it (a slow push-in on a
   realization, a follow when a character crosses the space) and say why in camera_plan.motivation.
 - Framing follows the coverage: establishing or master to place people, over-the-shoulder shot/reverse-shot for
   exchanges, inserts for decisive details (a hand, an object), close-ups for reactions.
 - Do not describe style, grade, lens flare or "aesthetic" in shots: the visual style is set once for the whole
   production. Shot fields describe what the camera sees and what people do.
-- Dialogue: at most one line per shot, short enough to say inside keep_sec (about 2.5 words per second), then
+- Dialogue: every line has a speaker, the exact cast name of the character who says it. At most one line per
+  shot, short enough to say inside keep_sec (about 2.5 words per second), then
   explicit silence (breath, stillness) until the end of the shot; never a line the model must repeat to fill time.
 - Write every field in English, whatever the language of the skill; only spoken_text uses the dialogue
   language the skill or brief asks for.
@@ -96,6 +105,31 @@ walk, one unbroken gesture). It is rendered from the previous shot's last frame,
 cannot reframe. false for every cut: shot/reverse-shot, a new angle, a close-up after a wide, an insert, a
 reaction, and always false for the first shot of a scene. When true, the previous shot's closing_blocking is this
 shot's opening_blocking."""
+
+
+DIALOGUE_DENSITY_RULES = {
+    "low": "sparse dialogue: lines only at the scene's turning points, about one line every 4-5 shots; looks and "
+           "actions carry the rest.",
+    "medium": "in exchanges, about one line every 2-3 shots; the story is told through what people say as much "
+              "as through looks.",
+    "high": "dialogue-driven: in exchanges about two shots out of three carry a line; silent shots are the "
+            "exception.",
+}
+
+
+def dialogue_density(spec: dict, options: dict[str, str]) -> str:
+    """The skill's dialogue density: a run option wins over the skill rule, default medium."""
+    for value in (options.get("dialogue_density"), (spec.get("rules") or {}).get("dialogue_density")):
+        value = str(value or "").strip().lower()
+        if value in DIALOGUE_DENSITIES:
+            return value
+    return "medium"
+
+
+def dialogue_density_rule(level: str) -> str:
+    return (f"DIALOGUE DENSITY ({level}): {DIALOGUE_DENSITY_RULES[level]} Keep the one-line-per-shot and "
+            "words-per-second limits; give a talking scene more shots rather than longer lines.")
+
 
 BLOCKING_MAP_RULE = """blocking_map: a top view of the scene floor at the first frame, consistent with the scene geography and
 scene_map. x goes from 0 (the left side as the scene's main camera sees it) to 1 (the right side), y from 0 (the
@@ -235,6 +269,11 @@ class CustomSkillPlanner(BasePlanner):
                           '\n                   "subjects": [{"name": "...", "x": 0.4, "y": 0.4, "facing_deg": 90}]}'
                           ) if narrative else ""
         blocking_rule = BLOCKING_MAP_RULE + "\n\n" if narrative else ""
+        density_rule = dialogue_density_rule(dialogue_density(spec, options)) if narrative else ""
+        cast_names = [str(c.get("name") or "").strip() for c in characters or []
+                      if isinstance(c, dict) and str(c.get("name") or "").strip()]
+        cast_rule = ("CAST NAMES (use them exactly for subjects_on_screen.name and the dialogue speaker): "
+                     + ", ".join(cast_names)) if cast_names else ""
         system_prompt = f"""You are the director of a production written with a specific skill.
 
 {rules}
@@ -246,19 +285,24 @@ class CustomSkillPlanner(BasePlanner):
 
 {SCENE_CRAFT if narrative else build_camera_style_block()}
 
+{density_rule}
+
+{cast_rule}
+
 {scene_block}
 
 OUTPUT FORMAT — respond with ONLY a JSON array of shot objects:
 [{{"scene_id": "{scene_ids[0] if scene_ids else 'scene_1'}", "scene_goal": "...", "scene_type": "establishing|exchange|insert|reaction|action",
   "duration_sec": {low}, "keep_sec": [0, {low}],
-  "subjects_on_screen": [{{"visual_description": "...", "position_or_relation": "screen side, distance, facing"}}],
+  "subjects_on_screen": [{{"name": "the cast name of this person, or empty", "visual_description": "...",
+                          "position_or_relation": "screen side, distance, facing"}}],
   "opening_blocking": "exact positions and poses at the first frame", "environment": "...",
   "lighting": "the scene's light", "mood": "...",
-  "action_beats": ["timed, e.g. '0.0-2.0s: ...': action, micro-expression, reaction"],
+  "action_beats": ["timed, e.g. '0.0-2.0s: ...': visible action, visible expression change, reaction"],
   "performance": "the acting task: the intention, where the eyes go, what stays still, and what the actor never does",
   "locks": ["a fact this shot must hold, in positive form, e.g. 'only two hands in frame, both hers'",
             "'the books stay in her left arm'"],
-  "dialogue_beats": [{{"spoken_text": "...", "delivery": "..."}}],
+  "dialogue_beats": [{{"speaker": "exact cast name of who says it", "spoken_text": "...", "delivery": "..."}}],
   "camera_plan": {{"framing": "...", "movement": "static unless motivated", "movement_intensity": "subtle|moderate|dynamic",
                   "motivation": "why the camera moves, or empty"}},
   "audio_plan": {{"mode": "generated_audio", "ambience": "the room tone of this place at this moment",
@@ -312,6 +356,7 @@ OUTPUT FORMAT — respond with ONLY a JSON array of shot objects:
             performance = raw.get("performance")
             locks = [str(lock).strip() for lock in raw.get("locks") or [] if str(lock).strip()]
             effects = [str(e).strip() for e in audio_raw.get("effects") or [] if str(e).strip()]
+            subjects = _subjects(raw.get("subjects_on_screen"), cast_names)
             shots.append(ShotPlan(
                 shot_id=self._make_shot_id(i, "cs"),
                 index=i,
@@ -324,8 +369,7 @@ OUTPUT FORMAT — respond with ONLY a JSON array of shot objects:
                 continuity_strategy=(
                     "extend_previous" if continues_previous else "continuous" if same_scene else "independent"
                 ),
-                subjects_on_screen=[SubjectRef.from_dict(s) if isinstance(s, dict) else SubjectRef(visual_description=str(s))
-                                    for s in raw.get("subjects_on_screen", [])],
+                subjects_on_screen=subjects,
                 spatial_setup=raw.get("opening_blocking") or raw.get("spatial_setup", ""),
                 environment=raw.get("environment", ""),
                 # The style contract carries the look; per-shot style text only
@@ -337,7 +381,7 @@ OUTPUT FORMAT — respond with ONLY a JSON array of shot objects:
                 performance_beats=[str(performance).strip()] if isinstance(performance, str) and performance.strip()
                 else None,
                 constraints=locks or None,
-                dialogue_beats=[DialogueBeat.from_dict(d) for d in raw.get("dialogue_beats") or []] or None,
+                dialogue_beats=_dialogue_beats(raw.get("dialogue_beats"), subjects, cast_names, i) or None,
                 camera_plan=CameraPlan(framing=cam.get("framing", "medium shot"), angle=cam.get("angle"),
                                        movement=cam.get("movement"),
                                        movement_intensity=cam.get("movement_intensity", "moderate")),
@@ -424,3 +468,61 @@ OUTPUT FORMAT — respond with ONLY a JSON array of shot objects:
                 "beats": [str(b)[:200] for b in (item.get("beats") or [])][:8],
             })
         return scenes[:4]
+
+
+def _cast_name(value: Any, cast_names: list[str]) -> str:
+    """The cast name ``value`` refers to (case-insensitive), or ""."""
+    key = str(value or "").strip().casefold()
+    return next((name for name in cast_names if key and name.casefold() == key), "")
+
+
+def _subjects(raw: Any, cast_names: list[str]) -> list[SubjectRef]:
+    """Subjects in frame; a cast member carries the planner's char id and cast name."""
+    subjects = []
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict):
+            subjects.append(SubjectRef(visual_description=str(item)))
+            continue
+        name = _cast_name(item.get("name") or item.get("speaker_name"), cast_names)
+        if not name:
+            # A subject without a usable name is still a cast member when its
+            # description names exactly one of them.
+            text = str(item.get("visual_description") or "")
+            named = [n for n in cast_names if re.search(rf"\b{re.escape(n)}\b", text, re.IGNORECASE)]
+            name = named[0] if len(named) == 1 else ""
+        subject = SubjectRef.from_dict({**item, "visual_description": str(item.get("visual_description") or name)})
+        if name:
+            subject.speaker_name = name
+            subject.character_id = subject.character_id or f"char_{cast_names.index(name)}"
+        subjects.append(subject)
+    return subjects
+
+
+def _dialogue_beats(raw: Any, subjects: list[SubjectRef], cast_names: list[str], index: int) -> list[DialogueBeat]:
+    """Dialogue beats whose ``speaker_id`` is the exact cast name of who speaks.
+
+    An unknown or missing speaker falls back to the cast member in frame (the
+    first one when several are), and the substitution is logged.
+    """
+    beats = []
+    in_frame = [s.speaker_name for s in subjects if s.speaker_name]
+    for item in raw if isinstance(raw, list) else []:
+        beat = DialogueBeat.from_dict(item)
+        if not beat.spoken_text:
+            continue
+        given = str((item.get("speaker") or item.get("speaker_id") or "") if isinstance(item, dict) else "").strip()
+        if cast_names:
+            speaker = _cast_name(given, cast_names)
+            if not speaker and in_frame:
+                speaker = in_frame[0]
+                where = "alone" if len(set(in_frame)) == 1 else "first"
+                print(f"[CustomPlanner] Shot {index + 1}: speaker {given or '(none)'!r} is not in the cast; "
+                      f"attributed to {speaker} ({where} in frame)")
+            elif not speaker:
+                print(f"[CustomPlanner] Shot {index + 1}: speaker {given or '(none)'!r} is not in the cast "
+                      "and no cast member is in frame")
+            beat.speaker_id = speaker or given or None
+        else:
+            beat.speaker_id = given or None
+        beats.append(beat)
+    return beats

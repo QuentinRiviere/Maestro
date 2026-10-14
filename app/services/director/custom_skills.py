@@ -22,6 +22,7 @@ ICONS = ("sparkles", "film", "music", "mic", "camera", "clapperboard", "megaphon
          "heart", "zap")
 WORKFLOWS = ("story", "audio", "both")
 RULE_FIELDS = ("goal", "structure", "pacing", "camera", "dialogue", "sound")
+DIALOGUE_DENSITIES = ("low", "medium", "high")
 # Optional film grammar of the genre: how a scene is covered and cut. Planners read it as
 # ``spec.get("scene_grammar") or {}`` (skills saved before it existed have no key); see
 # ``validate_spec`` for the exact shape.
@@ -129,6 +130,10 @@ def validate_spec(raw: Any, *, skill_id: str | None = None) -> dict:
     rules = {field: _text(rules_raw.get(field), 600) for field in RULE_FIELDS}
     rules["do"] = _texts(rules_raw.get("do"), 200, 12)
     rules["dont"] = _texts(rules_raw.get("dont"), 200, 12)
+    # How much the characters talk (narrative skills); planners default to medium.
+    density = _text(rules_raw.get("dialogue_density"), 10).lower()
+    if density in DIALOGUE_DENSITIES:
+        rules["dialogue_density"] = density
     if not any(rules[field] for field in RULE_FIELDS) and not rules["do"]:
         raise SkillError("A skill needs at least one writing rule")
     shot = raw.get("shot_duration") if isinstance(raw.get("shot_duration"), list) else [3, 8]
