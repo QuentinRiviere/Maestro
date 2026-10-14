@@ -18,6 +18,8 @@ from shared.utils import files_locator as fl
 from .autoencoder_kl_qwenimage21 import AutoencoderKLQwenImage21
 from .memory import configure_encoder_attention
 from .pipeline_qwenimage21 import QwenImage21Pipeline
+from .qwen21_handler import fixed_sampling_profile
+from .render_size import downscale_reference, render_dimensions, resize_uint8_images
 from .transformer_qwenimage21 import QwenImage21Transformer2DModel
 
 
@@ -66,7 +68,12 @@ class model_factory:
                  VAE_dtype=None, save_quantized=False, model_type=None):
         self._abort = False
         self.device = torch.device("cuda")
-        filename = model_filename[0] if isinstance(model_filename, (list, tuple)) else model_filename
+        self.model_def = dict(model_def or {})
+        filenames = list(model_filename) if isinstance(model_filename, (list, tuple)) else [model_filename]
+        filename = filenames[0]
+        # A sharded transformer (the official Turbo checkpoint) arrives as one
+        # file per submodel slot; every shard belongs to the same module.
+        transformer_files = filenames if self.model_def.get("qwen21_sharded_transformer") else filename
         # Keep non-persistent RoPE buffers real, on CPU. They are not present
         # in the safetensors checkpoints and cannot be materialized from meta.
         with torch.device("cpu"), init_empty_weights(include_buffers=False):
@@ -74,7 +81,8 @@ class model_factory:
             self.text_encoder = Qwen3VLModel(Qwen3VLConfig.from_dict(_config("text_encoder_config.json")))
             self.vae = AutoencoderKLQwenImage21.from_config(_config("vae_config.json"))
         configure_encoder_attention(self.text_encoder)
-        offload.load_model_data(self.transformer, filename, writable_tensors=False, default_dtype=torch.bfloat16)
+        offload.load_model_data(self.transformer, transformer_files, writable_tensors=False,
+                                default_dtype=torch.bfloat16)
         offload.load_model_data(self.text_encoder, text_encoder_filename, writable_tensors=False,
                                default_dtype=torch.bfloat16)
         self.transformer._model_dtype = torch.bfloat16
@@ -136,6 +144,14 @@ class model_factory:
         active_control = "V" in selector or (
             (input_masks is not None or active_outpaint) and image_mode == 2
         )
+        model_def = getattr(self, "model_def", None) or {}
+        fixed_profile = fixed_sampling_profile(model_def)
+        if fixed_profile is not None:
+            # A distilled checkpoint has one trained trajectory: its schedule,
+            # step count and CFG=1 are not user settings.
+            sample_solver = fixed_profile["solver"]
+            sampling_steps = fixed_profile["steps"]
+            guide_scale = fixed_profile["guidance"]
         references = []
 
         control_source = input_frames if active_control else None
@@ -145,12 +161,20 @@ class model_factory:
             references.append(_pil(image_start))
         if "I" in selector:
             refs = original_input_ref_images if original_input_ref_images else input_ref_images
-            references.extend(_pil(image) for image in (refs or []))
+            max_side = model_def.get("qwen21_reference_max_side")
+            references.extend(downscale_reference(_pil(image), max_side) for image in (refs or []))
         if len(references) > 10:
             raise ValueError("Qwen Image 2.1 supports up to 10 reference images.")
         if not input_prompt.strip():
             raise ValueError("Enter a description or editing instruction for Qwen Image 2.1.")
-        width, height = max(32, int(width) // 32 * 32), max(32, int(height) // 32 * 32)
+        requested_size = (int(width), int(height))
+        min_pixels = model_def.get("qwen21_min_render_pixels")
+        # Outpainting and masked edits pin the canvas to their source, so
+        # only plain generation and reference edits get the larger canvas.
+        if input_masks is not None or active_outpaint:
+            min_pixels = None
+        width, height = render_dimensions(width, height, min_pixels)
+        resize_output = bool(min_pixels) and requested_size[0] * requested_size[1] < int(min_pixels)
         # Match WanGP's VRAM-sensitive Qwen tile policy. A 3090 uses 1024px
         # tiles with 25% overlap; smaller GPUs get progressively smaller tiles.
         tile_choice = VAE_tile_size
@@ -224,10 +248,12 @@ class model_factory:
                 inpaint_image=(references[0] if input_masks is not None and references else None),
                 denoising_strength=denoising_strength, masking_strength=masking_strength,
                 model_mode=model_mode, outpainting_dims=outpainting_dims,
-                # The model-specific cache flag is opt-in and remains subject
+                # The model-specific cache flag is opt-in (a checkpoint def can
+                # make it the default, as Turbo does) and remains subject
                 # to the pipeline's conservative per-reference VRAM budget.
                 # Scheduled/fused adapter changes invalidate cached prefix K/V.
-                use_kv_cache=(custom_settings or {}).get("qwen21_kv_cache", "Disabled") == "Enabled"
+                use_kv_cache=(custom_settings or {}).get(
+                    "qwen21_kv_cache", model_def.get("qwen21_kv_cache_default", "Disabled")) == "Enabled"
                 and not _has_scheduled_lora_weights(loras_slists),
                 output_type="uint8",
             ).images
@@ -242,6 +268,8 @@ class model_factory:
                 images = (images * 255).round().clamp(0, 255).to(torch.uint8)
             else:
                 images = images.cpu()
+            if resize_output:
+                images = resize_uint8_images(images, *requested_size)
             return images.transpose(0, 1)
         except GenerationCancelled:
             return None
