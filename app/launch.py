@@ -11098,7 +11098,7 @@ async def director_bible_render(bible_id: str, element_id: str, variant_id: str,
 
 @api.post(_BIBLE_IMAGE + "/views")
 async def director_bible_views(bible_id: str, element_id: str, variant_id: str, request: Request):
-    """Render the angles of a character's look (face, three-quarter, profile, back) in the background."""
+    """Render the angles of a character's look (face, three-quarter, profile, back; ``views``: some of them) in the background."""
     from services.director_pipeline import render_bible_views
     _init_pipeline()  # renders need the wgp module, wired on first Director use
     body = await request.json() if request.headers.get("content-length", "0") != "0" else {}
@@ -11107,6 +11107,7 @@ async def director_bible_views(bible_id: str, element_id: str, variant_id: str, 
         render_bible_views, bible_id, element_id, variant_id,
         image_model=str(body.get("image_model") or ""),
         image_params=body.get("image_params") if isinstance(body.get("image_params"), dict) else {},
+        views=[str(v) for v in body.get("views") or []][:4] if isinstance(body.get("views"), list) else None,
     )
     return {"bible": bible}
 

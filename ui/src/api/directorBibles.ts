@@ -127,9 +127,10 @@ export function renderBibleImage(bibleId: string, elementId: string, variantId: 
   return bibleCall(`${variantUrl(bibleId, elementId, variantId)}/render`, jsonBody(body), 'Could not start the render')
 }
 
-/** Render the four angles of a character's look, edited from its approved image, in the background. */
-export function renderBibleViews(bibleId: string, elementId: string, variantId: string, imageModel: string): Promise<DirectorBible> {
-  return bibleCall(`${variantUrl(bibleId, elementId, variantId)}/views`, jsonBody({ image_model: imageModel }),
+/** Render the four angles (``views``: some of them) of a character's look, edited from its approved image, in the background. */
+export function renderBibleViews(bibleId: string, elementId: string, variantId: string, imageModel: string,
+  views?: string[]): Promise<DirectorBible> {
+  return bibleCall(`${variantUrl(bibleId, elementId, variantId)}/views`, jsonBody({ image_model: imageModel, views }),
     'Could not render the angles')
 }
 

@@ -597,6 +597,20 @@ class BibleRenderSettingsTests(unittest.TestCase):
         with Image.open(os.path.join(out, sheet)) as image:
             self.assertEqual(image.height, 1920)
             self.assertEqual(image.width, 1088 + 1920 + 640)  # figure, back (square in this fake), faces
+        # One angle again: a single new candidate next to the approved one.
+        sent.clear()
+        with patch.object(pipeline, "_submit_and_wait", side_effect=submit):
+            pipeline.render_bible_views("spring_rain", girl, "default", image_model="cloud_fal_seedream_4",
+                                        views=["back"])
+            for _ in range(200):
+                if not bibles.active_renders():
+                    break
+                time.sleep(0.02)
+        self.assertEqual(len(sent), 1)
+        backs = [i for i in bibles.get_bible("spring_rain")["characters"][0]["variants"][0]["images"] if i["view"] == "back"]
+        self.assertEqual([i["status"] for i in backs], ["approved", "candidate"])
+        with self.assertRaises(bibles.BibleError):
+            pipeline.render_bible_views("spring_rain", girl, "default", image_model="cloud_fal_seedream_4", views=["side"])
 
 
 def test_regenerate_all_adds_a_candidate_to_every_idle_look():

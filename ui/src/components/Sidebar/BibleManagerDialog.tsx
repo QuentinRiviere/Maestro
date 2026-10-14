@@ -122,8 +122,10 @@ function WorkerCountPicker({ imageModel }: { imageModel: string }) {
   )
 }
 
-/** Render a failed image again: pick the model (fal or the GPU worker) and, for the worker, how many pods. */
-function RetryDialog({ needsImages, onRetry, onClose }: {
+/** Render a failed image again, or a new candidate next to an image: pick the model (fal or the GPU worker)
+ * and, for the worker, how many pods. */
+function RetryDialog({ regenerate = false, needsImages, onRetry, onClose }: {
+  regenerate?: boolean
   needsImages: boolean
   onRetry: (model: string) => Promise<void>
   onClose: () => void
@@ -137,14 +139,15 @@ function RetryDialog({ needsImages, onRetry, onClose }: {
     setBusy(true)
     setError(null)
     try { await onRetry(model); onClose() }
-    catch (e) { setError(e instanceof Error ? e.message : 'Could not retry the render') }
+    catch (e) { setError(e instanceof Error ? e.message : `Could not ${regenerate ? 'start' : 'retry'} the render`) }
     finally { setBusy(false) }
   }
   return (
-    <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/60" role="dialog" aria-modal="true"
-      aria-label="Retry the render" onClick={e => { if (e.target === e.currentTarget) onClose() }}>
+    <div className="fixed inset-0 z-[95] flex items-center justify-center bg-black/60" role="dialog" aria-modal="true"
+      aria-label={regenerate ? 'Regenerate the image' : 'Retry the render'} onClick={e => { if (e.target === e.currentTarget) onClose() }}>
       <div className="w-80 space-y-3 rounded border border-border bg-bg-secondary p-3 text-[11px] text-text-secondary">
-        <h3 className="text-xs font-medium text-text-primary">Retry the render</h3>
+        <h3 className="text-xs font-medium text-text-primary">{regenerate ? 'Regenerate this image' : 'Retry the render'}</h3>
+        {regenerate && <p className="text-[10px] text-text-muted">A new candidate joins this one; nothing is replaced until you approve it.</p>}
         <label className="block space-y-1">
           <span className="block text-[10px] text-text-muted">Model: a cloud model (fal, Replicate) or a local one on the GPU worker</span>
           <BibleModelPicker value={model} onChange={setModel} />
@@ -156,7 +159,7 @@ function RetryDialog({ needsImages, onRetry, onClose }: {
           <button onClick={onClose} className="rounded border border-border px-2 py-1 hover:text-text-primary">Cancel</button>
           <button disabled={busy || blocked} onClick={() => void retry()}
             className="flex items-center gap-1 rounded border border-accent-blue px-2 py-1 text-text-primary disabled:opacity-40">
-            {busy ? <Loader2 size={10} className="animate-spin" /> : <RefreshCw size={10} />} Retry
+            {busy ? <Loader2 size={10} className="animate-spin" /> : <RefreshCw size={10} />} {regenerate ? 'Regenerate' : 'Retry'}
           </button>
         </div>
       </div>
@@ -177,7 +180,7 @@ const DELETE_IMAGE_NOTE = 'The image leaves this look. Projects that already use
 const inProgress = (status: string) => status === 'queued' || status === 'rendering'
 
 /** One image of a look, full size: approve it, delete it, or step through the look's images. */
-function ImageViewer({ bible, element, variant, view, index, onIndex, onClose, onBible }: {
+function ImageViewer({ bible, element, variant, view, index, onIndex, onClose, onBible, onRegenerate }: {
   bible: DirectorBible
   element: BibleElement
   variant: BibleVariant
@@ -186,6 +189,7 @@ function ImageViewer({ bible, element, variant, view, index, onIndex, onClose, o
   onIndex: (index: number) => void
   onClose: () => void
   onBible: (bible: DirectorBible) => void
+  onRegenerate: () => void
 }) {
   const images = variant.images.filter(i => i.file && (i.view || '') === view)
   const image = images[Math.min(index, images.length - 1)]
@@ -223,6 +227,10 @@ function ImageViewer({ bible, element, variant, view, index, onIndex, onClose, o
                 className="flex items-center gap-1 rounded bg-emerald-600 px-2.5 py-1 text-[11px] text-white disabled:opacity-50">
                 <Check size={12} /> Approve
               </button>}
+          <button disabled={busy} onClick={onRegenerate} title="Render a new candidate of this image"
+            className="flex items-center gap-1 rounded border border-white/30 px-2.5 py-1 text-[11px] text-white/80 hover:text-white disabled:opacity-50">
+            <RefreshCw size={12} /> Regenerate
+          </button>
           <button disabled={busy} onClick={() => ask({
             title: 'Delete this image?', message: DELETE_IMAGE_NOTE, confirmLabel: 'Delete', danger: true,
             run: () => act(() => deleteBibleImage(bible.id, element.id, variant.id, image.id), true),
@@ -260,6 +268,7 @@ function Images({ bible, element, variant, view = '', onBible }: {
   const [error, setError] = useState<string | null>(null)
   const [viewing, setViewing] = useState<number | null>(null)
   const ask = useContext(AskContext)
+  // A failed slot to retry in place, or "new" for a new candidate of this look or angle.
   const [retrying, setRetrying] = useState<string | null>(null)
   const act = async (call: () => Promise<DirectorBible>) => {
     setError(null)
@@ -293,6 +302,12 @@ function Images({ bible, element, variant, view = '', onBible }: {
                         </>}
                 </div>}
             {image.status === 'approved' && <Check size={12} className="absolute left-1 top-1 rounded bg-emerald-500 text-white" />}
+            {image.file && !inProgress(image.status) && (
+              <button aria-label="Regenerate image" title="Render a new candidate of this image" onClick={() => setRetrying('new')}
+                className="absolute right-0.5 bottom-0.5 rounded bg-black/60 p-0.5 text-white/80 hover:text-white">
+                <RefreshCw size={10} />
+              </button>
+            )}
             {!inProgress(image.status) && (
               <button aria-label="Delete image" onClick={() => ask({
                 title: 'Delete this image?', message: DELETE_IMAGE_NOTE, confirmLabel: 'Delete', danger: true,
@@ -311,13 +326,18 @@ function Images({ bible, element, variant, view = '', onBible }: {
         </p>
       )}
       {error && <p className="text-[10px] text-chip-red">{error}</p>}
-      {retrying && (
-        <RetryDialog needsImages={!!view || variant.id !== 'default'} onClose={() => setRetrying(null)}
-          onRetry={async model => onBible(await retryBibleImage(bible.id, element.id, variant.id, retrying, model))} />
-      )}
       {viewing !== null && withFiles.length > 0 && (
         <ImageViewer bible={bible} element={element} variant={variant} view={view} index={viewing} onIndex={setViewing}
-          onClose={() => setViewing(null)} onBible={onBible} />
+          onClose={() => setViewing(null)} onBible={onBible} onRegenerate={() => setRetrying('new')} />
+      )}
+      {retrying && (
+        <RetryDialog regenerate={retrying === 'new'} needsImages={!!view || variant.id !== 'default'}
+          onClose={() => setRetrying(null)}
+          onRetry={async model => onBible(await (retrying !== 'new'
+            ? retryBibleImage(bible.id, element.id, variant.id, retrying, model)
+            : view
+              ? renderBibleViews(bible.id, element.id, variant.id, model, [view])
+              : renderBibleImage(bible.id, element.id, variant.id, { image_model: model })))} />
       )}
     </div>
   )
