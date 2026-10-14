@@ -73,7 +73,7 @@ class PoolTests(unittest.TestCase):
     def test_a_failed_pod_is_skipped_and_all_failing_raises(self):
         pods = self._fake_pods(1)
         pods[0].start = lambda model_type=None: {"state": "starting"}
-        pods[0].status = lambda: {"state": "stopped", "message": "Last run failed: no offers"}
+        pods[0].status = lambda: {"state": "stopped", "message": "Last run failed: image pull failed"}
         from services.remote_worker.manager import RemoteWorkerError
         self.pool._started.add(0)
         with self.assertRaises(RemoteWorkerError):
@@ -163,3 +163,34 @@ class ParallelBibleRenderTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NoCapacityRetryTests(unittest.TestCase):
+    def test_a_pod_without_offers_is_started_again_until_one_appears(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        primary = RemoteWorkerManager(RemoteWorkerSettingsStore(tmp.name))
+        pool = RemoteWorkerPool(primary)
+        clock = [0.0]
+        primary._clock = lambda: clock[0]
+        primary._sleep = lambda seconds: clock.__setitem__(0, clock[0] + max(seconds, 1.0))
+        starts, outcomes = [], ["no_capacity", "no_capacity", "ready"]
+        state = {"value": "stopped", "message": ""}
+
+        def status():
+            if state["value"] == "ready":
+                primary._ready_since = 1.0
+            return {"state": state["value"], "message": state["message"]}
+
+        def start(model_type=None):
+            outcome = outcomes[len(starts)]
+            starts.append(outcome)
+            if outcome == "no_capacity":
+                state.update(value="stopped", message="Last run failed: failed_to_start_due_to_no_capacity.")
+            else:
+                state.update(value="ready", message="")
+            return {"state": "starting"}
+
+        primary.status, primary.start = status, start
+        self.assertIs(pool.acquire("m", poll_interval=0), primary)
+        self.assertEqual(starts, ["no_capacity", "no_capacity", "ready"])

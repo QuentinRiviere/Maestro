@@ -16,13 +16,21 @@ next job's transfers and preparation overlap the previous job's GPU work.
 """
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from typing import Any, Callable, Mapping
 
 from services.remote_worker.manager import RemoteWorkerError, RemoteWorkerManager
 
+# A pod that found no GPU offer is started again this often, this many times
+# (offers come and go within minutes) before its jobs fail.
+NO_CAPACITY_RETRY_SECONDS = 60.0
+NO_CAPACITY_RETRIES = 10
+
 # How far each state is from taking a job, to report the closest pod while waiting.
+log = logging.getLogger("maestro.remote_worker.pool")
+
 _PROGRESS = {"ready": 4, "booting": 3, "starting": 2, "stopping": 1}
 
 
@@ -35,6 +43,9 @@ class RemoteWorkerPool:
         self._waiting = 0
         self._started: set[int] = set()
         self._failed: dict[int, str] = {}
+        # Pods whose run found no GPU offer: misses so far and when to try again.
+        self._capacity_misses: dict[int, int] = {}
+        self._retry_at: dict[int, float] = {}
         # One thread polls dstack for every waiting job.
         self._poll_lock = threading.Lock()
         self._statuses: dict[int, Mapping[str, Any]] = {}
@@ -105,6 +116,8 @@ class RemoteWorkerPool:
                 if not self._waiting:
                     self._started.clear()
                     self._failed.clear()
+                    self._capacity_misses.clear()
+                    self._retry_at.clear()
 
     def _take_free_pod(self) -> RemoteWorkerManager | None:
         depth = self.primary.settings.queue_depth
@@ -135,7 +148,16 @@ class RemoteWorkerPool:
                     if (pod._index in self._started and status.get("state") == "stopped"
                             and str(status.get("message") or "").startswith("Last run failed")):
                         self._started.discard(pod._index)
-                        self._failed[pod._index] = str(status["message"])
+                        message = str(status["message"])
+                        misses = self._capacity_misses.get(pod._index, 0) + 1
+                        if _no_capacity(message) and misses <= NO_CAPACITY_RETRIES:
+                            # No offer right now: try again in a minute rather than fail the jobs.
+                            self._capacity_misses[pod._index] = misses
+                            self._retry_at[pod._index] = self.primary._clock() + NO_CAPACITY_RETRY_SECONDS
+                            log.info("remote worker %s: no GPU offer, retry %d/%d in %ds", pod.run_name,
+                                     misses, NO_CAPACITY_RETRIES, NO_CAPACITY_RETRY_SECONDS)
+                        else:
+                            self._failed[pod._index] = message
                 # Pods already up or on their way count first: a burst only starts the missing ones.
                 live = [p for p in pods if (self._statuses.get(p._index) or {}).get("state") in ("starting", "booting", "ready")]
                 wanted = min(len(pods), -(-demand // depth))
@@ -143,7 +165,10 @@ class RemoteWorkerPool:
                     if len(live) >= wanted:
                         break
                     state = (self._statuses.get(pod._index) or {}).get("state")
-                    if state == "stopped" and pod._index not in self._failed:
+                    waiting_offer = self._retry_at.get(pod._index, 0.0) > self.primary._clock()
+                    if waiting_offer:
+                        live.append(pod)  # counts as on its way: no other pod starts in its place
+                    elif state == "stopped" and pod._index not in self._failed:
                         self._statuses[pod._index] = pod.start(model_type)
                         self._started.add(pod._index)
                         live.append(pod)
@@ -171,6 +196,11 @@ class RemoteWorkerPool:
         for pod in self.all_pods()[1:]:
             pod.stop(reason=reason)
         self.primary.stop(reason=reason)
+
+
+def _no_capacity(message: str) -> bool:
+    text = message.lower()
+    return "no_capacity" in text or "no offers" in text or "no gpu offer" in text
 
 
 class Slots:
