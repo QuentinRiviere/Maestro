@@ -291,6 +291,20 @@ class TestEndToEndIncidentReproduction(unittest.TestCase):
         self.assertIn("their logic", cleaned)
         self.assertNotIn("Blaine", cleaned)
 
+    def test_required_closing_sentence_and_input_words_are_no_names(self):
+        input_text = "SHOT: medium close-up at eye level | SUBJECT: a man at a wheel"
+        output_text = (
+            "Medium close-up at eye level of a man at a wheel. "
+            "Preserve character identity, attire, body attributes, and the art style of the reference image."
+        )
+        cleaned, hallucinated = _strip_hallucinated_names(
+            input_text, output_text,
+            name_to_descriptor={"Hae-won": "a slender young Korean woman"},
+            fallback_descriptors=["a slender young Korean woman"],
+        )
+        self.assertEqual(hallucinated, [])
+        self.assertEqual(cleaned, output_text)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

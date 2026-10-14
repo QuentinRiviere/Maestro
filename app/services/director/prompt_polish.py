@@ -308,6 +308,8 @@ _NAME_HARVEST_STOPLIST = frozenset({
     "Yes", "No", "Maybe", "Okay", "Ok", "Sure", "Right", "Well",
     "Today", "Tomorrow", "Yesterday", "Now", "Then", "Here", "There",
     "Yeah", "Hey", "Oh", "Ah", "Um",
+    # Words of the closing sentence the image polish is told to add.
+    "Preserve", "Keep", "Character", "Identity",
 })
 
 
@@ -552,7 +554,9 @@ def _strip_hallucinated_names(
     if not output_text:
         return output_text, []
 
-    in_input_lower = {t.lower() for t in _PROPER_NOUN_TOKEN_RE.findall(input_text or "")}
+    # Any word of the input counts, in any case: a sentence the polish
+    # starts with an input word ("Medium close-up ...") is no new name.
+    in_input_lower = {t.lower() for t in re.findall(r"[A-Za-z]+", input_text or "")}
     known_names_lower = {n.lower() for n in name_to_descriptor.keys() if n}
     stoplist_lower = {s.lower() for s in _NAME_HARVEST_STOPLIST}
 
