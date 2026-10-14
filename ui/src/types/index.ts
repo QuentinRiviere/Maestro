@@ -1334,6 +1334,12 @@ export interface RemoteWorkerSettings {
   stop_when_queue_empty: boolean
   route_generations: boolean
   auto_start: boolean
+  /** Pods jobs spread over (1-4); extra pods start only when jobs queue up. */
+  worker_count: number
+  /** Jobs each pod holds at once, so transfers overlap the GPU work (1-3). */
+  jobs_per_worker: number
+  keep_models_in_vram: boolean
+  pinned_memory: boolean
 }
 
 export type RemoteWorkerState =

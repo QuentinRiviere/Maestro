@@ -4,10 +4,12 @@ import { useStore } from '../../stores/useStore'
 import { AppModeToggle, MaestroBrand } from '../AppModeNavigation'
 import { BibleChat } from './BibleChat'
 import { useConfirm } from './ConfirmDialog'
+import { fetchRemoteWorkerSettings, updateRemoteWorkerSettings } from '../../api/client'
+import type { RemoteWorkerSettings } from '../../types'
 import {
   approveBibleImage, BIBLE_PLURAL, renderBibleViews, unapproveBibleImage, createDirectorBible, deleteBibleImage, deleteDirectorBible,
   directorBibleImageUrl, fetchDirectorBible, fetchDirectorBibles, generateBibleAssets, renderBibleImage, updateDirectorBible,
-  uploadBibleImage,
+  retryBibleImage, uploadBibleImage,
   type BibleElement, type BibleKind, type BibleVariant, type DirectorBible, type DirectorBibleSummary,
 } from '../../api/directorBibles'
 
@@ -88,6 +90,79 @@ function BibleModelPicker({ value, onChange }: { value: string; onChange: (model
   )
 }
 const TEXT_ONLY_NOTE = 'cannot read an image: looks other than Default need a model that reads images to keep the same person or place. Pick one (Nano Banana, Seedream 4, FLUX Kontext, Klein, Qwen-Image-Edit) in the model menu at the top of the page.'
+
+const WORKER_CHOICES = [1, 2, 3]
+
+/** How many remote GPU workers local-model renders spread over (a remote worker setting, shared with every job). */
+function WorkerCountPicker({ imageModel }: { imageModel: string }) {
+  const [settings, setSettings] = useState<RemoteWorkerSettings | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  useEffect(() => { fetchRemoteWorkerSettings().then(setSettings).catch(() => setSettings(null)) }, [])
+  if (!settings?.configured || !settings.route_generations || imageModel.startsWith('cloud_')) return null
+  const pick = async (count: number) => {
+    setError(null)
+    try { setSettings(await updateRemoteWorkerSettings({ worker_count: count })) }
+    catch (e) { setError(e instanceof Error ? e.message : 'Could not change the worker count') }
+  }
+  return (
+    <div className="flex items-center gap-1 text-[10px] text-text-muted"
+      title={'Remote GPU workers the renders spread over. Each render takes the first worker free; '
+        + 'extra workers start only while renders are waiting, and each one is billed while it runs.'}>
+      <span>Workers</span>
+      <div className="flex overflow-hidden rounded border border-border">
+        {WORKER_CHOICES.map(count => (
+          <button key={count} onClick={() => void pick(count)} aria-pressed={settings.worker_count === count}
+            className={`px-1.5 py-0.5 ${settings.worker_count === count ? 'bg-accent-blue/30 text-text-primary' : 'hover:bg-bg-hover'}`}>
+            {count}
+          </button>
+        ))}
+      </div>
+      {error && <span className="text-chip-red">{error}</span>}
+    </div>
+  )
+}
+
+/** Render a failed image again: pick the model (fal or the GPU worker) and, for the worker, how many pods. */
+function RetryDialog({ needsImages, onRetry, onClose }: {
+  needsImages: boolean
+  onRetry: (model: string) => Promise<void>
+  onClose: () => void
+}) {
+  const [model, setModel] = useState(useContext(BibleModelContext))
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const readsImages = useReadsImages(model)
+  const blocked = needsImages && !readsImages
+  const retry = async () => {
+    setBusy(true)
+    setError(null)
+    try { await onRetry(model); onClose() }
+    catch (e) { setError(e instanceof Error ? e.message : 'Could not retry the render') }
+    finally { setBusy(false) }
+  }
+  return (
+    <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/60" role="dialog" aria-modal="true"
+      aria-label="Retry the render" onClick={e => { if (e.target === e.currentTarget) onClose() }}>
+      <div className="w-80 space-y-3 rounded border border-border bg-bg-secondary p-3 text-[11px] text-text-secondary">
+        <h3 className="text-xs font-medium text-text-primary">Retry the render</h3>
+        <label className="block space-y-1">
+          <span className="block text-[10px] text-text-muted">Model: a cloud model (fal, Replicate) or a local one on the GPU worker</span>
+          <BibleModelPicker value={model} onChange={setModel} />
+        </label>
+        <WorkerCountPicker imageModel={model} />
+        {blocked && <p className="text-amber-300">{model} {TEXT_ONLY_NOTE}</p>}
+        {error && <p className="text-chip-red">{error}</p>}
+        <div className="flex justify-end gap-2">
+          <button onClick={onClose} className="rounded border border-border px-2 py-1 hover:text-text-primary">Cancel</button>
+          <button disabled={busy || blocked} onClick={() => void retry()}
+            className="flex items-center gap-1 rounded border border-accent-blue px-2 py-1 text-text-primary disabled:opacity-40">
+            {busy ? <Loader2 size={10} className="animate-spin" /> : <RefreshCw size={10} />} Retry
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 const lookCount = (bible: DirectorBible) => (['characters', 'locations', 'props'] as const)
   .reduce((count, plural) => count + bible[plural].reduce((n, e) => n + e.variants.length, 0), 0)
@@ -185,6 +260,7 @@ function Images({ bible, element, variant, view = '', onBible }: {
   const [error, setError] = useState<string | null>(null)
   const [viewing, setViewing] = useState<number | null>(null)
   const ask = useContext(AskContext)
+  const [retrying, setRetrying] = useState<string | null>(null)
   const act = async (call: () => Promise<DirectorBible>) => {
     setError(null)
     try { onBible(await call()) } catch (e) { setError(e instanceof Error ? e.message : 'Failed') }
@@ -208,7 +284,13 @@ function Images({ bible, element, variant, view = '', onBible }: {
                     ? <><Loader2 size={14} className="animate-spin" /> rendering</>
                     : image.status === 'queued'
                       ? <><Clock size={14} /> queued</>
-                      : <AlertTriangle size={14} className="text-chip-red" />}
+                      : <>
+                          <AlertTriangle size={14} className="text-chip-red" />
+                          <button onClick={() => setRetrying(image.id)} title="Render it again"
+                            className="flex items-center gap-0.5 rounded border border-border px-1 text-text-secondary hover:text-text-primary">
+                            <RefreshCw size={9} /> Retry
+                          </button>
+                        </>}
                 </div>}
             {image.status === 'approved' && <Check size={12} className="absolute left-1 top-1 rounded bg-emerald-500 text-white" />}
             {!inProgress(image.status) && (
@@ -229,6 +311,10 @@ function Images({ bible, element, variant, view = '', onBible }: {
         </p>
       )}
       {error && <p className="text-[10px] text-chip-red">{error}</p>}
+      {retrying && (
+        <RetryDialog needsImages={!!view || variant.id !== 'default'} onClose={() => setRetrying(null)}
+          onRetry={async model => onBible(await retryBibleImage(bible.id, element.id, variant.id, retrying, model))} />
+      )}
       {viewing !== null && withFiles.length > 0 && (
         <ImageViewer bible={bible} element={element} variant={variant} view={view} index={viewing} onIndex={setViewing}
           onClose={() => setViewing(null)} onBible={onBible} />
@@ -571,6 +657,7 @@ function BibleManagerPanel({ initialId, onClose }: { initialId?: string; onClose
             {draft && <span className="text-[10px] text-text-muted">r{draft.revision}</span>}
             {isRendering && <span className="flex items-center gap-1 text-[10px] text-text-muted"><Loader2 size={10} className="animate-spin" /> rendering</span>}
             <div className="ml-auto flex items-center gap-2">
+              {draft && <WorkerCountPicker imageModel={imageModel} />}
               {draft && <BibleModelPicker value={imageModel} onChange={setImageModel} />}
               {draft && (
                 <button className="text-[10px] text-text-muted hover:text-chip-red"

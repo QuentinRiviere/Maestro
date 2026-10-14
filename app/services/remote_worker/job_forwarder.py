@@ -196,21 +196,26 @@ class RemoteJobForwarder:
         each new one (bytes, content type, the worker's preview descriptor).
         """
         model_type = str(params.get("model_type") or "")
+        update(phase="Remote worker", message="Waiting for the remote GPU worker…")
+        waiting_since = time.monotonic()
+
+        def on_update(status: Mapping[str, Any]) -> None:
+            update(phase="Remote worker",
+                   message=_worker_status_message(status, waited=time.monotonic() - waiting_since))
+
         if self._pool is not None:
-            manager = self._pool.acquire()
+            # Queue for the first pod with room; the pool starts pods as the queue needs them.
+            manager = self._pool.acquire(model_type, should_abort=is_cancelled, on_update=on_update)
+            if manager is None:
+                raise RemoteJobCancelled()
         else:
             manager = self._manager
             manager.job_started()
         try:
-            update(phase="Remote worker", message="Waiting for the remote GPU worker…")
-            waiting_since = time.monotonic()
             status = manager.ensure_ready(
                 model_type,
                 should_abort=is_cancelled,
-                on_update=lambda s: update(
-                    phase="Remote worker",
-                    message=_worker_status_message(s, waited=time.monotonic() - waiting_since),
-                ),
+                on_update=on_update,
             )
             if is_cancelled():
                 raise RemoteJobCancelled()

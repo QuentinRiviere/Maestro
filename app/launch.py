@@ -11144,6 +11144,21 @@ def director_bible_unapprove(bible_id: str, element_id: str, variant_id: str, im
     return {"bible": _bible_call(unapprove_image, bible_id, element_id, variant_id, image_id)}
 
 
+@api.post(_BIBLE_IMAGE + "/images/{image_id}/retry")
+async def director_bible_retry(bible_id: str, element_id: str, variant_id: str, image_id: str, request: Request):
+    """Render a failed image (a look or one of its angles) again, in the background."""
+    from services.director_pipeline import retry_bible_image
+    _init_pipeline()  # renders need the wgp module, wired on first Director use
+    body = await request.json() if request.headers.get("content-length", "0") != "0" else {}
+    body = body if isinstance(body, dict) else {}
+    bible = _bible_call(
+        retry_bible_image, bible_id, element_id, variant_id, image_id,
+        image_model=str(body.get("image_model") or ""),
+        image_params=body.get("image_params") if isinstance(body.get("image_params"), dict) else {},
+    )
+    return {"bible": bible}
+
+
 @api.delete(_BIBLE_IMAGE + "/images/{image_id}")
 def director_bible_image_delete(bible_id: str, element_id: str, variant_id: str, image_id: str):
     from services.director.bibles import delete_image

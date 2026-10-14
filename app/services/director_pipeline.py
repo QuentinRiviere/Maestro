@@ -6503,6 +6503,29 @@ def render_bible_image(bible_id: str, element_id: str, variant_id: str, *, image
     return bible
 
 
+def retry_bible_image(bible_id: str, element_id: str, variant_id: str, image_id: str, *,
+                      image_model: str = "", image_params: Optional[dict] = None) -> dict:
+    """Render a failed slot (a look or one of its angles) again, in the background."""
+    from services.director import bibles
+
+    image_model = image_model or "flux2_klein_9b"
+    bible = bibles.get_bible(bible_id)
+    if not bible:
+        raise bibles.BibleError("Unknown bible")
+    variant = bibles.find_variant(bibles.find_element(bible, element_id)[1], variant_id)
+    failed = next((i for i in variant["images"] if i["id"] == image_id), None)
+    if failed and (failed.get("view") or variant_id != bibles.DEFAULT_VARIANT) \
+            and image_model_reference_limit(image_model) == 0:
+        raise bibles.BibleError(_text_only_look_error(image_model))
+    bible, view = bibles.retry_render(bible_id, element_id, variant_id, image_id)
+    threading.Thread(
+        target=_render_bible_slot, name=f"bible-render-{image_id}", daemon=True,
+        args=(bible_id, element_id, variant_id, image_id),
+        kwargs={"image_model": image_model, "image_params": image_params or {}, "view": view},
+    ).start()
+    return bible
+
+
 # Hosted image APIs take several requests at once; fal and Replicate queue
 # beyond their own limits, so a few in flight is safe.
 CLOUD_BIBLE_PARALLEL = 4

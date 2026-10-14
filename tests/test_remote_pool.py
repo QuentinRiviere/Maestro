@@ -25,16 +25,58 @@ class PoolTests(unittest.TestCase):
         self.primary = RemoteWorkerManager(RemoteWorkerSettingsStore(self.tmp.name))
         self.pool = RemoteWorkerPool(self.primary)
 
-    def test_a_burst_spreads_over_every_pod_and_single_jobs_stay_on_the_first(self):
-        self.primary.update_settings({"worker_count": 3})
-        pods = [self.pool.acquire() for _ in range(3)]
-        self.assertEqual([p.run_name for p in pods], ["maestro-worker", "maestro-worker-2", "maestro-worker-3"])
-        for pod in pods:
-            pod.job_finished()
-        self.assertIs(self.pool.acquire(), self.primary)
+    def _fake_pods(self, count, ready=()):
+        """Pods whose dstack state is scripted: ``boot`` maps a pod index to polls left before it is ready."""
+        self.primary.update_settings({"worker_count": count})
+        self.primary._sleep = lambda seconds: None
+        self.started, self.boot = [], {}
+        for pod in self.pool.pods():
+            def status(pod=pod):
+                left = self.boot.get(pod._index)
+                if pod._index in ready or left == 0:
+                    pod._ready_since = 1.0
+                    return {"state": "ready"}
+                if left is None:
+                    return {"state": "stopped"}
+                self.boot[pod._index] = left - 1
+                return {"state": "booting"}
+
+            def start(model_type=None, pod=pod):
+                self.started.append(pod._index)
+                self.boot[pod._index] = 1 + pod._index  # later pods boot slower
+                return {"state": "starting"}
+            pod.status, pod.start = status, start
+        return self.pool.pods()
+
+    def test_a_job_takes_the_first_ready_pod_and_a_lone_job_starts_one_pod(self):
+        pods = self._fake_pods(3)
+        self.assertIs(self.pool.acquire("m", poll_interval=0), pods[0])
+        self.assertEqual(self.started, [0])
+
+    def test_waiting_jobs_start_more_pods_and_take_whichever_is_ready_first(self):
+        pods = self._fake_pods(3, ready=(0,))
+        busy = self.pool.acquire("m", poll_interval=0)
+        self.assertIs(busy, pods[0])
+        # Pod 1 is busy (one job per pod): the next job starts pod 2 and takes it once up.
+        self.assertIs(self.pool.acquire("m", poll_interval=0), pods[1])
+        busy.job_finished()
+        self.assertIs(self.pool.acquire("m", poll_interval=0), pods[0])
+
+    def test_a_failed_pod_is_skipped_and_all_failing_raises(self):
+        pods = self._fake_pods(1)
+        pods[0].start = lambda model_type=None: {"state": "starting"}
+        pods[0].status = lambda: {"state": "stopped", "message": "Last run failed: no offers"}
+        from services.remote_worker.manager import RemoteWorkerError
+        self.pool._started.add(0)
+        with self.assertRaises(RemoteWorkerError):
+            self.pool.acquire("m", poll_interval=0)
+
+    def test_a_cancelled_wait_returns_none(self):
+        self._fake_pods(2)
+        self.assertIsNone(self.pool.acquire("m", should_abort=lambda: True, poll_interval=0))
 
     def test_a_ready_pod_is_preferred_over_one_still_to_start(self):
-        self.primary.update_settings({"worker_count": 2})
+        self.primary.update_settings({"worker_count": 2, "auto_start": False})
         second = self.pool.pods()[1]
         second._ready_since = 1.0
         self.assertIs(self.pool.acquire(), second)

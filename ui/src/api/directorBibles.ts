@@ -151,6 +151,13 @@ export function unapproveBibleImage(bibleId: string, elementId: string, variantI
     { method: 'POST' }, 'Could not unapprove the image')
 }
 
+/** Render a failed image (a look or one of its angles) again, in the background. */
+export function retryBibleImage(bibleId: string, elementId: string, variantId: string, imageId: string,
+  imageModel: string): Promise<DirectorBible> {
+  return bibleCall(`${variantUrl(bibleId, elementId, variantId)}/images/${encodeURIComponent(imageId)}/retry`,
+    jsonBody({ image_model: imageModel }), 'Could not retry the render')
+}
+
 export function deleteBibleImage(bibleId: string, elementId: string, variantId: string, imageId: string): Promise<DirectorBible> {
   return bibleCall(`${variantUrl(bibleId, elementId, variantId)}/images/${encodeURIComponent(imageId)}`,
     { method: 'DELETE' }, 'Could not delete the image')

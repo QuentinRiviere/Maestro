@@ -442,6 +442,22 @@ def start_render(bible_id: str, element_id: str, variant_id: str, view: str = ""
     return _mutate(bible_id, change)
 
 
+def retry_render(bible_id: str, element_id: str, variant_id: str, image_id: str) -> tuple[dict, str]:
+    """Queue a failed slot again in place; returns the bible and the slot's angle ("" for the look)."""
+    def change(bible: dict) -> str:
+        _, element = find_element(bible, element_id)
+        variant = find_variant(element, variant_id)
+        image = next((i for i in variant["images"] if i["id"] == image_id), None)
+        if image is None:
+            raise BibleError("Unknown image")
+        if image["status"] != "failed":
+            raise BibleError("Only a failed render can be retried")
+        _LIVE_SLOTS.add(image_id)
+        image.update(status="queued", error="", created_at=_now())
+        return image.get("view", "")
+    return _mutate(bible_id, change)
+
+
 def mark_rendering(bible_id: str, element_id: str, variant_id: str, slot: str) -> None:
     """A queued slot starts rendering."""
     def change(bible: dict) -> None:

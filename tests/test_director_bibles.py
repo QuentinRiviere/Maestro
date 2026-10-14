@@ -155,6 +155,17 @@ class BibleLookTests(unittest.TestCase):
         image = self._bible()["characters"][0]["variants"][0]["images"][0]
         self.assertEqual((image["status"], image["error"]), ("failed", "Interrupted"))
 
+    def test_a_failed_render_is_retried_in_place(self):
+        _, slot = bibles.start_render("spring_rain", self.girl, "default", "face_profile")
+        bibles.finish_render("spring_rain", self.girl, "default", slot, error="Unknown bible")
+        bible, view = bibles.retry_render("spring_rain", self.girl, "default", slot)
+        image = bible["characters"][0]["variants"][0]["images"][0]
+        self.assertEqual((view, image["id"], image["status"], image["error"]), ("face_profile", slot, "queued", ""))
+        with self.assertRaises(bibles.BibleError):
+            bibles.retry_render("spring_rain", self.girl, "default", slot)
+        bible = bibles.finish_render("spring_rain", self.girl, "default", slot, source=self.upload)
+        self.assertEqual(bible["characters"][0]["variants"][0]["images"][0]["status"], "approved")
+
     def test_editing_the_text_keeps_the_images(self):
         bibles.add_image("spring_rain", self.girl, "default", self.upload)
         bible = self._bible()
