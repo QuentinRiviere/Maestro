@@ -53,6 +53,18 @@ from services.director_video_strategy import (
     video_strategy,
 )
 from services.h3_window_planner import compute_h3_window_boundaries
+from services.director.h3_dialogue import H3DialogueContractError
+from services.director.h3_sequences import (
+    SEQUENCE_KEY,
+    annotate_h3_sequences,
+    compile_h3_sequence_prompt,
+    h3_sequences_enabled,
+    plan_h3_sequences,
+    saved_sequence_members,
+    sequence_total_frames,
+    sequence_units,
+    split_sequence_video,
+)
 from services.text_integrity import repair_payload
 from models.minimax_h3.reference_manifest import (
     MINIMAX_H3_MAX_REFERENCE_AUDIOS,
@@ -1331,6 +1343,8 @@ def _save_pipeline_state_locked(pid: str) -> bool:
             "_director_camera_framing": plan.get("_director_camera_framing"),
             "_director_location": plan.get("_director_location"),
             "_director_keep_sec": plan.get("_director_keep_sec"),
+            # H3 sequence membership: one render split back into its shots.
+            "_director_sequence": plan.get("_director_sequence"),
             "_director_audio_plan": plan.get("_director_audio_plan"),
             "image_prompt_pre_polish": pre_polish[i].get("image_prompt", "") if i < len(pre_polish) else None,
             "video_prompt_pre_polish": pre_polish[i].get("video_prompt", "") if i < len(pre_polish) else None,
@@ -2904,23 +2918,10 @@ def rerun_clip_video(out_dir: str, pid: str, clip_index: int, prompt_override: s
     return _rerun_clip_video_impl(out_dir, pid, clip_index, prompt_override)
 
 
-def _rerun_clip_video_impl(out_dir: str, pid: str, clip_index: int, prompt_override: str = None) -> dict:
-    """Re-generate the video for a single clip. Returns {job_id, filename} or raises."""
-    state = load_pipeline_state(out_dir, pid)
-    if not state:
-        raise ValueError(f"Pipeline {pid} not found")
-    clips = state.get("clips", [])
-    if clip_index < 0 or clip_index >= len(clips):
-        raise ValueError(f"Clip index {clip_index} out of range (0-{len(clips)-1})")
-
-    clip = clips[clip_index]
-    prompt = prompt_override or clip.get("video_prompt", "")
-    if not prompt:
-        raise ValueError("No video prompt for this clip")
-
+def _rerun_prompt_plan(state: dict, clip: dict, prompt: str, prompt_override: Optional[str]) -> dict:
+    """A saved clip's prompt state, as the full run compiles it."""
     snapshot = state.get("_params_snapshot") or {}
-    video_model = state.get("video_model") or "ltx2_22B_distilled_1_1"
-    prompt_plan = {
+    return {
         "video_prompt": prompt,
         "_director_prompt_user_edited": prompt_override is not None or bool(clip.get("_director_prompt_user_edited")),
         "_director_h3_source_prompt": (
@@ -2954,6 +2955,30 @@ def _rerun_clip_video_impl(out_dir: str, pid: str, clip_index: int, prompt_overr
         "_director_audio_plan": clip.get("_director_audio_plan") or {},
         "_director_look": str(snapshot.get("_director_bible_look") or "").strip(),
     }
+
+
+def _rerun_clip_video_impl(out_dir: str, pid: str, clip_index: int, prompt_override: str = None) -> dict:
+    """Re-generate the video for a single clip. Returns {job_id, filename} or raises."""
+    state = load_pipeline_state(out_dir, pid)
+    if not state:
+        raise ValueError(f"Pipeline {pid} not found")
+    clips = state.get("clips", [])
+    if clip_index < 0 or clip_index >= len(clips):
+        raise ValueError(f"Clip index {clip_index} out of range (0-{len(clips)-1})")
+
+    clip = clips[clip_index]
+    prompt = prompt_override or clip.get("video_prompt", "")
+    if not prompt:
+        raise ValueError("No video prompt for this clip")
+
+    snapshot = state.get("_params_snapshot") or {}
+    video_model = state.get("video_model") or "ltx2_22B_distilled_1_1"
+    sequence_members = saved_sequence_members(clips, clip_index)
+    if sequence_members:
+        return _rerun_h3_sequence_video(
+            out_dir, pid, state, sequence_members, clip_index, prompt_override,
+        )
+    prompt_plan = _rerun_prompt_plan(state, clip, prompt, prompt_override)
     _apply_h3_music_audio_contract(
         video_model, [prompt_plan],
         {
@@ -3518,6 +3543,183 @@ def _rerun_clip_video_impl(out_dir: str, pid: str, clip_index: int, prompt_overr
             "regenerate its video too."
         )
     return result
+
+
+def _rerun_h3_sequence_video(
+    out_dir: str,
+    pid: str,
+    state: dict,
+    members: list[int],
+    clip_index: int,
+    prompt_override: Optional[str] = None,
+) -> dict:
+    """Re-render a whole H3 sequence and re-split it into its shots.
+
+    A member's cuts, light and wardrobe come from the one generation that
+    holds its neighbours, so rerunning a member reruns the sequence.
+    """
+    clips = state.get("clips", [])
+    snapshot = state.get("_params_snapshot") or {}
+    video_model = state.get("video_model") or ""
+    validation_params = _director_params_from_saved_state(state)
+    validation_params["video_model"] = video_model
+    _validate_director_models(validation_params, stages=("video",))
+    model_def = {}
+    try:
+        model_def = _wgp.get_model_def(video_model) or {}
+    except Exception:
+        pass
+    if not h3_sequences_enabled({**validation_params, "director_h3_sequences": "on"}, model_def):
+        raise ValueError(
+            "This shot was rendered in an H3 sequence, but the project's video "
+            "model or workflow no longer supports sequences. Re-plan the project."
+        )
+    pipeline_file = _find_pipeline_file(out_dir, pid)
+    clip_out_dir = os.path.dirname(pipeline_file) if pipeline_file else out_dir
+    member_clips = [clips[index] for index in members]
+    records = [clip[SEQUENCE_KEY] for clip in member_clips]
+    fps = float(records[0]["fps"])
+    min_frames = int(model_def.get("frames_minimum") or 124)
+    frame_step = int(model_def.get("frames_steps") or 17)
+    execution_profile = _saved_director_video_execution_profile(state, model_def=model_def)
+    max_frames = int(
+        execution_profile.get("effective_max_frames")
+        or model_def.get("frames_maximum")
+        or 345
+    )
+    total_frames = sequence_total_frames(
+        [record["frames"] for record in records], min_frames=min_frames, frame_step=frame_step,
+    )
+    if total_frames != records[0]["total_frames"] or total_frames > max_frames:
+        raise ValueError(
+            f"Saved H3 sequence of shots {members[0] + 1}-{members[-1] + 1} no longer "
+            f"fits one {max_frames}-frame render. Re-plan the project."
+        )
+    validate_director_execution_frames(
+        execution_profile, total_frames, label=f"H3 sequence {records[0]['id']}",
+    )
+
+    member_plans = []
+    for index, clip in zip(members, member_clips):
+        override = prompt_override if index == clip_index else None
+        prompt = override or clip.get("video_prompt", "")
+        if not prompt:
+            raise ValueError(f"No video prompt for shot {index + 1}")
+        plan = _rerun_prompt_plan(state, clip, prompt, override)
+        plan[SEQUENCE_KEY] = dict(clip[SEQUENCE_KEY])
+        member_plans.append(plan)
+
+    uses_shot_images = shot_images_required(_saved_pipeline_shot_image_policy(state))
+    start_path = ""
+    if uses_shot_images:
+        start_img = member_clips[0].get("start_image_filename")
+        if _invalid_saved_media_numbers([start_img], 1, clip_out_dir, "image"):
+            raise ValueError(
+                f"Shot {members[0] + 1} opens this H3 sequence and has no valid start "
+                "image. Regenerate its start image first."
+            )
+        start_path = os.path.join(clip_out_dir, start_img)
+    # Sequences never border a last-frame link (see plan_h3_sequences), the
+    # only case where a bounded shot gets the next shot's image as its end.
+    end_path = ""
+
+    # Members compile together so their speaker ids match inside the render.
+    _preflight_h3_director_prompts(
+        video_model, member_plans, pid=pid,
+        prompt_modes=[_h3_sequence_prompt_mode(bool(start_path), False)] * len(member_plans),
+        durations=[record["frames"] / fps for record in records],
+    )
+    mode = _h3_sequence_prompt_mode(bool(start_path), bool(end_path))
+    sequence_prompt = compile_h3_sequence_prompt(
+        member_plans,
+        mode=mode,
+        offsets_sec=[record["offset_sec"] for record in records],
+        total_duration_sec=total_frames / fps,
+    )
+    video_loras = state.get("video_loras") or {}
+    strengths = {"video_model": video_model, "video_params": state.get("video_params") or {}}
+    _normalize_director_media_strengths(strengths, model_def=model_def)
+    video_params = strengths["video_params"]
+    gen_params = {
+        "model_type": video_model,
+        "prompt": sequence_prompt,
+        "image_mode": 0,
+        "image_prompt_type": "SE" if start_path and end_path else "S" if start_path else "",
+        "num_inference_steps": video_params.get("num_inference_steps", 8),
+        "guidance_scale": video_params.get("guidance_scale", 1),
+        "input_video_strength": video_params.get("input_video_strength", 1.0),
+        "resolution": (
+            execution_profile.get("normalized_resolution")
+            or video_params.get("resolution", "1280x720")
+        ),
+        "video_length": total_frames,
+        "sliding_window_size": total_frames,
+        "seed": -1,
+        "settings_version": 2.52,
+        "generation_mode": "video",
+        "repeat_generation": 1,
+        "negative_prompt": "",
+        "activated_loras": video_loras.get("activated_loras", []),
+        "loras_multipliers": " ".join(
+            m.split(";")[0] for m in (video_loras.get("loras_multipliers", "") or "").split(" ") if m
+        ),
+        "_director_pipeline_id": pid,
+        "_director_detached_operation": True,
+    }
+    _apply_director_h3_optimizations(gen_params, video_params, execution_profile)
+    with _pipeline_lock:
+        repair_control = _pipeline_repairs.get(pid)
+        repair_operation_id = repair_control.get("operation_id") if repair_control else None
+    if repair_operation_id:
+        gen_params["_director_repair_operation_id"] = repair_operation_id
+    if start_path:
+        gen_params["image_start"] = start_path
+    if end_path:
+        gen_params["image_end"] = end_path
+    print(
+        f"[Pipeline {pid}] Shot {clip_index + 1} is in H3 sequence {records[0]['id']}: "
+        f"re-rendering shots {members[0] + 1}-{members[-1] + 1} ({total_frames} frames, {mode})"
+    )
+    output_files = _submit_and_wait(gen_params, timeout_s=3600, out_dir=clip_out_dir)
+    render_file = output_files[-1] if output_files else ""
+    if not render_file:
+        raise RuntimeError("Video generation completed without a recorded output.")
+    names = _split_h3_sequence_file(render_file, member_plans, clip_out_dir)
+
+    def _update(s):
+        for index, plan, name in zip(members, member_plans, names):
+            saved = s["clips"][index]
+            saved["video_filename"] = name
+            saved["video_stale"] = False
+            saved[SEQUENCE_KEY] = {
+                **plan[SEQUENCE_KEY], "prompt": sequence_prompt, "prompt_mode": mode,
+            }
+            # Compiled together; a stale compiled copy would read as a user edit.
+            saved["video_prompt"] = plan["video_prompt"]
+            saved["_director_vocal_contract"] = plan.get("_director_vocal_contract")
+            for key in (
+                "_director_h3_source_prompt", "_director_h3_compiled_prompt",
+                "_director_h3_prompt_mode", "_director_speaker_registry",
+            ):
+                if plan.get(key) is not None:
+                    saved[key] = plan.get(key)
+            if name not in s.get("output_files", []):
+                s.setdefault("output_files", []).append(name)
+    _update_saved_pipeline(out_dir, pid, _update)
+
+    others = [index + 1 for index in members if index != clip_index]
+    return {
+        "filename": names[members.index(clip_index)],
+        "clip_index": clip_index,
+        "sequence_rerun": True,
+        "sequence_id": records[0]["id"],
+        "sequence_clip_indices": list(members),
+        "filenames": {index: name for index, name in zip(members, names)},
+        "warning": (
+            f"Shot {clip_index + 1} is part of an H3 sequence: the whole sequence was "
+            f"re-rendered, so shot(s) {', '.join(map(str, others))} changed too."
+        ),
+    }
 
 
 _DIRECTOR_SINGLE_ASSET_KEYS = (
@@ -5716,6 +5918,7 @@ def _resume_pipeline_reserved(pid: str, out_dir: str) -> tuple[bool, str]:
         "_director_camera_framing": c.get("_director_camera_framing"),
         "_director_location": c.get("_director_location"),
         "_director_keep_sec": c.get("_director_keep_sec"),
+        "_director_sequence": c.get("_director_sequence"),
         "_director_audio_plan": c.get("_director_audio_plan"),
     } for c in saved_clips]
     planned_clips = [c.get("planned_clip") for c in saved_clips]
@@ -7686,6 +7889,144 @@ def _run_planning_v2(pid: str, params: dict, pipeline_type: str):
     return clip_plans, planned_clips
 
 
+def _h3_sequence_prompt_mode(has_start: bool, has_end: bool) -> str:
+    return "fl2va" if has_start and has_end else "i2va" if has_start else "l2va" if has_end else "t2va"
+
+
+def _compile_h3_sequence_prompts(
+    clip_plans: list[dict],
+    groups: list[list[int]],
+    *,
+    image_start_paths: list[str],
+    image_end_paths: list[str],
+    continues_previous: Optional[list[bool]] = None,
+) -> dict[int, str]:
+    """One multi-shot H3 prompt per sequence, keyed by its first shot.
+
+    The first member's start image opens the sequence; the last member's end
+    image (if any) closes it. Members keep their own compiled prompts for the
+    review and Dashboard.
+    """
+    prompts: dict[int, str] = {}
+    for members in groups:
+        first, last = members[0], members[-1]
+        mode = _h3_sequence_prompt_mode(
+            bool(first < len(image_start_paths) and image_start_paths[first])
+            or bool(continues_previous and continues_previous[first]),
+            bool(last < len(image_end_paths) and image_end_paths[last]),
+        )
+        record = clip_plans[first][SEQUENCE_KEY]
+        try:
+            prompt = compile_h3_sequence_prompt(
+                [clip_plans[i] for i in members],
+                mode=mode,
+                offsets_sec=[clip_plans[i][SEQUENCE_KEY]["offset_sec"] for i in members],
+                total_duration_sec=record["total_frames"] / float(record["fps"]),
+            )
+        except H3DialogueContractError as error:
+            # These shots still render, one generation each, as before.
+            print(f"[Pipeline] H3 sequence {record['id']} kept as single shots: {error}")
+            for index in members:
+                stale = clip_plans[index].pop(SEQUENCE_KEY, None) or {}
+                if stale.get("keep_sec"):
+                    clip_plans[index]["_director_keep_sec"] = stale["keep_sec"]
+            continue
+        record["prompt"] = prompt
+        record["prompt_mode"] = mode
+        prompts[first] = prompt
+    return prompts
+
+
+def _collapse_h3_sequence_params(
+    gen_params: dict,
+    units: list[list[int]],
+    sequence_prompts: dict[int, str],
+    sequence_frames: list[int],
+    separator: str,
+) -> None:
+    """Turn a per-shot multi-clip job into one task per render unit."""
+    shot_count = sum(len(unit) for unit in units)
+    prompts = str(gen_params.get("prompt") or "").split(separator)
+    if len(prompts) != shot_count:
+        raise RuntimeError(
+            f"H3 sequences: {len(prompts)} prompt(s) for {shot_count} shot(s)"
+        )
+    gen_params["prompt"] = separator.join(
+        sequence_prompts[unit[0]] if len(unit) > 1 else prompts[unit[0]]
+        for unit in units
+    )
+    frames = list(gen_params.get("per_clip_frames") or [])
+    gen_params["per_clip_frames"] = [
+        int(sequence_frames[position]) if len(unit) > 1 else frames[unit[0]]
+        for position, unit in enumerate(units)
+    ]
+    for key in (
+        "image_start", "image_end", "per_clip_prompt_modes",
+        "per_clip_continue_from_previous", "per_clip_voice_references",
+        "per_clip_keyframes", "per_clip_output_frames",
+        "per_clip_minimax_h3_references",
+    ):
+        values = gen_params.get(key)
+        if isinstance(values, list) and len(values) == shot_count:
+            # The sequence starts like its first shot and ends like its last.
+            gen_params[key] = [
+                values[unit[-1] if key == "image_end" else unit[0]]
+                for unit in units
+            ]
+    gen_params["video_length"] = sum(gen_params["per_clip_frames"])
+    gen_params["sliding_window_size"] = max(gen_params["per_clip_frames"])
+
+
+def _split_h3_sequence_file(filename: str, member_plans: list[dict], out_dir: str) -> list[str]:
+    """Split one sequence render into one file per member shot."""
+    source = os.path.join(out_dir, os.path.basename(str(filename)))
+    stem = os.path.splitext(os.path.basename(str(filename)))[0]
+    records = [plan[SEQUENCE_KEY] for plan in member_plans]
+    names = [f"{stem}_shot{record['index'] + 1}.mp4" for record in records]
+    split_sequence_video(
+        source,
+        [(record["start_frame"], record["start_frame"] + record["frames"]) for record in records],
+        float(records[0]["fps"]),
+        [os.path.join(out_dir, name) for name in names],
+    )
+    for record in records:
+        record["render_file"] = os.path.basename(str(filename))
+    return names
+
+
+def _split_h3_sequence_outputs(
+    output_files: list,
+    units: list[list[int]],
+    clip_plans: list[dict],
+    out_dir: str,
+    *,
+    pid: str = "",
+) -> list:
+    """Map a per-unit multi-clip result back to one file per shot.
+
+    Sequence renders are cut at their member boundaries; the joins stay. A
+    failed split leaves those shots empty so the Dashboard can rerun them.
+    """
+    unit_files = _clip_video_slots(output_files or [], len(units))
+    used = {name for name in unit_files if name}
+    extras = [name for name in output_files or [] if name not in used]
+    shot_files: dict[int, str] = {}
+    for unit, filename in zip(units, unit_files):
+        if not filename:
+            continue
+        if len(unit) == 1:
+            shot_files[unit[0]] = filename
+            continue
+        try:
+            names = _split_h3_sequence_file(filename, [clip_plans[i] for i in unit], out_dir)
+        except Exception as error:  # noqa: BLE001 - keep the other shots
+            print(f"[Pipeline {pid}] H3 sequence split failed for shots {unit[0] + 1}-{unit[-1] + 1}: {error}")
+            continue
+        shot_files.update(zip(unit, names))
+    ordered = [shot_files[index] for index in sorted(shot_files)]
+    return _DirectorOutputs([*ordered, *extras], clip_output_files=shot_files)
+
+
 def _build_tight_edit(pid: str, clip_plans: list[dict], clip_videos: list, out_dir: str) -> Optional[str]:
     """Join each shot's planned keep range into ``*_edit.mp4``; the full join stays."""
     from services.director.edit_cut import EDIT_SUFFIX, build_edit, has_cuts, normalize_keep
@@ -8926,6 +9267,42 @@ def _run_video_generation(pid: str, params: dict, clip_plans: list[dict],
                 clip_plans=clip_plans,
             )
 
+        # H3 sequences: consecutive shots of one scene render as one
+        # generation with timed hard cuts, then split back into shots.
+        sequence_groups: list[list[int]] = []
+        if is_minimax_h3 and bounded_director and h3_sequences_enabled(params, model_def):
+            sequence_groups = plan_h3_sequences(
+                clip_plans, per_clip_frames,
+                max_frames=bounded_maximum,
+                min_frames=bounded_minimum,
+                frame_step=bounded_step,
+                # extend_previous chains and duration-split segments of one
+                # planned shot hand their last frame on; they stay alone.
+                linked=[False] + [
+                    _director_same_logical_scene(
+                        clip_plans[i - 1],
+                        planned_clips[i - 1] if i - 1 < len(planned_clips) else {},
+                        clip_plans[i],
+                        planned_clips[i] if i < len(planned_clips) else {},
+                    )
+                    for i in range(1, len(clip_plans))
+                ],
+            )
+        if sequence_groups or any(plan.get(SEQUENCE_KEY) for plan in clip_plans):
+            annotate_h3_sequences(
+                clip_plans, sequence_groups, per_clip_frames,
+                fps=fps, min_frames=bounded_minimum, frame_step=bounded_step,
+            )
+            _update_pipeline(pid, clip_plans=clip_plans)
+        if sequence_groups:
+            print(
+                f"[Pipeline {pid}] H3 sequences: "
+                + ", ".join(
+                    f"shots {g[0] + 1}-{g[-1] + 1} ({clip_plans[g[0]][SEQUENCE_KEY]['total_frames']} frames)"
+                    for g in sequence_groups
+                )
+            )
+
         # Quantize to the model's (latent*n + 1) frame lattice WITHOUT letting
         # the error compound. Floor-snapping each clip independently lost 0-7
         # frames per clip (an 8s clip = 200 frames @25fps floors to 193 —
@@ -9197,6 +9574,13 @@ def _run_video_generation(pid: str, params: dict, clip_plans: list[dict],
                 ),
             )
             prompts = [str(plan.get("video_prompt") or "") for plan in clip_plans]
+            sequence_prompts = _compile_h3_sequence_prompts(
+                clip_plans, sequence_groups,
+                image_start_paths=image_start_paths,
+                image_end_paths=image_end_paths,
+                continues_previous=per_clip_continue_from_previous,
+            )
+            sequence_groups = [g for g in sequence_groups if g[0] in sequence_prompts]
 
         # A planned multi-window clip stores one prompt per line. Apply the
         # LTX-2.5 sync contract to every window independently; ordinary clips
@@ -9349,11 +9733,31 @@ def _run_video_generation(pid: str, params: dict, clip_plans: list[dict],
         gen_params["film_grain_intensity"] = film_grain_intensity
         gen_params["film_grain_saturation"] = film_grain_saturation
 
+    units = None
+    if not seamless and sequence_groups:
+        units = sequence_units(len(clip_plans), sequence_groups)
+        _collapse_h3_sequence_params(
+            gen_params, units, sequence_prompts,
+            [clip_plans[unit[0]][SEQUENCE_KEY]["total_frames"] if len(unit) > 1 else 0 for unit in units],
+            CLIP_SEPARATOR,
+        )
+
     # Track progress by monitoring the generation job
-    output_files = _submit_and_wait(
-        gen_params,
-        timeout_s=7200,
-        workspace=workspace,
-        out_dir=out_dir,
-    )  # Abort only after 2 hours with no observable generation progress.
+    try:
+        output_files = _submit_and_wait(
+            gen_params,
+            timeout_s=7200,
+            workspace=workspace,
+            out_dir=out_dir,
+        )  # Abort only after 2 hours with no observable generation progress.
+    except _GenerationTimeoutError as error:
+        if units:
+            error.output_files = _split_h3_sequence_outputs(
+                error.output_files, units, clip_plans, out_dir, pid=pid,
+            )
+        raise
+    if units:
+        output_files = _split_h3_sequence_outputs(
+            output_files, units, clip_plans, out_dir, pid=pid,
+        )
     return output_files

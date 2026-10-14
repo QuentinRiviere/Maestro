@@ -1,0 +1,289 @@
+"""H3 sequences: several same-scene shots in one render, split back per shot."""
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+
+_APP_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "app"))
+if _APP_DIR not in sys.path:
+    sys.path.insert(0, _APP_DIR)
+
+from services import director_pipeline as dp  # noqa: E402
+from services.director.h3_dialogue import (  # noqa: E402
+    H3DialogueContractError,
+    compile_h3_clip_plans,
+    validate_h3_prompt_contract,
+)
+from services.director.h3_sequences import (  # noqa: E402
+    SEQUENCE_KEY,
+    annotate_h3_sequences,
+    compile_h3_sequence_prompt,
+    h3_sequences_enabled,
+    plan_h3_sequences,
+    saved_sequence_members,
+    sequence_total_frames,
+    sequence_units,
+    shift_local_times,
+    split_sequence_video,
+)
+from services.director_video_strategy import BOUNDED_START_END, OMNI_REFERENCE  # noqa: E402
+
+H3_DEF = {"director_video_strategy": BOUNDED_START_END, "frames_minimum": 124, "frames_steps": 17,
+          "frames_maximum": 345}
+LATTICE = {"min_frames": 124, "frame_step": 17}
+
+
+def _plan(group: str, strategy: str = "continuous", **extra) -> dict:
+    return {"_director_continuity_group": group, "_director_continuity_strategy": strategy, **extra}
+
+
+class EnabledTests(unittest.TestCase):
+    PARAMS = {"video_model": "minimax_h3", "pipeline_type": "short_film_story", "director_skill": "custom:noir"}
+
+    def test_auto_is_on_for_custom_story_skills_on_base_h3(self):
+        self.assertTrue(h3_sequences_enabled(self.PARAMS, H3_DEF))
+        self.assertTrue(h3_sequences_enabled({**self.PARAMS, "video_model": "minimax_h3_full"}, H3_DEF))
+
+    def test_flag_turns_it_off_or_on(self):
+        self.assertFalse(h3_sequences_enabled({**self.PARAMS, "director_h3_sequences": "off"}, H3_DEF))
+        self.assertFalse(h3_sequences_enabled({**self.PARAMS, "director_h3_sequences": False}, H3_DEF))
+        builtin = {**self.PARAMS, "director_skill": ""}
+        self.assertFalse(h3_sequences_enabled(builtin, H3_DEF))
+        self.assertTrue(h3_sequences_enabled({**builtin, "director_h3_sequences": "on"}, H3_DEF))
+
+    def test_ref2va_omni_audio_and_other_models_keep_per_shot_renders(self):
+        on = {**self.PARAMS, "director_h3_sequences": "on"}
+        self.assertFalse(h3_sequences_enabled({**on, "video_model": "minimax_h3_ref2va"}, H3_DEF))
+        self.assertFalse(h3_sequences_enabled(on, {**H3_DEF, "director_video_strategy": OMNI_REFERENCE}))
+        self.assertFalse(h3_sequences_enabled({**on, "audio_path": "song.wav"}, H3_DEF))
+        self.assertFalse(h3_sequences_enabled({**on, "pipeline_type": "music_video"}, H3_DEF))
+        self.assertFalse(h3_sequences_enabled({**on, "video_model": "ltx2_22B"}, H3_DEF))
+
+
+class GroupingTests(unittest.TestCase):
+    def test_total_frames_snap_up_to_the_h3_lattice(self):
+        self.assertEqual(sequence_total_frames([124, 124], **LATTICE), 260)  # 248 -> 260 (17n+5)
+        self.assertEqual(sequence_total_frames([60], **LATTICE), 124)
+
+    def test_groups_consecutive_same_scene_shots_within_one_render(self):
+        plans = [_plan("a"), _plan("a"), _plan("a"), _plan("b"), _plan("b"), _plan("")]
+        frames = [124, 124, 124, 141, 141, 124]
+        groups = plan_h3_sequences(plans, frames, max_frames=345, **LATTICE)
+        # Three 124-frame shots need 372 frames: the third shot renders alone.
+        self.assertEqual(groups, [[0, 1], [3, 4]])
+
+    def test_max_four_shots_and_short_shots(self):
+        plans = [_plan("a") for _ in range(6)]
+        groups = plan_h3_sequences(plans, [72] * 6, max_frames=345, max_shots=4, **LATTICE)
+        self.assertEqual(groups, [[0, 1, 2, 3], [4, 5]])
+
+    def test_never_across_an_extend_previous_link(self):
+        plans = [_plan("a"), _plan("a"), _plan("a", "extend_previous"), _plan("a"), _plan("a")]
+        groups = plan_h3_sequences(plans, [100] * 5, max_frames=345, **LATTICE)
+        # Shots 2 and 3 keep their last-frame chain; 4 and 5 still group.
+        self.assertEqual(groups, [[3, 4]])
+
+    def test_duration_split_segments_stay_alone(self):
+        plans = [_plan("a") for _ in range(4)]
+        groups = plan_h3_sequences(plans, [100] * 4, max_frames=345, linked=[False, True, False, False], **LATTICE)
+        self.assertEqual(groups, [[2, 3]])
+
+    def test_annotation_records_offsets_and_parks_keep_ranges(self):
+        plans = [_plan("a", _director_keep_sec=[1.0, 3.0]), _plan("a"), _plan("b", _director_keep_sec=[0, 2.5])]
+        annotate_h3_sequences(plans, [[0, 1]], [124, 130, 124], fps=24, **LATTICE)
+        first, second = plans[0][SEQUENCE_KEY], plans[1][SEQUENCE_KEY]
+        self.assertEqual((first["start_frame"], second["start_frame"]), (0, 124))
+        self.assertEqual(second["offset_sec"], round(124 / 24, 3))
+        self.assertEqual(first["total_frames"], 260)
+        self.assertNotIn("_director_keep_sec", plans[0])  # members render full length
+        self.assertEqual(plans[2]["_director_keep_sec"], [0, 2.5])
+        self.assertNotIn(SEQUENCE_KEY, plans[2])
+        # Sequences off on the next run: the keep range comes back.
+        annotate_h3_sequences(plans, [], [124, 130, 124], fps=24, **LATTICE)
+        self.assertEqual(plans[0]["_director_keep_sec"], [1.0, 3.0])
+        self.assertNotIn(SEQUENCE_KEY, plans[0])
+
+    def test_units_and_saved_members(self):
+        self.assertEqual(sequence_units(5, [[1, 2, 3]]), [[0], [1, 2, 3], [4]])
+        plans = [_plan("a"), _plan("a"), _plan("a")]
+        annotate_h3_sequences(plans, [[1, 2]], [124, 124, 124], fps=24, **LATTICE)
+        self.assertEqual(saved_sequence_members(plans, 2), [1, 2])
+        self.assertEqual(saved_sequence_members(plans, 0), [])
+        plans[2][SEQUENCE_KEY]["id"] = "other"
+        self.assertEqual(saved_sequence_members(plans, 1), [])
+
+
+def _compiled_members() -> list[dict]:
+    look = "Grainy 16mm, warm tungsten practicals."
+    plans = [
+        {
+            "video_prompt": (
+                "Kitchen at night. Action: 0.0-2.0s: Monica sets down a mug, then looks up. "
+                "overall_soundscape: Fridge hum. non_diegetic_music: N/A."
+            ),
+            "_director_subjects_on_screen": [{"character_id": "monica", "speaker_name": "Monica"}],
+            "_director_dialogue_beats": [{"speaker_id": "monica", "spoken_text": "You're late."}],
+            "_director_look": look,
+        },
+        {
+            "video_prompt": (
+                "Kitchen at night, reverse angle. Action: Ross freezes in the doorway. "
+                "overall_soundscape: Fridge hum and rain on the window. non_diegetic_music: N/A."
+            ),
+            "_director_subjects_on_screen": [{"character_id": "ross", "speaker_name": "Ross"}],
+            "_director_dialogue_beats": [{"speaker_id": "ross", "spoken_text": "The train stopped."}],
+            "_director_look": look,
+        },
+    ]
+    compile_h3_clip_plans(plans, prompt_modes=["i2va", "i2va"], durations=[124 / 24, 136 / 24])
+    return plans
+
+
+class SequencePromptTests(unittest.TestCase):
+    def test_one_prompt_with_timed_hard_cuts_passes_the_h3_contract(self):
+        plans = _compiled_members()
+        offset = round(124 / 24, 3)
+        prompt = compile_h3_sequence_prompt(plans, mode="i2va", offsets_sec=[0.0, offset],
+                                            total_duration_sec=260 / 24)
+        self.assertTrue(prompt.startswith("For the target video, at 0.00 seconds"))
+        self.assertIn("integrated_multimodal_description: [Shot 1] ", prompt)
+        self.assertIn("[Shot 2] At 00:05.167, hard cut.", prompt)
+        self.assertEqual(prompt.count("[Shot 1]"), 2)  # header + description
+        self.assertLess(prompt.index("You're late."), prompt.index("The train stopped."))
+        self.assertEqual(prompt.count("<d>"), 2)
+        self.assertEqual(prompt.count("Visual style:"), 1)
+        self.assertIn("Fridge hum; Fridge hum and rain on the window.", prompt)
+        beats = plans[0]["_director_dialogue_beats"] + plans[1]["_director_dialogue_beats"]
+        self.assertEqual(validate_h3_prompt_contract(prompt, beats, mode="i2va"), [])
+
+    def test_fl2va_header_names_the_last_shot(self):
+        plans = _compiled_members()
+        prompt = compile_h3_sequence_prompt(plans, mode="fl2va", offsets_sec=[0.0, 5.167],
+                                            total_duration_sec=260 / 24)
+        self.assertIn("Picture 2 (from Shot 2)", prompt)
+        self.assertIn("10.83-second mark", prompt)
+
+    def test_rejects_ref2va_and_dialogue_drift(self):
+        plans = _compiled_members()
+        with self.assertRaises(H3DialogueContractError):
+            compile_h3_sequence_prompt(plans, mode="ref2va", offsets_sec=[0, 5], total_duration_sec=10)
+        plans[1]["_director_dialogue_beats"] = [{"speaker_id": "ross", "spoken_text": "Something else."}]
+        with self.assertRaises(H3DialogueContractError):
+            compile_h3_sequence_prompt(plans, mode="t2va", offsets_sec=[0, 5], total_duration_sec=10)
+
+    def test_local_times_move_onto_the_sequence_timeline(self):
+        body = ("Action: 0.0-2.0s: he turns; 2.5s: the door slams. <d>[English] At 1.5s sharp.</d> "
+                "Dialogue timing: mouths stay closed with no human voice from 0.00 to 0.40 seconds; "
+                "everyone remains silent through 5.17 seconds.")
+        shifted = shift_local_times(body, 5.0)
+        self.assertIn("5.0-7.0s: he turns; 7.5s: the door slams.", shifted)
+        self.assertIn("<d>[English] At 1.5s sharp.</d>", shifted)  # spoken words untouched
+        self.assertIn("from 5.00 to 5.40 seconds", shifted)
+        self.assertIn("through 10.17 seconds.", shifted)
+
+
+class RenderUnitTests(unittest.TestCase):
+    SEP = "\n---CLIP_BOUNDARY---\n"
+
+    def test_collapse_builds_one_task_per_sequence(self):
+        gen = {
+            "prompt": self.SEP.join(["p0", "p1", "p2", "p3"]),
+            "per_clip_frames": [124, 124, 130, 141],
+            "image_start": ["s0", "s1", "s2", "s3"],
+            "image_end": ["", "", "e2", ""],
+            "per_clip_prompt_modes": [0, 0, 0, 0],
+            "video_length": 519, "sliding_window_size": 141,
+        }
+        dp._collapse_h3_sequence_params(gen, [[0], [1, 2], [3]], {1: "SEQ"}, [0, 260, 0], self.SEP)
+        self.assertEqual(gen["prompt"].split(self.SEP), ["p0", "SEQ", "p3"])
+        self.assertEqual(gen["per_clip_frames"], [124, 260, 141])
+        self.assertEqual(gen["image_start"], ["s0", "s1", "s3"])
+        self.assertEqual(gen["image_end"], ["", "e2", ""])
+        self.assertEqual(gen["per_clip_prompt_modes"], [0, 0, 0])
+        self.assertEqual((gen["video_length"], gen["sliding_window_size"]), (525, 260))
+
+    def test_outputs_map_back_to_one_file_per_shot(self):
+        plans = [_plan("a"), _plan("b"), _plan("b"), _plan("b"), _plan("c")]
+        annotate_h3_sequences(plans, [[1, 2, 3]], [124, 80, 80, 80, 124], fps=24, **LATTICE)
+        calls = []
+
+        def fake_split(source, ranges, fps, outputs):
+            calls.append((os.path.basename(source), list(ranges), fps))
+            return outputs
+
+        original = dp.split_sequence_video
+        dp.split_sequence_video = fake_split
+        try:
+            outputs = dp._DirectorOutputs(["u0.mp4", "u1.mp4", "u2.mp4", "x_multiclip.mp4"],
+                                          clip_output_files={0: "u0.mp4", 1: "u1.mp4", 2: "u2.mp4"})
+            mapped = dp._split_h3_sequence_outputs(outputs, [[0], [1, 2, 3], [4]], plans, "/tmp/out")
+        finally:
+            dp.split_sequence_video = original
+        self.assertEqual(calls, [("u1.mp4", [(0, 80), (80, 160), (160, 240)], 24.0)])
+        self.assertEqual(mapped.clip_output_files,
+                         {0: "u0.mp4", 1: "u1_shot1.mp4", 2: "u1_shot2.mp4", 3: "u1_shot3.mp4", 4: "u2.mp4"})
+        self.assertEqual(list(mapped)[-1], "x_multiclip.mp4")
+        self.assertEqual(dp._clip_video_slots(mapped, 5),
+                         ["u0.mp4", "u1_shot1.mp4", "u1_shot2.mp4", "u1_shot3.mp4", "u2.mp4"])
+        self.assertEqual(plans[2][SEQUENCE_KEY]["render_file"], "u1.mp4")
+
+    def test_partial_outputs_keep_shot_indices(self):
+        plans = [_plan("a"), _plan("a"), _plan("b")]
+        annotate_h3_sequences(plans, [[0, 1]], [124, 124, 124], fps=24, **LATTICE)
+        original = dp.split_sequence_video
+        dp.split_sequence_video = lambda *args: args[-1]
+        try:
+            mapped = dp._split_h3_sequence_outputs(
+                dp._DirectorOutputs(["u1.mp4"], clip_output_files={1: "u1.mp4"}), [[0, 1], [2]], plans, "/o",
+            )
+        finally:
+            dp.split_sequence_video = original
+        self.assertEqual(dp._clip_video_slots(mapped, 3), [None, None, "u1.mp4"])
+
+    def test_rerun_of_a_member_reruns_the_sequence(self):
+        plans = [_plan("a"), _plan("a"), _plan("b")]
+        annotate_h3_sequences(plans, [[0, 1]], [124, 124, 124], fps=24, **LATTICE)
+        state = {"clips": [{**plan, "video_prompt": "p"} for plan in plans]}
+        seen = {}
+        originals = (dp.load_pipeline_state, dp._rerun_h3_sequence_video)
+        dp.load_pipeline_state = lambda out_dir, pid: state
+        dp._rerun_h3_sequence_video = lambda out_dir, pid, st, members, index, override: seen.update(
+            members=members, index=index) or {"sequence_rerun": True}
+        try:
+            result = dp._rerun_clip_video_impl("/o", "pid", 1)
+        finally:
+            dp.load_pipeline_state, dp._rerun_h3_sequence_video = originals
+        self.assertEqual(result, {"sequence_rerun": True})
+        self.assertEqual(seen, {"members": [0, 1], "index": 1})
+
+
+@unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg is required")
+class SplitVideoTests(unittest.TestCase):
+    def test_split_is_frame_exact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = os.path.join(tmp, "seq.mp4")
+            subprocess.run(
+                ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=64x64:rate=24:duration=3",
+                 "-f", "lavfi", "-i", "sine=frequency=440:duration=3", "-shortest",
+                 "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", source],
+                check=True, capture_output=True,
+            )
+            outputs = [os.path.join(tmp, "a.mp4"), os.path.join(tmp, "b.mp4")]
+            split_sequence_video(source, [(0, 29), (29, 72)], 24.0, outputs)
+            counts = []
+            for path in outputs:
+                probe = subprocess.run(
+                    ["ffprobe", "-v", "error", "-count_frames", "-select_streams", "v:0",
+                     "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0", path],
+                    check=True, capture_output=True, text=True,
+                )
+                counts.append(int(probe.stdout.strip()))
+            self.assertEqual(counts, [29, 43])
+
+
+if __name__ == "__main__":
+    unittest.main()
