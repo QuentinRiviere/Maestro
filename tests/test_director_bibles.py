@@ -548,7 +548,9 @@ class BibleRenderSettingsTests(unittest.TestCase):
             Image.new("RGB", (512, 512), (50, 50, 200)).save(os.path.join(kwargs["out_dir"], name), "PNG")
             return [name]
 
-        with patch.object(pipeline, "_submit_and_wait", side_effect=submit):
+        # A local editor's main-subject mode ("KI") would frame the angle like the tall sheet.
+        with patch.object(pipeline, "_submit_and_wait", side_effect=submit), \
+                patch.object(pipeline, "_director_image_prompt_type", return_value="KI"):
             pipeline.render_bible_views("spring_rain", girl, "default", image_model="cloud_fal_seedream_4")
             for _ in range(200):
                 if not bibles.active_renders():
@@ -556,6 +558,8 @@ class BibleRenderSettingsTests(unittest.TestCase):
                 time.sleep(0.02)
         self.assertEqual(len(sent), 4)
         self.assertTrue(all([os.path.basename(r) for r in p["image_refs"]] == [approved] for p in sent))
+        # The approved image is the person, not the frame of the angle.
+        self.assertEqual({p["video_prompt_type"] for p in sent}, {"I"})
         self.assertIn("strict 90-degree side profile", sent[2]["prompt"])
         self.assertNotIn("both eyes", sent[2]["prompt"])
         self.assertIn("face is not visible", sent[3]["prompt"])

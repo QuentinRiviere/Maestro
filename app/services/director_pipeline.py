@@ -6437,6 +6437,12 @@ def _render_bible_slot(bible_id: str, element_id: str, variant_id: str, slot: st
         if look and kind == "location":
             prompt = f"{prompt} {look}"
         image_params = {**image_model_defaults(image_model), **(image_params or {})}
+        prompt_type = _director_image_prompt_type(image_model, refs)
+        if view and prompt_type == "KI":
+            # The look's image is the person to show, not the frame: with "K"
+            # a local editor renders at the sheet's tall aspect, then the
+            # square face is squashed into the requested size.
+            prompt_type = "I"
         gen_params = {
             "model_type": image_model,
             "prompt": prompt,
@@ -6445,7 +6451,8 @@ def _render_bible_slot(bible_id: str, element_id: str, variant_id: str, slot: st
             "image_prompt_type": "",
             "num_inference_steps": image_params.get("num_inference_steps", 8),
             "guidance_scale": image_params.get("guidance_scale", 1),
-            "video_prompt_type": _director_image_prompt_type(image_model, refs),
+            "video_prompt_type": prompt_type,
+            "remove_background_images_ref": 0,
             "resolution": (casting.VIEW_RESOLUTIONS[view] if view
                            else casting.SHEET_RESOLUTION if kind == "character"
                            else image_params.get("resolution", "1280x720")),
