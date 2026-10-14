@@ -5,6 +5,8 @@ from urllib.parse import urlsplit
 
 from shared.utils.hf import build_hf_url
 
+from .sampling_profiles import QWEN_TURBO_PROFILE, QWEN_TURBO_SIGMAS
+
 
 MODEL_TYPE = "qwen_image_21_7B"
 REPO = "DeepBeepMeep/Qwen_image_2"
@@ -36,6 +38,28 @@ _VIGGLE_PROFILES = {
 _VIGGLE_REPO_URL = "https://huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo/resolve/main/"
 for _profile in _VIGGLE_PROFILES.values():
     _profile["lora_url"] = _VIGGLE_REPO_URL + _profile["filename"]
+
+# Profiles baked into a distilled checkpoint rather than added by an adapter.
+# A model def opts in with "qwen21_sampling_profile"; the profile then fixes
+# the solver, step count and guidance for every generation of that model.
+# The sigma nodes themselves live in sampling_profiles.
+_FIXED_PROFILES = {
+    QWEN_TURBO_PROFILE: {
+        "label": "Qwen Turbo (8 steps, checkpoint schedule)",
+        "steps": len(QWEN_TURBO_SIGMAS),
+        "guidance": 1.0,
+    },
+}
+
+
+def fixed_sampling_profile(model_def):
+    """Return the checkpoint-owned sampling profile of a model def, if any."""
+    solver = str((model_def or {}).get("qwen21_sampling_profile") or "").strip().lower()
+    if not solver:
+        return None
+    if solver not in _FIXED_PROFILES:
+        raise ValueError(f"Unknown Qwen Image 2.1 checkpoint sampling profile: {solver!r}.")
+    return {"solver": solver, **_FIXED_PROFILES[solver]}
 
 _QWEN21_2K_VALUES = {
     "auto": "auto_2k",
@@ -101,7 +125,7 @@ def apply_acceleration_profile(settings, *, selected_profile=None):
             raise ValueError("Choose a Viggle Turbo profile with 4, 5, or 6 steps.")
     if solver in ("", "euler"):
         solver = "default"
-    if solver not in ("default", *_VIGGLE_PROFILES):
+    if solver not in ("default", *_VIGGLE_PROFILES, *_FIXED_PROFILES):
         raise ValueError(f"Unsupported Qwen Image 2.1 acceleration profile: {solver!r}.")
 
     raw_loras = normalized.get("activated_loras") or []
@@ -120,6 +144,14 @@ def apply_acceleration_profile(settings, *, selected_profile=None):
         kept_multipliers.append(raw_multipliers[index])
 
     normalized["sample_solver"] = solver
+    if solver in _FIXED_PROFILES:
+        # The checkpoint itself is distilled: no managed adapter is added and
+        # a leftover Viggle adapter would fight the trained trajectory.
+        normalized["num_inference_steps"] = _FIXED_PROFILES[solver]["steps"]
+        normalized["guidance_scale"] = _FIXED_PROFILES[solver]["guidance"]
+        normalized["activated_loras"] = kept_loras
+        normalized["loras_multipliers"] = " ".join(kept_multipliers)
+        return normalized
     if solver == "default":
         if len(kept_loras) != len(raw_loras):
             normalized["activated_loras"] = kept_loras
@@ -139,14 +171,16 @@ def apply_acceleration_profile(settings, *, selected_profile=None):
 class family_handler:
     @staticmethod
     def query_model_def(base_model_type, model_def):
-        return {
-            "image_outputs": True,
-            "dtype": "bf16",
-            "guidance_max_phases": 1,
-            "sample_solvers": [("FlowMatch Euler", "default")] + [
+        fixed = fixed_sampling_profile(model_def)
+        if fixed is not None:
+            sample_solvers = [(fixed["label"], fixed["solver"])]
+            acceleration_profiles = {}
+            kv_cache_default = (model_def or {}).get("qwen21_kv_cache_default", "Disabled")
+        else:
+            sample_solvers = [("FlowMatch Euler", "default")] + [
                 (profile["label"], solver) for solver, profile in _VIGGLE_PROFILES.items()
-            ],
-            "qwen21_acceleration_profiles": {
+            ]
+            acceleration_profiles = {
                 solver: {
                     "label": profile["label"],
                     "steps": profile["steps"],
@@ -155,7 +189,14 @@ class family_handler:
                     "lora_weight": 1.0,
                 }
                 for solver, profile in _VIGGLE_PROFILES.items()
-            },
+            }
+            kv_cache_default = "Disabled"
+        return {
+            "image_outputs": True,
+            "dtype": "bf16",
+            "guidance_max_phases": 1,
+            "sample_solvers": sample_solvers,
+            "qwen21_acceleration_profiles": acceleration_profiles,
             "compile": False,
             "fit_into_canvas_image_refs": 0,
             "vae_block_size": 32,
@@ -171,7 +212,7 @@ class family_handler:
                 "name": "KV Cache",
                 "label": "KV Cache",
                 "type": "dropdown",
-                "default": "Disabled",
+                "default": kv_cache_default,
                 "choices": [("Disabled (lower VRAM)", "Disabled"), ("Enabled (faster denoising)", "Enabled")],
                 "info": "Enabled retains reference K/V during denoising when the safe memory estimate permits it. It remains disabled for scheduled LoRA changes.",
             }],
@@ -270,6 +311,10 @@ class family_handler:
         ui_defaults.update(image_mode=1, video_prompt_type="I", batch_size=1,
                            num_inference_steps=40, guidance_scale=4.0, sample_solver="default",
                            resolution="1024x1024", remove_background_images_ref=0)
+        fixed = fixed_sampling_profile(model_def)
+        if fixed is not None:
+            ui_defaults.update(num_inference_steps=fixed["steps"], guidance_scale=fixed["guidance"],
+                               sample_solver=fixed["solver"])
 
     @staticmethod
     def fix_settings(base_model_type, settings_version, model_def, ui_defaults):
@@ -281,6 +326,15 @@ class family_handler:
 
     @staticmethod
     def validate_generative_settings(base_model_type, model_def, inputs):
+        fixed = fixed_sampling_profile(model_def)
+        requested_solver = str(inputs.get("sample_solver") or "default").strip().lower()
+        if fixed is not None:
+            # Saved settings or API callers may carry another sampler; the
+            # checkpoint only supports its own schedule.
+            inputs.update(apply_acceleration_profile(inputs, selected_profile=fixed["solver"]))
+        elif requested_solver in _FIXED_PROFILES:
+            return (f"{_FIXED_PROFILES[requested_solver]['label']} needs its own distilled checkpoint; "
+                    "choose the matching Qwen Image 2.1 Turbo model.")
         selector = str(inputs.get("video_prompt_type") or "")
         image_mode = inputs.get("image_mode", 1)
         has_mask = inputs.get("image_mask") is not None

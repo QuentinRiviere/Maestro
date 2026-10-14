@@ -28,6 +28,14 @@ from .autoencoder_kl_qwenimage21 import AutoencoderKLQwenImage21
 from .transformer_qwenimage21 import QwenImage21Transformer2DModel
 from .transformer_qwenimage21 import QwenImage21KVCache
 from .memory import GIB, reference_cache_plan
+from .sampling_profiles import (  # noqa: F401 - re-exported for callers and tests
+    QWEN_TURBO_PROFILE,
+    QWEN_TURBO_SCHEDULER_OVERRIDES,
+    QWEN_TURBO_SIGMAS,
+    VIGGLE_SIGMAS,
+    _VIGGLE_PROFILE_STEPS,
+    qwen21_sampling_profile,
+)
 from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
 from diffusers.utils import is_torch_xla_available, logging, replace_example_docstring
 from diffusers.utils.torch_utils import randn_tensor
@@ -44,30 +52,6 @@ else:
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
-
-
-# These are the published Viggle Turbo schedules used by Wan2GP. Keep the
-# accelerated paths explicit: using a few steps with the base schedule does
-# not reproduce the distilled adapter's training trajectory.
-VIGGLE_SIGMAS = {
-    4: (1.0, 0.75, 0.5, 0.25),
-    5: (1.0, 0.875, 0.75, 0.5, 0.25),
-    6: (1.0, 0.9375, 0.875, 0.75, 0.5, 0.25),
-}
-_VIGGLE_PROFILE_STEPS = {"viggle_v01": 4, "viggle_v02": 5, "viggle_v021": 6}
-
-
-def qwen21_sampling_profile(sample_solver: str, num_inference_steps: int):
-    """Return scheduler overrides and sigma nodes for a named Qwen profile."""
-    solver = (sample_solver or "default").lower()
-    if solver in ("", "default", "euler"):
-        return {}, None
-    if solver in _VIGGLE_PROFILE_STEPS:
-        required = _VIGGLE_PROFILE_STEPS[solver]
-        if int(num_inference_steps) != required:
-            raise ValueError(f"{solver} requires exactly {required} inference steps.")
-        return {"shift_terminal": None}, VIGGLE_SIGMAS[int(num_inference_steps)]
-    raise ValueError(f"Unknown Qwen Image 2.1 sampler profile: {sample_solver!r}.")
 
 
 def _prepare_red_outpainting(images, width, height, outpainting_dims, input_masks, prompt):
@@ -734,8 +718,8 @@ class QwenImage21Pipeline(DiffusionPipeline, QwenImageLoraLoaderMixin):
                 difference at the first block is then amplified by 32 blocks and every sampler step, so the two
                 settings give equally valid but visibly distinct samples. Fix a sample by fixing this flag.
             sample_solver (`str`, *optional*):
-                WanGP's `default` schedule or one of the named Viggle Turbo profiles. Each adapter uses its matching
-                trained sigma nodes.
+                WanGP's `default` schedule, one of the named Viggle Turbo profiles, or `qwen_turbo_8step` for the
+                official Turbo checkpoint. Each profile uses its matching trained sigma nodes.
             mask_image (`PIL.Image`, `torch.Tensor`, or `numpy.ndarray`, *optional*):
                 White pixels mark the image area to regenerate for masked editing.
             inpaint_image (`PIL.Image`, `torch.Tensor`, or `numpy.ndarray`, *optional*):
