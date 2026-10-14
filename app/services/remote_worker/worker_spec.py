@@ -109,6 +109,8 @@ def build_run_spec(settings: RemoteWorkerSettings, output_scope: str = "",
         f"{shlex.quote(settings.repo_url)} {SOURCE_DIR} && {_boot_event('clone', 'done')}"
     )
     env: dict[str, str] = {"SERVER_PORT": str(WORKER_PORT)}
+    if not settings.pinned_memory:
+        env["MAESTRO_PINNED_MEMORY"] = "0"
     if settings.r2_configured:
         env.update(pod_r2_env(settings, output_scope))
         if preload_models:

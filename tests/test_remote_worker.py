@@ -198,6 +198,11 @@ class EnvOverrideTests(unittest.TestCase):
 
 
 class RunSpecTests(unittest.TestCase):
+    def test_pinned_memory_off_reaches_the_worker(self):
+        self.assertNotIn("MAESTRO_PINNED_MEMORY", build_run_spec(RemoteWorkerSettings())["configuration"]["env"])
+        env = build_run_spec(RemoteWorkerSettings(pinned_memory=False))["configuration"]["env"]
+        self.assertEqual(env["MAESTRO_PINNED_MEMORY"], "0")
+
     def test_spec_has_safety_limits_probe_and_no_volume(self):
         settings = RemoteWorkerSettings(fleet="studio-comfy-fleet", repo_ref="feat/remote")
         spec = build_run_spec(settings)

@@ -77,6 +77,10 @@ class RemoteWorkerSettings:
     stop_when_queue_empty: bool = False
     route_generations: bool = False
     auto_start: bool = True
+    # Copy models into page-locked RAM when they load (the engine profile's
+    # default). Off, a card that holds the whole model skips minutes of
+    # copying; models then move to VRAM from ordinary RAM.
+    pinned_memory: bool = True
 
     @property
     def configured(self) -> bool:

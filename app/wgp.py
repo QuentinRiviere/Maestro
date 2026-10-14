@@ -4644,6 +4644,9 @@ def load_models(model_type, override_profile = -1, output_type="video", preview_
     if compile_modules == False:
         print("Pytorch compilation is not supported for this Model")
     # kwargs["pinnedMemory"] = "text_encoder"
+    if os.environ.get("MAESTRO_PINNED_MEMORY") == "0":
+        # Remote worker setting: skip the page-locked RAM copy of each model.
+        kwargs["pinnedMemory"] = False
     previous_last_offload = getattr(offload, "last_offload_obj", None)
     preview_profile_failed = False
     _profile_started = time.time()
