@@ -2329,7 +2329,7 @@ def _rerun_clip_image_impl(out_dir: str, pid: str, clip_index: int, prompt_overr
     # shot's layout diagram, so a rerun keeps the scene's place and light.
     character_ref_paths = state.get("character_ref_paths") or snapshot.get("character_ref_paths") or []
     location_ref_paths = state.get("location_ref_paths") or snapshot.get("location_ref_paths") or []
-    valid_character_refs = [p for p in character_ref_paths if p and os.path.isfile(p)]
+    valid_character_refs = [image_stage_ref(snapshot, p) for p in character_ref_paths if p and os.path.isfile(p)]
     valid_location_refs = [p for p in location_ref_paths if p and os.path.isfile(p)]
     location_by_name, first_group = director_scene_locations(snapshot, location_ref_paths, clips)
     group = str(clip.get("_director_continuity_group") or "")
@@ -5522,6 +5522,16 @@ def _shot_text(plan: dict, prompt: str) -> str:
     return " ".join([prompt or "", str(plan.get("video_prompt") or ""), subjects]).lower()
 
 
+def image_stage_ref(params: dict, path: str) -> str:
+    """The single image that stands for a turnaround sheet in a shot image.
+
+    Image editors reproduce a reference's layout, so a multi-view sheet gives
+    a collage; videos keep the sheet itself.
+    """
+    portraits = params.get("_director_image_portraits") or {}
+    return portraits.get(path, path) if isinstance(portraits, dict) else path
+
+
 def cast_ref_needles(params: dict, out_dir: str) -> tuple[list[tuple[str, list[str]]], list[tuple[str, list[str]]]]:
     """(character, prop) reference images with the words that name them in a shot.
 
@@ -5536,7 +5546,7 @@ def cast_ref_needles(params: dict, out_dir: str) -> tuple[list[tuple[str, list[s
             continue
         entry = by_name.get(str(label or "").casefold()) or {}
         needles = [label, entry.get("descriptor"), entry.get("tag")]
-        characters.append((path, [str(n).lower() for n in needles if n and len(str(n)) > 1]))
+        characters.append((image_stage_ref(params, path), [str(n).lower() for n in needles if n and len(str(n)) > 1]))
     props = []
     for entry in cast.get("props") or []:
         path = os.path.join(out_dir, entry["image"]) if entry.get("image") else ""
@@ -7369,6 +7379,7 @@ def _apply_cast_references(pid: str, params: dict, cast: dict) -> None:
         out_dir = (_pipelines.get(pid) or {}).get("out_dir") or _wgp.save_path
     previous = set(params.get("_director_cast_ref_paths") or [])
     added = []
+    portraits: dict[str, str] = {}
     for kind, plural in (("character", "characters"), ("location", "locations")):
         paths = [p for p in params.get(f"{kind}_ref_paths") or [] if p not in previous]
         labels = list(params.get(f"{kind}_ref_labels") or [])[: len(paths)]
@@ -7379,9 +7390,13 @@ def _apply_cast_references(pid: str, params: dict, cast: dict) -> None:
                 paths.append(path)
                 labels.append(entry["name"])
                 added.append(path)
+                portrait = os.path.join(out_dir, entry["portrait"]) if entry.get("portrait") else ""
+                if portrait and os.path.isfile(portrait):
+                    portraits[path] = portrait
         params[f"{kind}_ref_paths"] = paths
         params[f"{kind}_ref_labels"] = labels
     params["_director_cast_ref_paths"] = added
+    params["_director_image_portraits"] = portraits
     if str(params.get("shot_image_guidance") or "auto").strip().lower() == "auto":
         params["_director_shot_image_policy"] = _resolve_fresh_shot_image_policy(params)
     _update_pipeline(pid, cast=copy.deepcopy(cast))
@@ -8331,9 +8346,12 @@ def director_shot_layout(pid: str, index: int, plan: dict, prompt: str, image_mo
     blocking_map = plan.get("_director_blocking_map") if plan.get("_director_continuity_group") else None
     if not isinstance(blocking_map, dict):
         return "", prompt
-    layout_ref = _render_shot_layout(pid, index, blocking_map, out_dir) if layout_diagram_fits(image_model) else ""
-    layout_text = "" if layout_ref else blocking_framing_line(blocking_map)
-    return layout_ref, f"{prompt.rstrip()} {layout_text}".strip() if layout_text else prompt
+    # The diagram is drawn for the Dashboard only: image editors reproduce
+    # their references, so a diagram sent to them was painted into the shot.
+    # Every model reads the layout as a sentence.
+    _render_shot_layout(pid, index, blocking_map, out_dir)
+    layout_text = blocking_framing_line(blocking_map)
+    return "", f"{prompt.rstrip()} {layout_text}".strip() if layout_text else prompt
 
 
 def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_dir: str = None, workspace: str = None) -> tuple[list[str], list[list[str]]]:
@@ -8346,7 +8364,7 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
     """
     _validate_director_models(params, stages=("image",))
     ref_image_path = params.get("reference_image_path")
-    character_ref_paths = params.get("character_ref_paths", []) or []
+    character_ref_paths = [image_stage_ref(params, p) for p in params.get("character_ref_paths", []) or []]
     location_ref_paths = params.get("location_ref_paths", []) or []
     image_model = params.get("image_model") or "flux2_klein_9b"
     image_params = params.get("image_params", {})
@@ -8563,7 +8581,10 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
     # "anchor" image from the scene description and adopt it as the shared
     # reference, so every clip's start image keeps a consistent look instead of
     # each being generated independently with no visual through-line.
-    if not (ref_image_path and os.path.isfile(ref_image_path)):
+    # A bible already gives every person and place its image: a group anchor
+    # would only line its people up and put them in scenes they are not in.
+    from_bible = bool(params.get("bible_id")) and bool(character_ref_paths or location_ref_paths)
+    if not (ref_image_path and os.path.isfile(ref_image_path)) and not from_bible:
         scene_desc = (params.get("scene_description") or "").strip()
         first_shot_prompt = (
             clip_plans[0].get("image_prompt", "") if clip_plans else ""

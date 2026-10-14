@@ -756,12 +756,16 @@ def project_cast(bible: dict, out_dir: str, *, characters: Any = None, locations
                 target = os.path.join(out_dir, copied)
                 if os.path.isfile(target) or compose_turnaround(folder, image, views, target):
                     entry["image"] = copied
-            if image and (folder / image).is_file() and not entry["image"]:
+            if image and (folder / image).is_file():
                 copied = f"bible_{bible['id']}_{image}"
                 target = os.path.join(out_dir, copied)
                 if not os.path.isfile(target):
                     shutil.copyfile(folder / image, target)
-                entry["image"] = copied
+                if entry["image"]:
+                    # Image editors copy a sheet's layout: shot images take the look's single image.
+                    entry["portrait"] = copied
+                else:
+                    entry["image"] = copied
             cast[plural].append(entry)
     return cast
 

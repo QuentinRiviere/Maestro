@@ -137,10 +137,10 @@ class SceneContinuityImageTests(unittest.TestCase):
                 pipeline._rerun_clip_image_impl(self.tmp.name, self.pid, index)
         reruns.reverse()
 
-        # Same set, people, diagram, roles and canvas mode as the run, shot by shot.
+        # Same set, people, layout, roles and canvas mode as the run, shot by shot.
         self.assertEqual(reruns, run)
-        self.assertEqual(reruns[2]["refs"], ["girl.jpg", "shot1.jpg", f"{self.pid}_layout_shot03.png"])
-        self.assertIn("Picture 3 is a top-view layout diagram", reruns[2]["prompt"])
+        self.assertEqual(reruns[2]["refs"], ["girl.jpg", "shot1.jpg"])
+        self.assertIn("Framing: medium shot.", reruns[2]["prompt"])
         self.assertEqual(reruns[0]["refs"], ["anchor.jpg", "hall.jpg", "girl.jpg"])
 
     def test_the_bible_look_ends_every_image_prompt(self):
@@ -186,19 +186,18 @@ class SceneContinuityImageTests(unittest.TestCase):
             pipeline._run_image_generation(self.pid, params, plans, out_dir=self.tmp.name)
         return requests
 
-    def test_a_close_up_gets_the_people_and_the_diagram_but_not_the_master(self):
+    def test_a_close_up_gets_the_people_and_its_layout_as_text_but_not_the_master(self):
         requests = self._two_shot_scene("qwen_image_edit_plus_20B", CLOSE_UP)
         shot = requests[1]
-        self.assertEqual([os.path.basename(r) for r in shot["refs"][:1]], ["girl.jpg"])
-        self.assertEqual(len(shot["refs"]), 2)
-        layout = shot["refs"][1]
-        self.assertTrue(layout.endswith("_layout_shot02.png") and os.path.isfile(layout))
-        self.assertEqual(os.path.dirname(layout), self.tmp.name)
+        # Editors paint a diagram they are given: the layout goes in words, the
+        # diagram is only drawn for the Dashboard.
+        self.assertEqual([os.path.basename(r) for r in shot["refs"]], ["girl.jpg"])
+        self.assertTrue(os.path.isfile(os.path.join(self.tmp.name, f"{self.pid}_layout_shot02.png")))
         self.assertEqual(shot["type"], "I")
         self.assertTrue(shot["prompt"].startswith(pipeline.SCENE_SHOT_PREFIX))
         self.assertIn("Picture 1 shows who and what is in this shot", shot["prompt"])
-        self.assertIn("Picture 2 is a top-view layout diagram", shot["prompt"])
-        self.assertIn("do not draw it", shot["prompt"])
+        self.assertIn("Framing: close-up shot.", shot["prompt"])
+        self.assertNotIn("layout diagram", shot["prompt"])
         self.assertNotIn("shot1", " ".join(shot["refs"]))
         # The master itself is drawn from the photos alone.
         self.assertEqual(len(requests[0]["refs"]), 2)
@@ -207,12 +206,11 @@ class SceneContinuityImageTests(unittest.TestCase):
     def test_a_medium_shot_keeps_the_master_after_the_people_with_its_role(self):
         requests = self._two_shot_scene("qwen_image_edit_plus_20B", MEDIUM)
         shot = requests[1]
-        # Qwen takes three refs: the person, the master for the set, the diagram last.
-        self.assertEqual([os.path.basename(r) for r in shot["refs"][:2]], ["girl.jpg", "shot1.jpg"])
-        self.assertTrue(shot["refs"][2].endswith("_layout_shot02.png"))
+        # The person, then the master for the set; the layout is a sentence.
+        self.assertEqual([os.path.basename(r) for r in shot["refs"]], ["girl.jpg", "shot1.jpg"])
         self.assertIn("Picture 2 only shows the set's surfaces and light; do not copy its framing or camera "
                       "position", shot["prompt"])
-        self.assertIn("Picture 3 is a top-view layout diagram", shot["prompt"])
+        self.assertIn("Framing: medium shot.", shot["prompt"])
         self.assertEqual(shot["type"], "I")
 
     def test_an_editor_that_reads_no_image_gets_the_layout_as_text(self):

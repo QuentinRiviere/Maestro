@@ -594,6 +594,13 @@ class BibleRenderSettingsTests(unittest.TestCase):
         cast = bibles.project_cast(bible, out)
         sheet = cast["characters"][0]["image"]
         self.assertTrue(sheet.startswith("bible_spring_rain_sheet_"))
+        # Shot images take the look's single image: editors copy a sheet's layout.
+        portrait = cast["characters"][0]["portrait"]
+        self.assertEqual(portrait, f"bible_spring_rain_{approved}")
+        self.assertTrue(os.path.isfile(os.path.join(out, portrait)))
+        params = {"_director_image_portraits": {os.path.join(out, sheet): os.path.join(out, portrait)}}
+        self.assertEqual(pipeline.image_stage_ref(params, os.path.join(out, sheet)), os.path.join(out, portrait))
+        self.assertEqual(pipeline.image_stage_ref(params, "other.png"), "other.png")
         with Image.open(os.path.join(out, sheet)) as image:
             self.assertEqual(image.height, 1920)
             self.assertEqual(image.width, 1088 + 1920 + 640)  # figure, back (square in this fake), faces
