@@ -78,11 +78,13 @@ class RemoteWorkerSettings:
     route_generations: bool = False
     auto_start: bool = True
     # Copy models into page-locked RAM when they load (the engine profile's
-    # default). Off, a card that holds the whole model skips minutes of
-    # copying; models then move to VRAM from ordinary RAM.
+    # default). Off, a model that fits the card skips minutes of copying;
+    # one that does not (a big video model) is still pinned, since it
+    # streams its blocks from RAM at every step.
     pinned_memory: bool = True
     # Leave the model in VRAM between generations instead of moving it back
-    # to RAM after each one; for cards that hold the whole pipeline.
+    # to RAM after each one. Applies only to a pipeline that fits the card
+    # (with room for its activations); a larger one unloads as before.
     keep_models_in_vram: bool = False
     # Parallel pods (maestro-worker, maestro-worker-2, ...) and jobs sent to
     # each ahead of time, so transfers overlap the previous job's GPU work.

@@ -4300,9 +4300,45 @@ def get_default_profile(output_type):
         return default_profile_audio
     return default_profile_video
 
+# Whether the loaded pipeline is small enough for the card (set at each model load).
+_pipe_fits_vram = False
+
+# Share of the card the weights may fill: a video generation needs far more
+# room for activations (latents over every frame) than an image does.
+_VRAM_WEIGHT_SHARE = {"image": 0.75, "audio": 0.75, "video": 0.5}
+
+
+def _pipe_weight_bytes(pipe):
+    total = 0
+    for module in pipe.values():
+        if isinstance(module, torch.nn.Module):
+            for tensor in list(module.parameters()) + list(module.buffers()):
+                total += tensor.numel() * tensor.element_size()
+    return total
+
+
+def _measure_pipe_fit(pipe, output_type):
+    """Whether every weight of ``pipe`` fits the card with room left for this output's activations."""
+    global _pipe_fits_vram
+    try:
+        card = torch.cuda.get_device_properties(0).total_memory
+        weights = _pipe_weight_bytes(pipe)
+    except Exception:
+        _pipe_fits_vram = False
+        return False
+    _pipe_fits_vram = weights < card * _VRAM_WEIGHT_SHARE.get(output_type, 0.5)
+    print(f"[LoadTiming] weights {weights / 1e9:.1f} GB on a {card / 1e9:.0f} GB card: "
+          f"{'fits' if _pipe_fits_vram else 'streams'} ({output_type})")
+    return _pipe_fits_vram
+
+
 def _keep_models_in_vram():
-    """Remote worker setting: leave models in VRAM between generations of the same model."""
-    return os.environ.get("MAESTRO_KEEP_MODELS_IN_VRAM") == "1"
+    """Remote worker setting: leave models in VRAM between generations, for a pipeline that fits the card.
+
+    A pipeline larger than the card (a big video model) keeps streaming its
+    blocks and unloading between jobs.
+    """
+    return os.environ.get("MAESTRO_KEEP_MODELS_IN_VRAM") == "1" and _pipe_fits_vram
 
 
 def compute_profile(override_profile, output_type="video"):
@@ -4616,6 +4652,7 @@ def load_models(model_type, override_profile = -1, output_type="video", preview_
     if preview_decoder is not None:
         pipe["tiny_vae"] = preview_decoder
         kwargs["coTenantsMap"]["tiny_vae"] = "*"
+    _measure_pipe_fit(pipe, output_type)
     if _keep_models_in_vram():
         # A card that holds the whole pipeline keeps every part resident.
         for name in pipe:
@@ -4653,8 +4690,10 @@ def load_models(model_type, override_profile = -1, output_type="video", preview_
     if compile_modules == False:
         print("Pytorch compilation is not supported for this Model")
     # kwargs["pinnedMemory"] = "text_encoder"
-    if os.environ.get("MAESTRO_PINNED_MEMORY") == "0":
-        # Remote worker setting: skip the page-locked RAM copy of each model.
+    if os.environ.get("MAESTRO_PINNED_MEMORY") == "0" and _pipe_fits_vram:
+        # Remote worker setting: skip the page-locked RAM copy of a model that
+        # fits the card. One that streams its blocks keeps it: pinned RAM is
+        # what makes the per-step transfers fast.
         kwargs["pinnedMemory"] = False
     previous_last_offload = getattr(offload, "last_offload_obj", None)
     preview_profile_failed = False
