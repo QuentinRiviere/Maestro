@@ -205,6 +205,24 @@ class PlannerTests(unittest.TestCase):
         self.assertNotIn("keep_sec", second.metadata)  # the whole shot is kept
         self.assertEqual(first.visual_style, "")
 
+    def test_story_shots_carry_a_top_view_blocking_map(self):
+        spec = {**self.spec, "workflow": "story", "shot_duration": [5, 8]}
+        planner = FakePlanner(spec, [
+            {"scene_id": "hallway", "scene_goal": "a", "camera_plan": {"framing": "medium close-up"},
+             "blocking_map": {"camera": {"x": 0.5, "y": 0.9, "facing_deg": 0},
+                              "subjects": [{"name": "Mina", "x": 0.4, "y": 0.4, "facing_deg": 180}]}},
+            {"scene_id": "hallway", "scene_goal": "b", "blocking_map": {"camera": {"x": "far"}}},
+        ])
+        planner.scenes = [{"scene_id": "hallway", "place": "school corridor"}]
+        plan = planner.plan(scene_description="A new student meets a mysterious boy")
+        self.assertIn("blocking_map: a top view of the scene floor", planner.prompts[-1]["system_prompt"])
+        self.assertIn('"blocking_map": {"camera"', planner.prompts[-1]["system_prompt"])
+        first, second = plan.shots
+        self.assertEqual(first.metadata["blocking_map"], {
+            "camera": {"x": 0.5, "y": 0.9, "facing_deg": 0.0, "framing": "close-up"},
+            "subjects": [{"name": "Mina", "x": 0.4, "y": 0.4, "facing_deg": 180.0}]})
+        self.assertNotIn("blocking_map", second.metadata)
+
     def test_block_without_options(self):
         self.assertIn("SKILL: Recipe Reel", skill_rules_block(self.spec, {}))
 

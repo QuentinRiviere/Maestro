@@ -16,6 +16,7 @@ from ..schema import (
     AssetRef, AudioPlan, CameraPlan, CharacterProfile, DialogueBeat, ProductionPlan, ReferenceAssets, ShotPlan,
     SubjectRef,
 )
+from ..blocking_map import parse_blocking_map
 from ..edit_cut import normalize_keep
 from .base import BasePlanner
 
@@ -90,6 +91,13 @@ walk, one unbroken gesture). It is rendered from the previous shot's last frame,
 cannot reframe. false for every cut: shot/reverse-shot, a new angle, a close-up after a wide, an insert, a
 reaction, and always false for the first shot of a scene. When true, the previous shot's closing_blocking is this
 shot's opening_blocking."""
+
+BLOCKING_MAP_RULE = """blocking_map: a top view of the scene floor at the first frame, consistent with the scene geography and
+scene_map. x goes from 0 (the left side as the scene's main camera sees it) to 1 (the right side), y from 0 (the
+back wall) to 1 (the front, where the main camera stands). facing_deg: 0 faces the back wall, 90 the right side,
+180 the front, 270 the left side. Place the camera where this shot is taken from: close to the subject for a
+close-up, far for a wide. A person keeps their spot from shot to shot of a scene unless the action moves them;
+the camera moves around them. "subjects" names each person in frame by their cast name."""
 
 SCENE_DESIGN_SYSTEM = """You are the director preparing the scenes of a short production before shooting.
 From the brief, the skill rules and the cast, design the scenes. Return ONLY a JSON array, one object per scene:
@@ -199,6 +207,12 @@ class CustomSkillPlanner(BasePlanner):
             "SCENE DESIGN (fixed; every shot uses one scene_id and keeps its place, light and geography):\n"
             + json.dumps(scenes, ensure_ascii=False, indent=1)
         ) if scenes else ""
+        # A top view per shot: the storyboard draws it so the image model
+        # takes the framing from geometry instead of the scene's master image.
+        blocking_field = (',\n  "blocking_map": {"camera": {"x": 0.5, "y": 0.95, "facing_deg": 0, "framing": "wide|medium|close-up"},'
+                          '\n                   "subjects": [{"name": "...", "x": 0.4, "y": 0.4, "facing_deg": 90}]}'
+                          ) if narrative else ""
+        blocking_rule = BLOCKING_MAP_RULE + "\n\n" if narrative else ""
         system_prompt = f"""You are the director of a production written with a specific skill.
 
 {rules}
@@ -228,18 +242,18 @@ OUTPUT FORMAT — respond with ONLY a JSON array of shot objects:
   "audio_plan": {{"mode": "generated_audio", "ambience": "the room tone of this place at this moment",
                  "effects": ["timed sounds, e.g. '2.0s: the books thud on the floor'"]}},
   "closing_blocking": "exact positions and poses at the last frame",
-  "continues_previous": false}}]
+  "continues_previous": false{blocking_field}}}]
 
 {CONTINUES_PREVIOUS_RULE}
 
-{timing_rule} Go:"""
+{blocking_rule}{timing_rule} Go:"""
         if kwargs.get("polish_block"):
             system_prompt = f"{system_prompt}\n\n{kwargs['polish_block']}"
         user_prompt = f"Brief: {concept}\nTarget duration: {target_duration}s"
 
         shot_dicts = self._call_llm_json(
             user_prompt=user_prompt, system_prompt=system_prompt,
-            max_tokens=max(2048, target_scenes * 900 + 1024),
+            max_tokens=max(2048, target_scenes * (1000 if narrative else 900) + 1024),
             image_paths=[reference_image_path] if has_reference else None,
         )
         # A truncated answer can end on an empty shell; never render one.
@@ -316,6 +330,8 @@ OUTPUT FORMAT — respond with ONLY a JSON array of shot objects:
                     **({"location": scene_location[scene_id]} if scene_location.get(scene_id) else {}),
                     **({"scene_map": str(scene["scene_map"])} if scene.get("scene_map") else {}),
                     **({"closing_blocking": closing} if closing else {}),
+                    **({"blocking_map": blocking} if (blocking := parse_blocking_map(
+                        raw.get("blocking_map"), cam.get("framing"))) else {}),
                     **({"keep_sec": keep} if (keep := normalize_keep(raw.get("keep_sec"), duration)) else {}),
                 },
             ))

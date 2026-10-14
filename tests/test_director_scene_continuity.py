@@ -15,6 +15,7 @@ if _APP_DIR not in sys.path:
 
 from services import director_pipeline as pipeline  # noqa: E402
 from services.director import casting  # noqa: E402
+from services.director.blocking_map import framing_line, parse_blocking_map, render_blocking_map  # noqa: E402
 from services.director.planners.custom import CustomSkillPlanner  # noqa: E402
 
 
@@ -103,7 +104,108 @@ class SceneContinuityImageTests(unittest.TestCase):
         self.assertTrue(prompts[1].startswith(pipeline.SCENE_CONTINUITY_PREFIX))
 
 
+    def _two_shot_scene(self, image_model, blocking_map):
+        anchor, girl = self._file("anchor.jpg"), self._file("girl.jpg")
+        params = {"reference_image_path": anchor, "character_ref_paths": [girl], "image_model": image_model}
+        plans = [
+            {"image_prompt": "wide of the hallway", "_director_continuity_group": "meet"},
+            {"image_prompt": "close-up on her face", "_director_continuity_group": "meet",
+             "_director_blocking_map": blocking_map},
+        ]
+        names = iter(["shot1.jpg", "shot2.jpg"])
+        requests = []
+
+        def submit(gen_params, **_kwargs):
+            requests.append({"prompt": gen_params["prompt"], "refs": list(gen_params["image_refs"])})
+            name = next(names)
+            self._file(name)
+            return [name]
+
+        with patch.object(pipeline, "_submit_and_wait", side_effect=submit):
+            pipeline._run_image_generation(self.pid, params, plans, out_dir=self.tmp.name)
+        return requests
+
+    def test_a_layout_diagram_gives_the_framing_and_the_master_only_the_look(self):
+        requests = self._two_shot_scene("qwen_image_edit_plus_20B", CLOSE_UP)
+        shot = requests[1]
+        # Qwen takes three refs: the diagram takes the last slot, the master stays first.
+        self.assertEqual([os.path.basename(r) for r in shot["refs"][:2]], ["shot1.jpg", "girl.jpg"])
+        layout = shot["refs"][2]
+        self.assertTrue(layout.endswith("_layout_shot02.png") and os.path.isfile(layout))
+        self.assertEqual(os.path.dirname(layout), self.tmp.name)
+        self.assertTrue(shot["prompt"].startswith(pipeline.scene_layout_prefix("qwen_image_edit_plus_20B")))
+        self.assertIn("not its framing", shot["prompt"])
+        self.assertIn("Picture 3 is a top-view layout diagram", shot["prompt"])
+        self.assertIn("do not draw it", shot["prompt"])
+        self.assertNotIn(pipeline.SCENE_CONTINUITY_PREFIX.replace("reference image 1", "Picture 1"), shot["prompt"])
+        # The master itself is drawn from the photos alone.
+        self.assertEqual(len(requests[0]["refs"]), 2)
+
+    def test_an_editor_that_reads_no_image_gets_the_layout_as_text(self):
+        with patch.object(pipeline, "director_image_reads_refs", return_value=False):
+            requests = self._two_shot_scene("qwen_image_edit_plus_20B", CLOSE_UP)
+        shot = requests[1]
+        self.assertFalse(any(r.endswith(".png") for r in shot["refs"]))
+        self.assertIn("Framing: close-up shot. In frame, left to right: Mina (facing camera), Joon", shot["prompt"])
+        self.assertNotIn("layout diagram", shot["prompt"])
+        self.assertTrue(shot["prompt"].startswith(pipeline.SCENE_CONTINUITY_PREFIX.replace(
+            "reference image 1", "Picture 1")))
+
+    def test_a_bad_blocking_map_changes_nothing(self):
+        requests = self._two_shot_scene("flux2_klein_9b", {"camera": {"x": "near"}, "subjects": []})
+        self.assertFalse(any(r.endswith(".png") for r in requests[1]["refs"]))
+        self.assertTrue(requests[1]["prompt"].startswith(pipeline.SCENE_CONTINUITY_PREFIX))
+        self.assertNotIn("Framing:", requests[1]["prompt"])
+
+# Camera at the front facing the back wall, Mina screen left facing the camera,
+# Joon screen right turned toward her.
+CLOSE_UP = {"camera": {"x": 0.45, "y": 0.7, "facing_deg": 0, "framing": "close-up"},
+            "subjects": [{"name": "Mina", "x": 0.4, "y": 0.4, "facing_deg": 180},
+                         {"name": "Joon", "x": 0.6, "y": 0.4, "facing_deg": 270}]}
+
+class BlockingMapTests(unittest.TestCase):
+    def test_parse_normalizes_and_rejects_garbage(self):
+        parsed = parse_blocking_map({"camera": {"x": 1.1, "y": "0.9", "facing_deg": -90},
+                                     "subjects": [{"name": "Mina", "x": 0.2, "y": 0.3, "facing_deg": "left"},
+                                                  {"name": "", "x": 0.5, "y": 0.5},
+                                                  {"name": "Ghost", "x": 9, "y": 0.5}]},
+                                    fallback_framing="Medium close-up")
+        self.assertEqual(parsed["camera"], {"x": 1.0, "y": 0.9, "facing_deg": 270.0, "framing": "close-up"})
+        self.assertEqual(parsed["subjects"], [{"name": "Mina", "x": 0.2, "y": 0.3, "facing_deg": None}])
+        for bad in (None, "map", {"camera": {"x": 0.5, "y": 0.5}}, {"camera": {"x": 0.5, "y": 0.5, "facing_deg": 0}},
+                    {"camera": {"x": 0.5, "y": 0.5, "facing_deg": 0}, "subjects": [{"name": "A"}]}):
+            self.assertIsNone(parse_blocking_map(bad))
+
+    def test_framing_line_reads_left_and_right_from_the_camera(self):
+        parsed = parse_blocking_map(CLOSE_UP)
+        self.assertEqual(framing_line(parsed),
+                         "Framing: close-up shot. In frame, left to right: Mina (facing camera), "
+                         "Joon (facing frame left).")
+        # The reverse angle swaps the screen sides.
+        reverse = parse_blocking_map({**CLOSE_UP, "camera": {"x": 0.5, "y": 0.1, "facing_deg": 180,
+                                                              "framing": "wide"}})
+        self.assertTrue(framing_line(reverse).startswith("Framing: wide shot. In frame, left to right: Joon"))
+        self.assertIn("Mina (back to camera)", framing_line(reverse))
+
+    def test_render_writes_a_png_diagram(self):
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as folder:
+            path = render_blocking_map(parse_blocking_map(CLOSE_UP), os.path.join(folder, "layout.png"), size=512)
+            self.assertTrue(os.path.getsize(path) > 1000)
+            with Image.open(path) as image:
+                self.assertEqual((image.format, image.size), ("PNG", (512, 512)))
+                # Not a blank page: the floor, camera and people are drawn.
+                self.assertGreater(len(image.convert("L").getcolors(512 * 512)), 4)
+
 class ImageRefProfileTests(unittest.TestCase):
+    def test_layout_needs_a_slot_beside_the_source(self):
+        self.assertTrue(pipeline.layout_diagram_fits("qwen_image_edit_plus_20B"))
+        with patch.object(pipeline, "director_image_ref_budget", return_value=1):
+            self.assertFalse(pipeline.layout_diagram_fits("qwen_image_edit_plus_20B"))
+        self.assertIn("reference image 4 is a top-view layout diagram",
+                      pipeline.layout_role_text("cloud_fal_flux_2_edit", 4))
+
     def test_qwen_gets_three_refs_named_pictures(self):
         master, refs = pipeline.scene_refs("qwen_image_edit_2511_20B_fp8_lightning_8step", "m.jpg",
                                            ["girl.jpg", "boy.jpg"], ["prev.jpg", "anchor.jpg"])
