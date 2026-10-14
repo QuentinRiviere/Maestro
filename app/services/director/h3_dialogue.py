@@ -2239,8 +2239,13 @@ def compile_h3_official_prompt(
     opening_blocking: str = "",
     closing_blocking: str = "",
     audio_plan: Mapping[str, Any] | None = None,
+    look: str = "",
 ) -> tuple[str, str]:
-    """Compile Director metadata into MiniMax's documented Context-IR shape."""
+    """Compile Director metadata into MiniMax's documented Context-IR shape.
+
+    ``look`` is the production's style block, kept verbatim in every shot.
+    """
+    look = " ".join(str(look or "").split())
 
     mode = str(mode or "t2va").strip().lower()
     if mode not in {"t2va", "i2va", "fl2va", "l2va", "ref2va"}:
@@ -2337,6 +2342,8 @@ def compile_h3_official_prompt(
             body = re.sub(r"^\[Shot\s+1\]\s*", "", body, flags=re.IGNORECASE)
             body = f"[Shot 1] {' '.join(detail_bindings)} {body}".strip()
         body = _ensure_h3_context_anchors(body, context_anchors or [])
+        if look and look not in body:
+            style_opening = f"{style_opening} Visual style: {look}".strip()
         body = f"{style_opening} {body}".strip()
         if has_driving_audio and music == "N/A":
             music = "Use the mapped driving audio according to retention_analysis."
@@ -2362,6 +2369,8 @@ def compile_h3_official_prompt(
         )
         compiled_body = re.sub(r"^\s*\[Shot\s+1\]\s*", "", compiled_body, flags=re.IGNORECASE)
         compiled_body = f"[Shot 1] {compiled_body}".strip()
+        if look and look not in compiled_body:
+            compiled_body = f"{compiled_body} Visual style: {look}"
         shot_numbers = [int(value) for value in re.findall(
             r"\[Shot\s+(\d+)\]", compiled_body, flags=re.IGNORECASE,
         )]
@@ -2624,6 +2633,7 @@ def compile_h3_clip_plans(
             opening_blocking=plan.get("_director_opening_blocking", ""),
             closing_blocking=plan.get("_director_closing_blocking", ""),
             audio_plan=plan.get("_director_audio_plan") or {},
+            look=plan.get("_director_look", ""),
         )
         plan["video_prompt"] = prompt
         plan["_director_h3_compiled_prompt"] = prompt

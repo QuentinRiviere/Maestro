@@ -2760,6 +2760,7 @@ def _rerun_clip_video_impl(out_dir: str, pid: str, clip_index: int, prompt_overr
         "_director_opening_blocking": clip.get("_director_opening_blocking", ""),
         "_director_closing_blocking": clip.get("_director_closing_blocking", ""),
         "_director_audio_plan": clip.get("_director_audio_plan") or {},
+        "_director_look": str(snapshot.get("_director_bible_look") or "").strip(),
     }
     _apply_h3_music_audio_contract(
         video_model, [prompt_plan],
@@ -2771,6 +2772,8 @@ def _rerun_clip_video_impl(out_dir: str, pid: str, clip_index: int, prompt_overr
     )
     _preflight_h3_director_prompts(video_model, [prompt_plan], pid=pid)
     prompt = prompt_plan["video_prompt"]
+    if not str(video_model).lower().startswith("minimax_h3"):
+        prompt = _video_prompt_with_look(prompt, prompt_plan["_director_look"])
     video_loras = state.get("video_loras") or {}
     video_params = state.get("video_params") or {}
     shot_image_policy = _saved_pipeline_shot_image_policy(state)
@@ -8015,6 +8018,26 @@ def _preflight_h3_director_prompts(
     return clip_plans
 
 
+def _video_prompt_with_look(prompt: str, look: str, *, windowed: bool = False) -> str:
+    """Append the bible's look verbatim to a video prompt (to each window of a windowed one).
+
+    The same style block in every prompt keeps one look across shots; it goes
+    after the polish pass so no LLM rewrites it. H3 prompts get it from their
+    compiler instead (``_director_look``), which keeps its format contract.
+    """
+    look = " ".join(str(look or "").split())
+    if not look or not str(prompt or "").strip():
+        return prompt
+    if windowed:
+        return "\n".join(_video_prompt_with_look(line, look) if line.strip() else line
+                         for line in str(prompt).splitlines())
+    if look in prompt:
+        return prompt
+    # Same separator as the sectioned brief, and no new line: a line break
+    # would read as one more window for a windowed model.
+    return f"{str(prompt).rstrip()} | STYLE: {look}"
+
+
 def _run_video_generation(pid: str, params: dict, clip_plans: list[dict],
                           planned_clips: list[dict], clip_images: list[str],
                           clip_keyframes: Optional[list[list[str]]] = None,
@@ -8022,6 +8045,10 @@ def _run_video_generation(pid: str, params: dict, clip_plans: list[dict],
     """Generate multi-clip video with optional keyframe injection. Returns list of output filenames."""
     _validate_director_models(params, stages=("video",))
     video_model = params.get("video_model") or "ltx2_22B_distilled_1_1"
+    look = str(params.get("_director_bible_look") or "").strip()
+    is_h3_video = str(video_model).lower().startswith("minimax_h3")
+    for plan in clip_plans:
+        plan["_director_look"] = look
     _apply_h3_music_audio_contract(video_model, clip_plans, params)
     _preflight_h3_director_prompts(video_model, clip_plans, pid=pid)
     video_params = params.get("video_params", {})
@@ -8285,6 +8312,8 @@ def _run_video_generation(pid: str, params: dict, clip_plans: list[dict],
                     f"main image: {uploaded_start}"
                 )
 
+        if not is_h3_video:
+            window_prompts_all = [_video_prompt_with_look(w, look) for w in window_prompts_all]
         window_prompts_all = _apply_ltx25_music_video_sync_contract(
             window_prompts_all,
             video_model=video_model,
@@ -8776,6 +8805,14 @@ def _run_video_generation(pid: str, params: dict, clip_plans: list[dict],
         # LTX-2.5 sync contract to every window independently; ordinary clips
         # keep their full prompt (including harmless paragraph breaks) as one
         # logical prompt.
+        if not is_h3_video:
+            prompts = [
+                _video_prompt_with_look(
+                    prompt, look,
+                    windowed=index < len(per_clip_prompt_modes) and per_clip_prompt_modes[index] == 1,
+                )
+                for index, prompt in enumerate(prompts)
+            ]
         contracted_prompts: list[str] = []
         for prompt_index, prompt in enumerate(prompts):
             is_windowed = (
