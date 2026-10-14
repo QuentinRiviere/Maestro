@@ -24,6 +24,7 @@ LABELS = {
     "container": "Container started",
     "compile": "Python bytecode compiled",
     "prefetch": "Weights pulled from R2",
+    "kernels": "Compiled kernels pulled from R2",
     "maestro": "Maestro starting",
     "engine": "Engine loaded",
     "api": "API answering",

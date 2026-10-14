@@ -1,6 +1,7 @@
 """R2 checkpoint cache tests with a fake s5cmd backed by a local directory."""
 from __future__ import annotations
 
+import glob
 import os
 import shlex
 import shutil
@@ -22,13 +23,14 @@ from services.remote_worker.checkpoint_cache import (  # noqa: E402
 
 
 class FakeS5:
-    """Implements ``cat``, ``cp`` and ``run`` against ``<root>/<bucket>/...``."""
+    """Implements ``cat``, ``cp``, ``ls`` and ``run`` against ``<root>/<bucket>/...``."""
 
     def __init__(self, root):
         self.root = root
         self.commands = []
         self.timeouts = []
         self.drop_on_run = set()  # remote paths silently not copied (exit 0)
+        self.copied = []  # (source, destination) of every copy
 
     def _path(self, url):
         return os.path.join(self.root, url[len("s3://"):]) if url.startswith("s3://") else url
@@ -39,6 +41,7 @@ class FakeS5:
         source = self._path(src)
         if not os.path.exists(source):
             raise FileNotFoundError(src)
+        self.copied.append((src, dst))
         destination = self._path(dst)
         os.makedirs(os.path.dirname(destination), exist_ok=True)
         shutil.copyfile(source, destination)
@@ -53,6 +56,11 @@ class FakeS5:
             if command == "cat":
                 with open(self._path(args[0])) as handle:
                     return subprocess.CompletedProcess(argv, 0, handle.read(), "")
+            if command == "ls":
+                pattern = self._path(args[0])
+                names = sorted(glob.glob(pattern))
+                listing = "".join(f"2026/10/14 12:00:00 {os.path.getsize(n)} {os.path.basename(n)}\n" for n in names)
+                return subprocess.CompletedProcess(argv, 0 if names else 1, listing, "")
             if command == "cp":
                 self._cp(args[0], args[1])
             elif command == "run":
@@ -141,6 +149,30 @@ class CheckpointCacheTests(unittest.TestCase):
         files, _links = second.read_manifest("ltx25")
         self.assertIn("new_text_encoder.safetensors", {entry.path for entry in files})
         self.assertIn("vae.safetensors", {entry.path for entry in files})
+
+    def test_files_another_model_fetched_first_join_the_manifest(self):
+        # One pod warms two models sharing a text encoder: the second download
+        # finds it on disk, yet a pod that only needs the second must get it.
+        first, roots = self._pod("pod1")
+        encoder = os.path.join(roots["ckpts"], "Qwen2.5-VL", "encoder.safetensors")
+        before = first.snapshot()
+        _write(encoder, b"E" * 6)
+        _write(os.path.join(roots["ckpts"], "edit_full.safetensors"), b"F" * 8)
+        first.publish("qwen_full", before)
+        before = first.snapshot()
+        with first.record_checks() as checked:
+            os.path.isdir(os.path.join(roots["ckpts"], "Qwen2.5-VL"))  # the download finds the encoder folder
+            _write(os.path.join(roots["ckpts"], "edit_lightning.safetensors"), b"L" * 7)
+        copies = len(self.s5.copied)
+        first.publish("qwen_lightning", before, used=first.used_files(checked))
+        files, _links = first.read_manifest("qwen_lightning")
+        self.assertEqual({e.path for e in files}, {"edit_lightning.safetensors", "Qwen2.5-VL/encoder.safetensors"})
+        # The encoder was already in R2: only the new file is uploaded.
+        uploaded = [dst for _src, dst in self.s5.copied[copies:] if dst.startswith("s3://") and "/ckpts/" in dst]
+        self.assertEqual(uploaded, ["s3://videogen/maestro/ckpts/edit_lightning.safetensors"])
+        second, roots2 = self._pod("pod2")
+        self.assertEqual(second.hydrate("qwen_lightning"), 2)
+        self.assertTrue(os.path.isfile(os.path.join(roots2["ckpts"], "Qwen2.5-VL", "encoder.safetensors")))
 
     def test_silent_s5cmd_refusal_is_detected(self):
         first, roots = self._pod("pod1")

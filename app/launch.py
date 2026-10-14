@@ -1618,19 +1618,23 @@ def _download_model_files_cached(
             print(f"[Worker] R2 cache pull failed for {model_type}, downloading instead: {exc}")
         before = cache.snapshot()
         phase("downloading")
-        _download_model_files(model_type)
+        # Files found already on disk (shared with a model fetched before)
+        # belong to this model's manifest too.
+        with cache.record_checks() as checked:
+            _download_model_files(model_type)
+        used = cache.used_files(checked)
         after = cache.snapshot()
     phase("done")
 
     if not background_publish:
         # Cache warming: the upload is the point, so report it and its errors.
-        return cache.publish(model_type, before, after)
+        return cache.publish(model_type, before, after, used)
 
     # The weights are usable now; uploading them only speeds up the next pod,
     # so it must not keep the generation that asked for them waiting.
     def _publish() -> None:
         try:
-            published = cache.publish(model_type, before, after)
+            published = cache.publish(model_type, before, after, used)
             print(f"[Worker] R2 cache published {published} new file(s) for {model_type}")
         except Exception as exc:
             print(f"[Worker] R2 cache publish failed for {model_type}: {exc}")

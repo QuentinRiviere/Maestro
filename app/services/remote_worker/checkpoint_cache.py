@@ -9,7 +9,9 @@ of Hugging Face / CivitAI:
    listed files into the local roots (``ckpts``, ``hf`` cache, ...).
 2. Maestro downloads whatever is still missing (nothing, on a warm cache).
 3. ``publish``: upload files that appeared during step 2 and rewrite the
-   manifest as the union of the previous one and the new files.
+   manifest as the union of the previous one and the new files. Files that
+   step 2 found already on disk (a text encoder another model fetched first)
+   are added too when ``used`` names them: ``record_checks`` collects them.
 
 Symlinks (the Hugging Face cache links snapshots to blobs) are recorded in the
 manifest and recreated, never uploaded as file copies. ``s5cmd run`` can
@@ -26,7 +28,8 @@ import subprocess
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
@@ -218,6 +221,14 @@ class R2CheckpointCache:
         self._stream_batch(lines, finished)
         for entry in pending.values():  # reported nothing: checked by the caller
             on_file(entry)
+
+    def object_url(self, *parts: str) -> str:
+        """URL of an object under the cache prefix (outside the checkpoint roots)."""
+        return "/".join([self._base, *parts])
+
+    def copy(self, source: str, destination: str, *, timeout: float | None = None) -> bool:
+        """``s5cmd cp`` between a local path and an object URL; False when it fails."""
+        return self._s5("cp", source, destination, check=False, timeout=timeout).returncode == 0
 
     def _remote(self, root: str, path: str) -> str:
         return f"{self._base}/{root}/{path}"
@@ -419,14 +430,76 @@ class R2CheckpointCache:
         log.info("rehashed %s: %d file(s)", model_type, len(rehashed))
         return len(rehashed)
 
+    @contextmanager
+    def record_checks(self) -> Iterator[set[str]]:
+        """Collect the paths under the roots that existence checks ask about.
+
+        Maestro's download logic checks every file a model needs and skips
+        those already on disk; what it checked is the model's footprint.
+        """
+        checked: set[str] = set()
+        roots = tuple(root + os.sep for root in self._roots.values())
+        originals = (os.path.isfile, os.path.exists, os.path.isdir)
+
+        def watch(check: Callable[[Any], bool]) -> Callable[[Any], bool]:
+            def wrapped(path: Any) -> bool:
+                try:
+                    full = os.path.abspath(os.fspath(path))
+                except TypeError:
+                    return check(path)
+                if full.startswith(roots):
+                    checked.add(full)
+                return check(path)
+            return wrapped
+
+        os.path.isfile, os.path.exists, os.path.isdir = (watch(check) for check in originals)
+        try:
+            yield checked
+        finally:
+            os.path.isfile, os.path.exists, os.path.isdir = originals
+
+    def used_files(self, paths: Iterable[str]) -> set[tuple[str, str]]:
+        """Root-relative files behind checked paths (a checked folder brings its files)."""
+        found: set[tuple[str, str]] = set()
+        for path in paths:
+            for root_name, root in self._roots.items():
+                if not path.startswith(root + os.sep):
+                    continue
+                if os.path.isfile(path) and not os.path.islink(path):
+                    candidates = [path]
+                elif os.path.isdir(path):
+                    candidates = [os.path.join(directory, name) for directory, dirs, names in os.walk(path)
+                                  if not _SKIP_DIRS.intersection(os.path.relpath(directory, root).split(os.sep))
+                                  for name in names]
+                else:
+                    candidates = []
+                for full in candidates:
+                    rel = os.path.relpath(full, root).replace(os.sep, "/")
+                    if _cached_path(rel) and os.path.isfile(full) and not os.path.islink(full):
+                        found.add((root_name, rel))
+        return found
+
+    def _published_entries(self) -> dict[tuple[str, str], FileEntry]:
+        """Every file some manifest already lists (already in R2, with its hash)."""
+        result = self._s5("ls", self.object_url("manifests", "*"), check=False)
+        entries: dict[tuple[str, str], FileEntry] = {}
+        for line in (result.stdout or "").splitlines():
+            name = line.split()[-1] if line.split() else ""
+            if name.endswith(".json"):
+                for entry in self.read_manifest(name[:-5])[0]:
+                    entries.setdefault((entry.root, entry.path), entry)
+        return entries
+
     def publish(
         self,
         model_type: str,
         before: tuple[Snapshot, dict[tuple[str, str], str]],
         after: tuple[Snapshot, dict[tuple[str, str], str]] | None = None,
+        used: Iterable[tuple[str, str]] = (),
     ) -> int:
         """Upload files that appeared between ``before`` and ``after`` (default:
-        now); update the manifest."""
+        now); update the manifest. ``used`` files already on disk join the
+        manifest too, uploaded only when no manifest lists them yet."""
         if self.readonly:
             log.info("cache is read-only on this host; %s not published", model_type)
             return 0
@@ -439,6 +512,17 @@ class R2CheckpointCache:
             for (root, path), size in after_files.items()
             if before_files.get((root, path)) != size
         ])
+        listed = {(e.root, e.path) for e in old_files} | {(e.root, e.path) for e in new_files}
+        reused = [key for key in used if key in after_files and key not in listed]
+        shared: list[FileEntry] = []
+        if reused:
+            published = self._published_entries()
+            shared = [published[key] for key in reused
+                      if key in published and published[key].size == after_files[key] and published[key].sha256]
+            new_files += self._with_hashes([FileEntry(*key, after_files[key]) for key in reused
+                                            if key not in {(e.root, e.path) for e in shared}])
+            # Listed by another manifest: already in R2, keep its trusted hash.
+            old_files = old_files + shared
         new_links = [
             LinkEntry(root, path, target)
             for (root, path), target in after_links.items()
@@ -449,7 +533,7 @@ class R2CheckpointCache:
             f'cp {_CP_FLAGS} "{self._local(entry.root, entry.path)}" "{self._remote(entry.root, entry.path)}"'
             for entry in new_files
         ], timeout=max(_MIN_UPLOAD_TIMEOUT_S, upload_bytes / _MIN_UPLOAD_BYTES_PER_S))
-        if new_files or new_links or not old_files:
+        if new_files or new_links or shared or not old_files:
             merged_files = {(e.root, e.path): e for e in old_files}
             merged_files.update({(e.root, e.path): e for e in new_files})
             merged_links = {(e.root, e.path): e for e in old_links}

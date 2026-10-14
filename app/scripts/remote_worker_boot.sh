@@ -62,7 +62,16 @@ else
   log "no R2 cache configured; weights come from their original sources"
 fi
 
+# Compiled Triton / Inductor kernels live here, pulled from R2 for this card.
+export TRITON_CACHE_DIR="${DATA}/kernel-cache/triton"
+export TORCHINDUCTOR_CACHE_DIR="${DATA}/kernel-cache/inductor"
+
 cd "${APP_DIR}"
+# Pull this card's compiled kernels, then publish them as they grow.
+if [ -n "${R2_ACCOUNT_ID:-}" ] && [ "${1:-}" != "--cache-warm" ]; then
+  log "pulling compiled kernels from R2 in the background"
+  "${VENV}/bin/python" -m services.remote_worker.kernel_cache &
+fi
 # Pull the weights of the work that started this pod while Maestro boots.
 if [ -n "${MAESTRO_PRELOAD_MODELS:-}" ] && [ "${1:-}" != "--cache-warm" ]; then
   log "prefetching ${MAESTRO_PRELOAD_MODELS} from R2 in the background"
