@@ -420,9 +420,18 @@ class StagingTests(unittest.TestCase):
         plan = {"_director_blocking_map": self.TWO_SHOT}
         self.assertEqual(pipeline.shot_identity_refs(params, plan, ["/p/look.png", "/p/other.png"]),
                          ["/p/profile.png", "/p/other.png"])
-        facing = {**self.TWO_SHOT, "subjects": [{"name": "Mina", "x": 0.5, "y": 0.4, "facing_deg": 180}]}
-        self.assertEqual(pipeline.shot_identity_refs(params, {"_director_blocking_map": facing}, ["/p/look.png"]),
+        wide = {**self.TWO_SHOT, "camera": {**self.TWO_SHOT["camera"], "framing": "wide"},
+                "subjects": [{"name": "Mina", "x": 0.5, "y": 0.4, "facing_deg": 180}]}
+        self.assertEqual(pipeline.shot_identity_refs(params, {"_director_blocking_map": wide}, ["/p/look.png"]),
                          ["/p/look.png"])
+        # Closer shots of a person facing the camera take the face, not the full figure.
+        params["_director_image_views"]["/p/look.png"]["face_front"] = "/p/face.png"
+        medium = {**wide, "camera": {**wide["camera"], "framing": "medium"}}
+        self.assertEqual(pipeline.shot_identity_refs(params, {"_director_blocking_map": medium}, ["/p/look.png"]),
+                         ["/p/face.png"])
+        # An insert of hands gets no portrait.
+        self.assertEqual(pipeline.shot_identity_refs(params, {"_director_scene_type": "insert"},
+                                                     ["/p/look.png", "/p/mug.png"]), ["/p/mug.png"])
 
     def test_a_shot_without_layout_still_counts_its_people(self):
         plan = {"_director_subjects_on_screen": [{"speaker_name": "Mina"}, {"speaker_name": "Joon"}]}

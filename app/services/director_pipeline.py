@@ -5537,18 +5537,22 @@ def shot_identity_refs(params: dict, plan: dict, refs: list[str]) -> list[str]:
     """Each person's reference as this shot sees them: front, three quarters, profile or back.
 
     The angle comes from the shot's blocking (where the person faces against
-    the camera); a person without that angle keeps their look image.
+    the camera); a person without that angle keeps their look image. An
+    insert (hands, an object) gets no portrait at all.
     """
     from services.director.blocking_map import parse_blocking_map, subject_view
 
-    views = params.get("_director_image_views") or {}
-    blocking = parse_blocking_map(plan.get("_director_blocking_map")) if views else None
-    if not blocking:
-        return list(refs)
     names = {}
     for label, path in zip(params.get("character_ref_labels") or [], params.get("character_ref_paths") or []):
         names[path] = label
         names[image_stage_ref(params, path)] = label
+    if str(plan.get("_director_scene_type") or "").lower() == "insert":
+        # A hands-or-object insert drawn from a person's portrait comes out as a portrait.
+        return [ref for ref in refs if ref not in names]
+    views = params.get("_director_image_views") or {}
+    blocking = parse_blocking_map(plan.get("_director_blocking_map")) if views else None
+    if not blocking:
+        return list(refs)
     out = []
     for ref in refs:
         view = subject_view(blocking, names.get(ref, ""))

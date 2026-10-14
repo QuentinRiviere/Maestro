@@ -207,9 +207,10 @@ def _angle_from_camera(blocking: dict, facing: float) -> float:
 def subject_view(blocking: Optional[dict], name: str) -> str:
     """The bible angle that shows ``name`` as this shot sees them ("" for the look's own image).
 
-    A person facing the camera keeps their look image; one turned three
-    quarters, in profile or away gets that angle, so the editor does not
-    copy a front-facing pose into a shot where they look at someone else.
+    Editors copy a reference's framing and pose, so a wide shot of a person
+    facing the camera keeps the full-figure look image, closer shots take
+    the face, and a person turned three quarters, in profile or away gets
+    that angle instead of a front-facing pose.
     """
     if not blocking:
         return ""
@@ -219,7 +220,8 @@ def subject_view(blocking: Optional[dict], name: str) -> str:
         return ""
     angle = _angle_from_camera(blocking, subject["facing_deg"])
     if angle < 30:
-        return "face_front" if blocking["camera"]["framing"] == "close-up" else ""
+        # A full-figure look image makes a full-figure shot: closer shots take the face.
+        return "" if blocking["camera"]["framing"] == "wide" else "face_front"
     if angle < 65:
         return "face_three_quarter"
     if angle < 125:
