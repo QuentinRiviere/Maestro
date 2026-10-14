@@ -447,6 +447,19 @@ def estimate_cost(spec: Mapping[str, Any], params: Mapping[str, Any], images: li
     return round(total, 5)
 
 
+TRANSIENT_RETRY_DELAYS = (2.0, 5.0, 10.0)
+
+
+def _retrying(call: Callable[[], Any], sleep: Callable[[float], None]) -> Any:
+    """Run an idempotent request again after a timeout or a dropped connection."""
+    for delay in TRANSIENT_RETRY_DELAYS:
+        try:
+            return call()
+        except httpx.TransportError:
+            sleep(delay)
+    return call()
+
+
 def generate(
     spec: Mapping[str, Any],
     params: Mapping[str, Any],
@@ -490,7 +503,7 @@ def generate(
     try:
         client = CLIENTS[provider](api_key, http)
         update(phase="Cloud", message=f"Sending to {label}…", progress=5)
-        urls = [client.upload(path) for path in images] if spec.get("image_field") else []
+        urls = [_retrying(lambda path=path: client.upload(path), sleep) for path in images] if spec.get("image_field") else []
         endpoint = spec.get("edit_endpoint") if urls and spec.get("edit_endpoint") else spec["endpoint"]
         payload = build_input(spec, params, urls)
         if loras:
@@ -519,7 +532,7 @@ def generate(
                 except httpx.HTTPError:
                     pass
                 raise CloudImageCancelled()
-            state, detail = client.poll(handle)
+            state, detail = _retrying(lambda: client.poll(handle), sleep)
             if state == "done":
                 result = detail
                 break
@@ -542,7 +555,7 @@ def generate(
                 header, _, encoded = url.partition(",")
                 outputs.append(CloudImage(base64.b64decode(encoded), header[5:].split(";")[0]))
                 continue
-            response = _check(http.get(url), provider)
+            response = _check(_retrying(lambda url=url: http.get(url), sleep), provider)
             content_type = response.headers.get("content-type", "image/png").split(";")[0].strip()
             outputs.append(CloudImage(response.content, content_type))
         return outputs

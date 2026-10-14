@@ -121,6 +121,35 @@ class FalTests(unittest.TestCase):
         self.assertEqual(images[0].extension, ".png")
         self.assertIn("Queued on fal.ai (position 2)…", messages)
 
+    def test_poll_and_download_retry_after_a_read_timeout_but_submit_does_not(self):
+        timeouts = {"/s": 1, "out.png": 1}
+
+        def handler(request):
+            url = str(request.url)
+            for key in timeouts:
+                if url.endswith(key) and timeouts[key]:
+                    timeouts[key] -= 1
+                    raise httpx.ReadTimeout("The read operation timed out", request=request)
+            if request.method == "POST":
+                return httpx.Response(200, json={"status_url": "https://q/s", "response_url": "https://q/r",
+                                                 "cancel_url": "https://q/c"})
+            if url.endswith("/s"):
+                return httpx.Response(200, json={"status": "COMPLETED"})
+            if url.endswith("/r"):
+                return httpx.Response(200, json={"images": [{"url": "https://cdn.fal.media/out.png"}]})
+            return httpx.Response(200, content=PNG, headers={"content-type": "image/png"})
+
+        images = run(load_spec("cloud_fal_nano_banana"), {"prompt": "x"}, Recorder(handler))
+        self.assertEqual(images[0].data, PNG)
+
+        def submit_times_out(request):
+            raise httpx.ReadTimeout("The read operation timed out", request=request)
+
+        recorder = Recorder(submit_times_out)
+        with self.assertRaisesRegex(cloud_image.CloudImageError, "timed out"):
+            run(load_spec("cloud_fal_nano_banana"), {"prompt": "x"}, recorder)
+        self.assertEqual(len(recorder.requests), 1)
+
     def test_text_only_uses_base_endpoint_and_reports_errors(self):
         def handler(request):
             return httpx.Response(422, json={"detail": [{"msg": "prompt too long"}]})
