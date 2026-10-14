@@ -129,40 +129,20 @@ class TurboSamplingProfileTests(unittest.TestCase):
 
 
 class TurboDefinitionTests(unittest.TestCase):
-    def test_official_shards_download_verified_under_unique_local_names(self):
+    def test_turbo_weights_come_from_the_wangp_checkpoint_repository(self):
         definition = _definition(TURBO_DEF_PATH)
         model = definition["model"]
         self.assertEqual(model["architecture"], MODEL_TYPE)
-        self.assertTrue(model["qwen21_sharded_transformer"])
-        shards = model["URLs"] + model["URLs2"]
-        self.assertEqual(shards, ["qwen_image_21_7B_turbo_bf16_part1of2.safetensors",
-                                  "qwen_image_21_7B_turbo_bf16_part2of2.safetensors"])
-        for index, name in enumerate(shards, start=1):
-            # mmgp expands "-of-" names itself; these must stay plain names.
-            self.assertNotIn("-of-", name)
-            source = model["download_sources"][name]
-            self.assertEqual(
-                source["url"],
-                f"https://huggingface.co/Qwen/Qwen-Image-2.1-Turbo/resolve/{TURBO_REVISION}/transformer/"
-                f"diffusion_pytorch_model-0000{index}-of-00002.safetensors")
-            self.assertRegex(source["sha256"], r"^[0-9a-f]{64}$")
-            self.assertGreater(source["size_bytes"], 0)
+        self.assertEqual(model["URLs"], [
+            "https://huggingface.co/DeepBeepMeep/Qwen_image_2/resolve/main/qwen_image_21_turbo_7B_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Qwen_image_2/resolve/main/qwen_image_21_turbo_7B_int8_convrot.safetensors",
+        ])
+        self.assertNotIn("download_sources", model)
         self.assertEqual(definition["num_inference_steps"], 8)
         self.assertEqual(definition["guidance_scale"], 1.0)
         self.assertEqual(definition["sample_solver"], QWEN_TURBO_PROFILE)
         self.assertEqual(model["qwen21_min_render_pixels"], TURBO_PIXELS)
         self.assertEqual(model["qwen21_reference_max_side"], 768)
-
-    def test_named_sources_pass_the_checkpoint_download_validation(self):
-        from shared.checkpoint_downloads import _validate_source, find_named_checkpoint_source
-
-        model = _definition(TURBO_DEF_PATH)["model"]
-        for name in model["URLs"] + model["URLs2"]:
-            source = find_named_checkpoint_source(model, name)
-            self.assertIsNotNone(source)
-            url, _, size, host = _validate_source(source)
-            self.assertEqual(host, "huggingface.co")
-            self.assertEqual(size, source["size_bytes"])
 
 
 class RenderSizeTests(unittest.TestCase):
@@ -271,21 +251,37 @@ class TurboRuntimeTests(unittest.TestCase):
         self.assertIs(call["image"][0], reference)
         self.assertEqual(tuple(output.shape), (4, 1, 832, 480))
 
-    def test_sharded_transformer_loads_every_shard_into_one_module(self):
+    def test_turbo_loads_one_transformer_file_and_the_transformers4_processor(self):
         from models.qwen21 import runtime
 
         model_def = _resolved_model_def(TURBO_DEF_PATH)
-        shards = ["/ckpts/part1.safetensors", "/ckpts/part2.safetensors"]
-        loads = []
+        loads, processor_dirs = [], []
         with patch.object(runtime.offload, "load_model_data", side_effect=lambda module, files, **_:
                           loads.append(files)), \
                 patch.object(runtime.Qwen3VLProcessor, "from_pretrained",
-                             return_value=SimpleNamespace(tokenizer=None)), \
+                             side_effect=lambda path, **_: processor_dirs.append(path)
+                             or SimpleNamespace(tokenizer=None)), \
                 patch.object(runtime, "MaestroQwenImage21Pipeline", return_value=Mock()), \
+                patch.object(runtime, "_transformers4_processor_dir", side_effect=lambda d: d / "p4"), \
                 patch.object(runtime.fl, "locate_file", side_effect=lambda name: f"/ckpts/{name}"):
-            runtime.model_factory(shards, "/ckpts/encoder.safetensors", model_def=model_def)
-        self.assertEqual(loads[0], shards)
+            runtime.model_factory(["/ckpts/turbo.safetensors"], "/ckpts/encoder.safetensors", model_def=model_def)
+        self.assertEqual(loads[0], "/ckpts/turbo.safetensors")
+        self.assertEqual(processor_dirs, ["/ckpts/Qwen3-VL-8B-Instruct/p4"])
 
+    def test_transformers4_processor_dir_links_legacy_files_under_standard_names(self):
+        import tempfile
+        from models.qwen21 import runtime
+        from models.qwen21.qwen21_handler import PROCESSOR_FILES
+
+        with tempfile.TemporaryDirectory() as directory:
+            encoder = Path(directory)
+            for name in PROCESSOR_FILES:
+                (encoder / name).write_text(name)
+            target = runtime._transformers4_processor_dir(encoder)
+            self.assertEqual((target / "tokenizer.json").read_text(), "tokenizer_legacy.json")
+            self.assertEqual((target / "vocab.json").read_text(), "vocab.json")
+            # Rebuilding over existing links is safe.
+            runtime._transformers4_processor_dir(encoder)
 
 if __name__ == "__main__":
     unittest.main()

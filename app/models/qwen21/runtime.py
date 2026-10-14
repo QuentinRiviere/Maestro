@@ -42,6 +42,20 @@ def _pil(image):
     return Image.fromarray(np.asarray(image))
 
 
+
+def _transformers4_processor_dir(encoder_dir: Path) -> Path:
+    """A folder of standard-named links to the encoder's Transformers 4.57 processor files."""
+    from .qwen21_handler import PROCESSOR_FILES, processor_files
+
+    target = encoder_dir / "processor_transformers4"
+    target.mkdir(exist_ok=True)
+    for standard, name in processor_files(PROCESSOR_FILES).items():
+        link = target / standard
+        if link.is_symlink() or link.exists():
+            link.unlink()
+        link.symlink_to(encoder_dir / name)
+    return target
+
 class GenerationCancelled(Exception):
     pass
 
@@ -100,7 +114,8 @@ class model_factory:
             from wgp import save_quantized_model
             save_quantized_model(self.transformer, model_type, filename, torch.bfloat16,
                                  str(CONFIGS / "transformer_config.json"))
-        processor_dir = Path(fl.locate_file("Qwen3-VL-8B-Instruct/tokenizer_config.json")).parent
+        processor_dir = _transformers4_processor_dir(
+            Path(fl.locate_file("Qwen3-VL-8B-Instruct/tokenizer_config_legacy.json")).parent)
         self.processor = Qwen3VLProcessor.from_pretrained(str(processor_dir), local_files_only=True)
         self.tokenizer = self.processor.tokenizer
         self.pipeline = MaestroQwenImage21Pipeline(

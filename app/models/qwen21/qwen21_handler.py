@@ -11,9 +11,26 @@ from .sampling_profiles import QWEN_TURBO_PROFILE, QWEN_TURBO_SIGMAS
 MODEL_TYPE = "qwen_image_21_7B"
 REPO = "DeepBeepMeep/Qwen_image_2"
 ENCODER_FOLDER = "Qwen3-VL-8B-Instruct"
-# Complete Transformers 4.57-compatible processor export before the upstream
-# folder was removed and its legacy tokenizer files renamed in Ideogram4.
-PROCESSOR_REVISION = "55ab7995df218d8f759c6c283ef4c3be66111345"
+# The tokenizer and processor files live beside the text encoder weights.
+# DeepBeepMeep rewrote Qwen_image_2's history on 2026-10-11, which removed the
+# revision these files used to be pinned to. Ideogram4 keeps the Transformers
+# 4.57-compatible tokenizer and config under *_legacy names; the runtime maps
+# them back to the standard names (see processor_files).
+PROCESSOR_REPO = "DeepBeepMeep/Ideogram4"
+PROCESSOR_REVISION = "a531af16b9cb570479356dae9e3f4a721adc3b7f"
+PROCESSOR_FILES = ("added_tokens.json", "chat_template.jinja", "config_legacy.json", "merges.txt",
+                   "preprocessor_config.json", "special_tokens_map.json", "tokenizer_legacy.json",
+                   "tokenizer_config_legacy.json", "video_preprocessor_config.json", "vocab.json")
+
+
+def processor_files(names):
+    """Standard processor filename -> downloaded file name, preferring the *_legacy export."""
+    mapping = {}
+    for name in names:
+        standard = name.replace("_legacy.", ".")
+        if standard not in mapping or name != standard:
+            mapping[standard] = name
+    return mapping
 
 _VIGGLE_PROFILES = {
     "viggle_v01": {
@@ -287,14 +304,10 @@ class family_handler:
             "sourceFolderList": ["qwen_image_21"],
             "fileList": [["qwen_image_21_vae.safetensors"]],
         }, {
-            "repoId": REPO,
+            "repoId": PROCESSOR_REPO,
             "revision": PROCESSOR_REVISION,
             "sourceFolderList": [ENCODER_FOLDER],
-            "fileList": [
-                ["added_tokens.json", "chat_template.jinja", "config.json", "merges.txt",
-                 "preprocessor_config.json", "special_tokens_map.json", "tokenizer.json",
-                 "tokenizer_config.json", "video_preprocessor_config.json", "vocab.json"],
-            ],
+            "fileList": [list(PROCESSOR_FILES)],
         }]
 
     @staticmethod
