@@ -5306,7 +5306,11 @@ def _submit_and_wait(
 # How each image editor takes references for a storyboard shot: how many it
 # handles before it starts collaging them, and how its prompts name them
 # (Qwen-Image-Edit is trained on "Picture 1", Flux and Seedream on "image 1").
+# Qwen Image 2.1 (base and Turbo) tags its references <image1>, <image2>... and
+# reads up to ten; storyboard shots stay at four, the multi-reference load the
+# Turbo checkpoint was measured with (2-4 references, 864x1536, ~45 GB peak).
 _IMAGE_REF_PROFILES = (
+    ("qwen_image_21", {"max_refs": 4, "label": "image"}),
     ("qwen_image", {"max_refs": 3, "label": "Picture"}),
     ("cloud_fal_qwen_image", {"max_refs": 3, "label": "Picture"}),
     ("cloud_fal_flux_2", {"max_refs": 4, "label": "image"}),
