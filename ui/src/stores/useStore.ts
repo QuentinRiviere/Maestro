@@ -979,6 +979,7 @@ const DEFAULT_ENABLED_MODELS = new Set([
   // Other image models remain opt-in through Model Visibility.
   'flux2_klein_9b',
   'qwen_image_21_7B',
+  'qwen_image_21_7B_turbo_8step',
   'krea2_raw',
   'krea2_turbo',
   'krea2_raw_edit',
@@ -1053,7 +1054,7 @@ const DEFAULT_ENABLED_MODELS = new Set([
  * a user who then disables them stays disabled forever. (This is
  * deliberately narrower than auto-enabling every unknown model — only
  * the curated list's own additions are pushed.) */
-const DEFAULTS_VERSION = 21
+const DEFAULTS_VERSION = 22
 const DEFAULTS_ADDED_IN: Record<number, string[]> = {
   // v1.2.0: the ACE-Step XL SFT pair; LM_4B becomes the music default.
   2: ['ace_step_v1_5_xl_sft', 'ace_step_v1_5_xl_sft_lm_4b'],
@@ -1099,6 +1100,8 @@ const DEFAULTS_ADDED_IN: Record<number, string[]> = {
   ],
   // FLUX.1 dev with LoRAs on fal.ai and Replicate.
   21: ['cloud_fal_flux_dev_lora', 'cloud_replicate_flux_dev_lora'],
+  // Official Qwen-Image-2.1-Turbo checkpoint (8 steps, multi-reference edits).
+  22: ['qwen_image_21_7B_turbo_8step'],
 }
 const DEFAULTS_VERSION_KEY = 'maestro_defaults_version'
 

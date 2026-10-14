@@ -1080,6 +1080,9 @@ export interface ModelOptions {
     steps: number
     guidance: number
   }> | null
+  /** Sampling profile baked into a distilled checkpoint (fixed steps, CFG and sigmas). */
+  qwen21_sampling_profile?: string | null
+  qwen21_kv_cache_default?: 'Enabled' | 'Disabled' | null
   image_ref_inpaint?: boolean
   model_modes?: {
     choices: [string, number][]

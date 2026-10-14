@@ -8,6 +8,8 @@ export function Qwen21Controls() {
   const workflow = useStore(s => s.studioImageWorkflow)
   if (options?.architecture !== 'qwen_image_21_7B') return null
 
+  const fixedProfile = options.qwen21_sampling_profile || ''
+  const kvCacheDefault = options.qwen21_kv_cache_default || 'Disabled'
   const profiles = options.qwen21_acceleration_profiles || {}
   const solver = String(params.sample_solver || 'default')
   const accelerated = !!profiles[solver]
@@ -15,6 +17,12 @@ export function Qwen21Controls() {
   const guidance = profiles[solver]?.guidance ?? 4
   return (
     <div className="space-y-3 rounded-lg border border-border bg-bg-tertiary/40 p-3">
+      {fixedProfile ? (
+        <p className="text-[10px] leading-relaxed text-text-muted">
+          Distilled checkpoint: always samples with its own 8-step schedule at CFG 1. Small sizes render on a
+          larger canvas of the same shape and are downscaled.
+        </p>
+      ) : (<>
       <label className="block space-y-1.5">
         <span className="text-[11px] uppercase tracking-wider text-text-muted">Image acceleration</span>
         <select
@@ -49,9 +57,10 @@ export function Qwen21Controls() {
           Apply recommended steps and guidance
         </button>
       )}
+      </>)}
       <label className="flex items-start gap-2 text-[11px] text-text-secondary">
         <input type="checkbox" className="mt-0.5 accent-accent-blue"
-          checked={params.custom_settings?.qwen21_kv_cache === 'Enabled'}
+          checked={(params.custom_settings?.qwen21_kv_cache ?? kvCacheDefault) === 'Enabled'}
           onChange={event => setParam('custom_settings', {
             ...(params.custom_settings || {}),
             qwen21_kv_cache: event.target.checked ? 'Enabled' : 'Disabled',

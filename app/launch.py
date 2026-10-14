@@ -7015,6 +7015,8 @@ def get_model_options(model_type: str):
         "max_image_refs": md.get("max_image_refs"),
         "sample_solvers": solvers,
         "qwen21_acceleration_profiles": md.get("qwen21_acceleration_profiles"),
+        "qwen21_sampling_profile": md.get("qwen21_sampling_profile"),
+        "qwen21_kv_cache_default": md.get("qwen21_kv_cache_default"),
         "image_ref_inpaint": md.get("image_ref_inpaint", False),
         "model_modes": md.get("model_modes"),
 
