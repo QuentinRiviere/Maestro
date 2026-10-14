@@ -293,7 +293,10 @@ def list_bibles() -> list[dict]:
 
 
 def get_bible(bible_id: str) -> dict | None:
-    bible = _read(bible_id)
+    # Read under the write lock: on a bind-mounted data folder a read racing
+    # a save can miss the file, and parallel renders save often.
+    with _LOCK:
+        bible = _read(bible_id)
     if bible is None:
         return None
     # Bibles saved before props and variants existed read as the current shape.
