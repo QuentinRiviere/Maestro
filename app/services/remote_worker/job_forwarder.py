@@ -63,27 +63,64 @@ class RemoteJobResult:
     billing: dict[str, Any] = field(default_factory=dict)
 
 
+# The dstack proxy answers these when it briefly cannot reach the worker; the
+# request never got there, so sending it again is safe.
+_PROXY_RETRY_STATUSES = {502, 503, 504}
+_PROXY_RETRY_DELAYS = (2.0, 5.0, 10.0)
+
+
 class WorkerClient:
     """Bearer-authenticated calls to a worker behind the dstack service proxy."""
 
-    def __init__(self, base_url: str, token: str, *, session: requests.Session | None = None) -> None:
+    def __init__(self, base_url: str, token: str, *, session: requests.Session | None = None,
+                 sleep: Callable[[float], None] = time.sleep) -> None:
         self.base_url = base_url.rstrip("/") + "/"
         self._headers = {"Authorization": f"Bearer {token}"}
         self._session = session or requests.Session()
+        self._sleep = sleep
 
     def _url(self, path: str) -> str:
         return self.base_url + path.lstrip("/")
 
+    def _send(self, method: str, path: str, *, retry: bool = True, upload: str | None = None,
+              **kwargs: Any) -> requests.Response:
+        """One request, sent again on a proxy hiccup (502/503/504 or a dropped connection).
+
+        ``retry=False`` for a request that must not run twice (a job
+        submission). ``upload`` is a file path sent as the body, reopened on
+        each attempt.
+        """
+        delays = _PROXY_RETRY_DELAYS if retry else ()
+        for attempt in range(len(delays) + 1):
+            try:
+                if upload is not None:
+                    with open(upload, "rb") as handle:
+                        response = self._session.request(method, self._url(path), data=handle, **kwargs)
+                else:
+                    response = self._session.request(method, self._url(path), **kwargs)
+            except requests.ConnectionError:
+                if attempt >= len(delays):
+                    raise
+                log.warning("worker %s %s: connection dropped, retrying", method, path)
+            else:
+                if response.status_code not in _PROXY_RETRY_STATUSES or attempt >= len(delays):
+                    return response
+                log.warning("worker %s %s: HTTP %s from the proxy, retrying", method, path,
+                            response.status_code)
+                response.close()
+            self._sleep(delays[attempt])
+        raise AssertionError("unreachable")
+
     def get_json(self, path: str, *, timeout: float = 30.0, params: Mapping[str, Any] | None = None) -> Any:
-        response = self._session.get(self._url(path), headers=self._headers, timeout=timeout, params=params)
+        response = self._send("GET", path, headers=self._headers, timeout=timeout, params=params)
         if response.status_code == 404:
             return None
         if not response.ok:
             raise RemoteJobError(f"Worker GET {path} failed: HTTP {response.status_code} {response.text[:300]}")
         return response.json()
 
-    def post_json(self, path: str, body: Any = None, *, timeout: float = 60.0) -> Any:
-        response = self._session.post(self._url(path), headers=self._headers, json=body, timeout=timeout)
+    def post_json(self, path: str, body: Any = None, *, timeout: float = 60.0, retry: bool = True) -> Any:
+        response = self._send("POST", path, retry=retry, headers=self._headers, json=body, timeout=timeout)
         if not response.ok:
             raise RemoteJobError(f"Worker POST {path} failed: HTTP {response.status_code} {response.text[:300]}")
         return response.json() if response.content else None
@@ -93,14 +130,12 @@ class WorkerClient:
         existing = self.get_json("api/v1/worker/files", params=params)
         if existing and existing.get("path"):
             return str(existing["path"])
-        with open(local_path, "rb") as handle:
-            response = self._session.post(
-                self._url("api/v1/worker/files"),
-                headers={**self._headers, "Content-Type": "application/octet-stream"},
-                params=params,
-                data=handle,
-                timeout=600,
-            )
+        response = self._send(
+            "POST", "api/v1/worker/files", upload=local_path,
+            headers={**self._headers, "Content-Type": "application/octet-stream"},
+            params=params,
+            timeout=600,
+        )
         if not response.ok:
             raise RemoteJobError(
                 f"Upload of {os.path.basename(local_path)} failed: HTTP {response.status_code} {response.text[:300]}"
@@ -109,8 +144,8 @@ class WorkerClient:
 
     def fetch_from_r2(self, *, kind: str, name: str, sha256: str, model_type: str = "") -> str | None:
         """Ask the worker to pull an input from R2; None when it has no R2."""
-        response = self._session.post(
-            self._url("api/v1/worker/files/fetch"),
+        response = self._send(
+            "POST", "api/v1/worker/files/fetch",
             headers=self._headers,
             json={"kind": kind, "name": name, "sha256": sha256, "model_type": model_type},
             timeout=600,
@@ -123,7 +158,7 @@ class WorkerClient:
 
     def get_bytes(self, path: str, *, timeout: float = 30.0) -> tuple[bytes, str] | None:
         """Small in-memory GET (previews); None when the worker no longer has it."""
-        response = self._session.get(self._url(path), headers=self._headers, timeout=timeout)
+        response = self._send("GET", path, headers=self._headers, timeout=timeout)
         if response.status_code == 404:
             return None
         if not response.ok:
@@ -132,7 +167,7 @@ class WorkerClient:
 
     def download(self, path: str, dest: str) -> None:
         part = dest + ".part"
-        with self._session.get(self._url(path), headers=self._headers, timeout=600, stream=True) as response:
+        with self._send("GET", path, headers=self._headers, timeout=600, stream=True) as response:
             if not response.ok:
                 raise RemoteJobError(f"Download {path} failed: HTTP {response.status_code}")
             with open(part, "wb") as handle:
@@ -232,7 +267,8 @@ class RemoteJobForwarder:
             body: dict[str, Any] = {"params": remote_params}
             if preview_mode is not None:
                 body["preview_mode"] = preview_mode
-            remote_id = str(client.post_json("api/v1/worker/jobs", body)["job_id"])
+            # Never sent twice: a retried submission could start the job twice.
+            remote_id = str(client.post_json("api/v1/worker/jobs", body, retry=False)["job_id"])
             work_started = time.monotonic()
             remote = self._follow(
                 client, remote_id, update=update, is_cancelled=is_cancelled,

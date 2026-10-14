@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import io
 import os
 import shutil
 import sys
@@ -76,7 +77,7 @@ class FakeWorker:
             return self.final
         raise AssertionError(path)
 
-    def post_json(self, path, body=None, *, timeout=60.0):
+    def post_json(self, path, body=None, *, timeout=60.0, retry=True):
         if path.startswith("api/v1/models/"):
             model = path.split("/")[3]
             self.download_requests.append(model)
@@ -286,3 +287,35 @@ def start_prompt(path):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WorkerClientRetryTests(unittest.TestCase):
+    def _client(self, statuses):
+        import requests
+
+        from services.remote_worker.job_forwarder import WorkerClient
+
+        calls = []
+
+        class Session:
+            def request(self, method, url, **kwargs):
+                calls.append((method, url))
+                response = requests.Response()
+                response.status_code = statuses[min(len(calls), len(statuses)) - 1]
+                response._content = b'{"path": "/inputs/x.png", "job_id": "j1"}'
+                response.raw = io.BytesIO()
+                return response
+
+        sleeps = []
+        return WorkerClient("https://w/", "t", session=Session(), sleep=sleeps.append), calls, sleeps
+
+    def test_a_proxy_hiccup_is_sent_again(self):
+        client, calls, sleeps = self._client([502, 502, 200])
+        self.assertEqual(client.fetch_from_r2(kind="input", name="x.png", sha256="a" * 64), "/inputs/x.png")
+        self.assertEqual((len(calls), sleeps), (3, [2.0, 5.0]))
+
+    def test_a_job_submission_is_never_sent_twice(self):
+        client, calls, _ = self._client([502, 200])
+        with self.assertRaises(Exception):
+            client.post_json("api/v1/worker/jobs", {}, retry=False)
+        self.assertEqual(len(calls), 1)
