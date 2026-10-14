@@ -1741,6 +1741,11 @@ def _repair_saved_h3_frame_lattice(state: dict) -> bool:
     architecture = str(model_def.get("architecture") or video_model).lower()
     if not architecture.startswith("minimax_h3"):
         return False
+    # Sequence runs plan shots shorter than H3's minimum on purpose: they
+    # render inside one longer generation, or alone at the minimum and are
+    # trimmed back. Stretching them would change the cut.
+    if h3_sequences_enabled({**snapshot, "video_model": video_model}, model_def):
+        return False
 
     try:
         fps = float(model_def.get("fps") or snapshot.get("fps") or 24)

@@ -2707,5 +2707,27 @@ class TestLegacyH3DirectorTimingRepair(unittest.TestCase):
         )
 
 
+    def test_sequence_runs_keep_their_short_shots(self):
+        model_def = {
+            "architecture": "minimax_h3",
+            "director_video_strategy": "bounded_start_end",
+            "fps": 24,
+            "frames_minimum": 124,
+            "frames_maximum": 345,
+            "frames_steps": 17,
+        }
+        state = {
+            "id": "sequence-run",
+            "video_model": "minimax_h3",
+            "_params_snapshot": {"pipeline_type": "short_film_story", "director_h3_sequences": "on"},
+            "clips": [
+                {"planned_clip": {"start": 0.0, "end": 4.0, "duration_frames": 96}},
+                {"planned_clip": {"start": 4.0, "end": 6.5, "duration_frames": 60}},
+            ],
+        }
+        with patch.object(pipeline, "_wgp", SimpleNamespace(get_model_def=lambda _model_type: model_def)):
+            self.assertFalse(pipeline._repair_saved_h3_frame_lattice(state))
+        self.assertEqual([c["planned_clip"]["duration_frames"] for c in state["clips"]], [96, 60])
+
 if __name__ == "__main__":
     unittest.main()
