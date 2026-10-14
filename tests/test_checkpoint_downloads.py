@@ -176,6 +176,35 @@ class TestCheckpointDownloads(unittest.TestCase):
             self.assertNotIn("token", parse_qs(urlsplit(request_url).query))
             self.assertNotIn("Authorization", get.call_args.kwargs["headers"])
 
+    def test_hugging_face_sources_use_the_hub_client_and_are_still_verified(self):
+        content = _safetensors_bytes()
+        calls = []
+
+        def fake_hub_download(repo_id, filename, revision=None, local_dir=None):
+            calls.append((repo_id, filename, revision))
+            path = Path(local_dir) / filename
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+            return str(path)
+
+        hub = ModuleType("huggingface_hub")
+        hub.hf_hub_download = fake_hub_download
+        url = "https://huggingface.co/Qwen/Qwen-Image-2.1-Turbo/resolve/abc123/transformer/part-1.safetensors"
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "turbo_part1.safetensors"
+            with patch.dict("sys.modules", {"huggingface_hub": hub}), patch("requests.get") as get:
+                download_named_checkpoint(_source(url, content), target)
+                get.assert_not_called()
+            self.assertEqual(calls, [("Qwen/Qwen-Image-2.1-Turbo", "transformer/part-1.safetensors", "abc123")])
+            self.assertEqual(target.read_bytes(), content)
+            self.assertEqual(sorted(p.name for p in Path(directory).iterdir()), ["turbo_part1.safetensors"])
+
+            bad = _source(url, content, sha256="0" * 64)
+            with patch.dict("sys.modules", {"huggingface_hub": hub}):
+                with self.assertRaises(CheckpointDownloadError):
+                    download_named_checkpoint(bad, Path(directory) / "other.safetensors")
+            self.assertEqual(sorted(p.name for p in Path(directory).iterdir()), ["turbo_part1.safetensors"])
+
     def test_failed_digest_preserves_existing_target_and_cleans_temp(self):
         content = _safetensors_bytes()
         response = FakeResponse(content)

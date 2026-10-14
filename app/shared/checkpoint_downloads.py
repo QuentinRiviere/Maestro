@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import tempfile
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -168,6 +169,77 @@ def _validate_safetensors_header(path: Path, expected_size: int) -> None:
         raise CheckpointDownloadError("Downloaded file has non-contiguous safetensors data offsets.")
 
 
+_HUB_RESOLVE = re.compile(r"^/([^/]+/[^/]+)/resolve/([^/]+)/(.+)$")
+
+
+def _huggingface_file(url: str, hostname: str) -> tuple[str, str, str] | None:
+    """(repo, revision, path) of a huggingface.co resolve URL, else None."""
+    if hostname != "huggingface.co":
+        return None
+    parsed = urlsplit(url)
+    if parsed.query:
+        return None
+    match = _HUB_RESOLVE.match(parsed.path)
+    return (match.group(1), match.group(2), match.group(3)) if match else None
+
+
+def _sha256_of(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(_CHUNK_SIZE), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _download_from_hub(hub_file, target_path: Path, expected_sha256: str, expected_size: int, *,
+                       validate_checkpoint=None, file_format="safetensors", before_publish=None) -> str:
+    """Fetch a Hugging Face file with the Hub client (parallel transfer), then verify it like any source.
+
+    A single streamed HTTP request tops out far below what the Hub client
+    reaches on cloud hosts, which made a 14 GB checkpoint take half an hour.
+    """
+    from huggingface_hub import hf_hub_download
+    try:
+        from services.download_control import check_download_cancelled, download_publication
+    except ModuleNotFoundError:
+        from app.services.download_control import check_download_cancelled, download_publication
+
+    repo_id, revision, filename = hub_file
+    staging = Path(tempfile.mkdtemp(prefix=f".{target_path.name}.", dir=str(target_path.parent)))
+    try:
+        check_download_cancelled()
+        try:
+            downloaded = Path(hf_hub_download(repo_id, filename, revision=revision, local_dir=str(staging)))
+        except Exception as exc:
+            check_download_cancelled()
+            raise CheckpointDownloadError(
+                f"Checkpoint download from Hugging Face failed ({type(exc).__name__})."
+            ) from None
+        check_download_cancelled()
+        if downloaded.stat().st_size != expected_size:
+            raise CheckpointDownloadError(
+                f"Checkpoint download size mismatch: received {downloaded.stat().st_size} of {expected_size} bytes."
+            )
+        if _sha256_of(downloaded) != expected_sha256:
+            raise CheckpointDownloadError("Checkpoint download SHA-256 verification failed.")
+        if file_format == "gguf":
+            from services.h3_gguf_import import read_gguf_index
+            with downloaded.open("rb") as handle:
+                read_gguf_index(handle, expected_size)
+        else:
+            _validate_safetensors_header(downloaded, expected_size)
+        if validate_checkpoint is not None:
+            validate_checkpoint(str(downloaded))
+        with download_publication():
+            if before_publish is not None:
+                before_publish()
+            check_download_cancelled()
+            os.replace(downloaded, target_path)
+        return str(target_path)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
 def download_named_checkpoint(
     source: object,
     target: str | os.PathLike[str],
@@ -203,6 +275,12 @@ def download_named_checkpoint(
         from services.download_control import DownloadCancelled, check_download_cancelled, download_publication
     except ModuleNotFoundError:
         from app.services.download_control import DownloadCancelled, check_download_cancelled, download_publication
+
+    hub_file = _huggingface_file(url, hostname)
+    if hub_file is not None:
+        return _download_from_hub(hub_file, target_path, expected_sha256, expected_size,
+                                  validate_checkpoint=validate_checkpoint, file_format=file_format,
+                                  before_publish=before_publish)
 
     request_url, headers = _authenticated_request(url, hostname, civitai_api_key)
     temp_path: Path | None = None
