@@ -95,8 +95,10 @@ _LOWER_BODY_RE = re.compile(
 def shot_reach(framing: str) -> str:
     """How much of a person the framing shows: "full", "upper" (waist up) or "detail" (hands, objects)."""
     f = (framing or "").lower()
-    if any(k in f for k in ("insert", "extreme close", "macro", "detail")):
+    if any(k in f for k in ("insert", "macro", "detail")):
         return "detail"
+    if "extreme close" in f:
+        return "upper" if any(k in f for k in ("face", "eye", "lip", "mouth", "expression")) else "detail"
     if any(k in f for k in ("wide", "full", "long", "establishing", "master", "medium-wide", "cowboy")):
         return "full"
     if any(k in f for k in ("close", "medium", "waist", "chest", "bust", "over-the-shoulder", "over the shoulder")):
@@ -105,11 +107,9 @@ def shot_reach(framing: str) -> str:
 
 
 def visible_wardrobe(wardrobe: str, reach: str) -> str:
-    """The garments a framing can see: no legs or shoes from the waist up, no outfit for a detail."""
+    """The garments a framing can see: no legs or shoes closer than a full figure."""
     if reach == "full" or not wardrobe:
         return wardrobe
-    if reach == "detail":
-        return ""
     items = re.split(r",\s*(?:and\s+)?|\s+and\s+", wardrobe.strip().rstrip("."))
     kept = [item for item in items if item.strip() and not _LOWER_BODY_RE.search(item)]
     return ", ".join(kept)
@@ -131,7 +131,11 @@ def resolve_subjects_text(shot: ShotPlan, plan: Optional[ProductionPlan] = None)
             char = plan.get_character(subj.character_id)
             if char:
                 wardrobe = visible_wardrobe(char.wardrobe, reach)
-                desc = ", ".join(p for p in (char.physical_description, wardrobe) if p)
+                if reach == "detail":
+                    # Hands and sleeves only: a face description pulls an insert back to a portrait.
+                    desc = f"hands of a person in {wardrobe}" if wardrobe else "hands"
+                else:
+                    desc = ", ".join(p for p in (char.physical_description, wardrobe) if p)
         if subj.position_or_relation:
             desc += f", {subj.position_or_relation}"
         parts.append(desc)

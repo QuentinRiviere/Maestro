@@ -8396,11 +8396,19 @@ def director_shot_layout(pid: str, index: int, plan: dict, prompt: str, image_mo
     Editors that cannot take the diagram (text-only, or one reference) read
     the same layout appended to the prompt.
     """
+    from services.director.blocking_map import insert_line
+    from services.director.policies import shot_reach
+
+    names = [str(subject.get("speaker_name") or subject.get("name") or "").strip()
+             for subject in plan.get("_director_subjects_on_screen") or [] if isinstance(subject, dict)]
+    names = [name for name in dict.fromkeys(names) if name]
+    # An insert keeps its hands and objects: the blocking map only knows wide,
+    # medium and close-up, and its people count would bring the faces back.
+    framing = str(plan.get("_director_camera_framing") or "")
+    if shot_reach(framing) == "detail":
+        return "", f"{prompt.rstrip()} {insert_line(framing, names)}"
     blocking_map = plan.get("_director_blocking_map") if plan.get("_director_continuity_group") else None
     if not isinstance(blocking_map, dict):
-        names = [str(subject.get("speaker_name") or subject.get("name") or "").strip()
-                 for subject in plan.get("_director_subjects_on_screen") or [] if isinstance(subject, dict)]
-        names = [name for name in dict.fromkeys(names) if name]
         if not names:
             return "", prompt
         count = len(names)

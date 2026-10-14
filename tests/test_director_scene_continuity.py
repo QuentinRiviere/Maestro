@@ -409,6 +409,16 @@ class StagingTests(unittest.TestCase):
         self.assertIn("Joon looks at Mina", line)
         self.assertTrue(line.endswith("Nobody looks into the camera."))
 
+    def test_an_insert_shows_hands_without_a_face(self):
+        plan = {"_director_blocking_map": self.TWO_SHOT, "_director_continuity_group": "s1",
+                "_director_camera_framing": "Extreme close-up insert on hand and tool",
+                "_director_subjects_on_screen": [{"name": "Mina"}]}
+        diagram, prompt = pipeline.director_shot_layout("p", 0, plan, "A hand grips a tool.", "m", "/tmp")
+        self.assertEqual(diagram, "")
+        self.assertIn("Only the hands of Mina", prompt)
+        self.assertIn("no face", prompt)
+        self.assertNotIn("Exactly", prompt)
+
     def test_people_facing_each_other_get_their_profile_angle(self):
         from services.director.blocking_map import parse_blocking_map, subject_view
 

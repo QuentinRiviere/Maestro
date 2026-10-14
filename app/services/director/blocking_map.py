@@ -255,6 +255,13 @@ def gaze_targets(blocking: Optional[dict]) -> dict[str, str]:
     return targets
 
 
+def insert_line(framing: str, names: list[str]) -> str:
+    """An insert shows hands and objects only: a face in it turns it into a portrait."""
+    whose = f" of {' and '.join(names)}" if names else ""
+    return (f"Framing: {framing} shot. Only the hands{whose} and the objects they touch fill the frame, "
+            "seen from close; no face, no head and no shoulders in frame.")
+
+
 def staging_line(blocking: Optional[dict]) -> str:
     """The layout in words plus who is in frame, once each, and where they look.
 

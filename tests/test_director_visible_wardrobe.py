@@ -26,6 +26,8 @@ class VisibleWardrobeTest(unittest.TestCase):
         self.assertEqual(shot_reach("Medium close-up on Hae-won"), "upper")
         self.assertEqual(shot_reach("Over-the-shoulder shot on Jin-woo"), "upper")
         self.assertEqual(shot_reach("Extreme close-up insert on hand and tool"), "detail")
+        self.assertEqual(shot_reach("extreme close-up"), "detail")
+        self.assertEqual(shot_reach("Extreme close-up on her eyes"), "upper")
         self.assertEqual(shot_reach(""), "full")
 
     def test_waist_up_drops_legs_and_shoes(self):
@@ -35,9 +37,10 @@ class VisibleWardrobeTest(unittest.TestCase):
         self.assertNotIn("trousers", upper)
         self.assertNotIn("sneakers", upper)
 
-    def test_full_keeps_everything_and_detail_keeps_nothing(self):
+    def test_full_keeps_everything_and_detail_keeps_the_sleeves(self):
         self.assertEqual(visible_wardrobe(OUTFIT, "full"), OUTFIT)
-        self.assertEqual(visible_wardrobe(OUTFIT, "detail"), "")
+        self.assertIn("cardigan", visible_wardrobe(OUTFIT, "detail"))
+        self.assertNotIn("sneakers", visible_wardrobe(OUTFIT, "detail"))
         self.assertIsNone(visible_wardrobe(None, "upper"))
 
 
