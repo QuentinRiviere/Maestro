@@ -11,7 +11,9 @@ _APP_DIR = os.path.abspath(os.path.join(_HERE, "..", "app"))
 if _APP_DIR not in sys.path:
     sys.path.insert(0, _APP_DIR)
 
-from services.director.policies import shot_reach, visible_wardrobe  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
+
+from services.director.policies import resolve_subjects_text, shot_reach, visible_wardrobe  # noqa: E402
 
 OUTFIT = (
     "an oversized knitted cream wool cardigan over a crisp white cotton shirt, "
@@ -42,6 +44,17 @@ class VisibleWardrobeTest(unittest.TestCase):
         self.assertIn("cardigan", visible_wardrobe(OUTFIT, "detail"))
         self.assertNotIn("sneakers", visible_wardrobe(OUTFIT, "detail"))
         self.assertIsNone(visible_wardrobe(None, "upper"))
+
+    def test_an_insert_names_hands_and_sleeves_without_the_face(self):
+        char = SimpleNamespace(physical_description="22, oval face, almond eyes", wardrobe=OUTFIT)
+        plan = SimpleNamespace(get_character=lambda _id: char)
+        shot = SimpleNamespace(scene_type="insert", camera_plan=SimpleNamespace(framing="close-up"),
+                               subjects_on_screen=[SimpleNamespace(visual_description="", character_id="c1",
+                                                                   position_or_relation="")])
+        text = resolve_subjects_text(shot, plan)
+        self.assertTrue(text.startswith("hands of a person in"))
+        self.assertIn("cardigan", text)
+        self.assertNotIn("almond eyes", text)
 
 
 if __name__ == "__main__":

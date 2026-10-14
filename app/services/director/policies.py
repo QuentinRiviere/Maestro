@@ -123,7 +123,7 @@ def resolve_subjects_text(shot: ShotPlan, plan: Optional[ProductionPlan] = None)
     """
     if not shot.subjects_on_screen:
         return ""
-    reach = shot_reach(shot.camera_plan.framing)
+    reach = "detail" if str(shot.scene_type or "").lower() == "insert" else shot_reach(shot.camera_plan.framing)
     parts = []
     for subj in shot.subjects_on_screen:
         desc = subj.visual_description

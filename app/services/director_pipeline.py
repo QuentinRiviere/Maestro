@@ -8409,7 +8409,7 @@ def director_shot_layout(pid: str, index: int, plan: dict, prompt: str, image_mo
     # An insert keeps its hands and objects: the blocking map only knows wide,
     # medium and close-up, and its people count would bring the faces back.
     framing = str(plan.get("_director_camera_framing") or "")
-    if shot_reach(framing) == "detail":
+    if str(plan.get("_director_scene_type") or "").lower() == "insert" or shot_reach(framing) == "detail":
         return "", f"{prompt.rstrip()} {insert_line(framing, names)}"
     blocking_map = plan.get("_director_blocking_map") if plan.get("_director_continuity_group") else None
     if not isinstance(blocking_map, dict):

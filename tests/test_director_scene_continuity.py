@@ -419,6 +419,12 @@ class StagingTests(unittest.TestCase):
         self.assertIn("no face", prompt)
         self.assertNotIn("Exactly", prompt)
 
+    def test_a_shot_planned_as_an_insert_is_framed_on_hands_whatever_its_framing_text(self):
+        plan = {"_director_scene_type": "insert", "_director_camera_framing": "close-up",
+                "_director_subjects_on_screen": [{"name": "Mina"}]}
+        _, prompt = pipeline.director_shot_layout("p", 0, plan, "Hands hold a tool roll.", "m", "/tmp")
+        self.assertIn("Only the hands of Mina", prompt)
+
     def test_people_facing_each_other_get_their_profile_angle(self):
         from services.director.blocking_map import parse_blocking_map, subject_view
 
