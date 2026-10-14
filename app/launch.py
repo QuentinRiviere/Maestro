@@ -200,9 +200,16 @@ _tailscale = TailscaleManager(_maestro_settings_dir, _maestro_server_port)
 # started with --worker *is* that worker and never controls another one.
 _is_remote_worker_process = "--worker" in _launch_args
 _remote_worker = RemoteWorkerManager(RemoteWorkerSettingsStore(_maestro_settings_dir))
-_remote_job_forwarder = RemoteJobForwarder(_remote_worker)
 if not _is_remote_worker_process:
     _remote_worker.start_watchdog()
+from services.remote_worker.pool import RemoteWorkerPool, Slots  # noqa: E402
+
+# Extra pods (worker_count > 1) start on demand and share the queue below.
+_remote_pool = RemoteWorkerPool(_remote_worker)
+_remote_job_forwarder = RemoteJobForwarder(_remote_worker, pool=_remote_pool)
+# Remote jobs run up to worker_count x jobs_per_worker at once, apart from
+# the local GPU lock: the controller only moves files and follows progress.
+_remote_gen_slots = Slots(_remote_pool.capacity)
 
 # Deployment defaults for the prompt LLM (e.g. a Docker controller that has no
 # GPU for llama-server). They only fill unset services settings, so a choice
@@ -808,6 +815,10 @@ def _init_pipeline():
             terminal_callback=_on_director_pipeline_terminal,
             queue_terminal_callback=_on_director_queue_terminal,
         )
+        slots = globals().get("_bible_render_slots")
+        if slots is not None:  # absent when a test loads this function alone
+            import services.director_pipeline as _director_pipeline_module
+            _director_pipeline_module.bible_render_slots = slots
         _pipeline_initialized = True
 
 
@@ -7500,7 +7511,12 @@ def test_remote_worker_connection():
 
 @api.get("/api/v1/remote-worker/status")
 def get_remote_worker_status():
-    return _remote_worker_call(_remote_worker.status)
+    def _status():
+        status = _remote_worker.status()
+        if len(_remote_pool.all_pods()) > 1:
+            status["pool"] = _remote_pool.status()
+        return status
+    return _remote_worker_call(_status)
 
 
 @api.post("/api/v1/remote-worker/start")
@@ -7515,7 +7531,10 @@ async def start_remote_worker(request: Request):
 
 @api.post("/api/v1/remote-worker/stop")
 def stop_remote_worker():
-    return _remote_worker_call(_remote_worker.stop)
+    def _stop():
+        _remote_pool.stop()
+        return _remote_worker.status()
+    return _remote_worker_call(_stop)
 
 
 @api.get("/api/v1/remote-worker/logs")
@@ -26431,6 +26450,26 @@ def _is_cloud_model(model_type) -> bool:
     return bool((wgp.get_model_def(model_type) or {}).get("cloud"))
 
 
+def _bible_render_slots() -> int:
+    """Bible renders of a local model in flight: the worker pool's capacity, else one GPU."""
+    return _remote_pool.capacity() if _remote_generation_enabled() else 1
+
+
+def _uses_remote_lane(job: dict) -> bool:
+    """A job the remote worker pool runs whole, so it skips the local GPU lock.
+
+    Same exclusions as the cloud lane: prompt enhancement and Viggle frames
+    run local models first.
+    """
+    params = job.get("params") or {}
+    return (
+        _remote_generation_enabled()
+        and not _is_cloud_model(params.get("model_type"))
+        and not isinstance(job.get("enhancement"), dict)
+        and not params.get("viggle_character")
+    )
+
+
 def _uses_cloud_lane(job: dict) -> bool:
     """A hosted job that needs no local model, so it skips the GPU queue.
 
@@ -26857,7 +26896,9 @@ def _run_generation(job_id: str, *, finalize: bool = True, _slot_owned: bool = F
     # Internal image preparation runs inside its parent's existing slot.
     # Keeping one job identity preserves cancellation and avoids a second queue.
     cloud_lane = _uses_cloud_lane(job)
-    lock = _cloud_gen_lock if cloud_lane else _gen_lock
+    lock = (_cloud_gen_lock if cloud_lane
+            else _remote_gen_slots if _uses_remote_lane(job)
+            else _gen_lock)
     with ExitStack() as media_resources, (nullcontext(True) if _slot_owned else generation_slot(lock, job)) as acquired:
         if not acquired:
             return False

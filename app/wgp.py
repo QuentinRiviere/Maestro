@@ -4300,6 +4300,11 @@ def get_default_profile(output_type):
         return default_profile_audio
     return default_profile_video
 
+def _keep_models_in_vram():
+    """Remote worker setting: leave models in VRAM between generations of the same model."""
+    return os.environ.get("MAESTRO_KEEP_MODELS_IN_VRAM") == "1"
+
+
 def compute_profile(override_profile, output_type="video"):
     return override_profile if override_profile != -1 else get_default_profile(output_type)
 
@@ -4611,6 +4616,10 @@ def load_models(model_type, override_profile = -1, output_type="video", preview_
     if preview_decoder is not None:
         pipe["tiny_vae"] = preview_decoder
         kwargs["coTenantsMap"]["tiny_vae"] = "*"
+    if _keep_models_in_vram():
+        # A card that holds the whole pipeline keeps every part resident.
+        for name in pipe:
+            kwargs["coTenantsMap"][name] = "*"
     mmgp_profile = init_pipe(pipe, kwargs, profile)
     if server_config.get("enhancer_mode", 1) == 0:
         setup_prompt_enhancer(pipe, kwargs)
@@ -9980,7 +9989,8 @@ def generate_video(
                     samples = samples.to("cpu")
   
             clear_gen_cache()
-            offloadobj.unload_all()
+            if not _keep_models_in_vram():
+                offloadobj.unload_all()
             gc.collect()
             torch.cuda.empty_cache()
 

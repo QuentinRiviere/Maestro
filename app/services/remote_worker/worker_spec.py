@@ -93,7 +93,7 @@ def _boot_event(phase: str, state: str) -> str:
 
 
 def build_run_spec(settings: RemoteWorkerSettings, output_scope: str = "",
-                   preload_models: list[str] | None = None) -> dict[str, Any]:
+                   preload_models: list[str] | None = None, run_name: str = "") -> dict[str, Any]:
     """Service spec: clone Maestro at ``repo_ref`` and run the boot script.
 
     The image (docker/remote-worker) carries the Python environment, so a boot
@@ -111,6 +111,8 @@ def build_run_spec(settings: RemoteWorkerSettings, output_scope: str = "",
     env: dict[str, str] = {"SERVER_PORT": str(WORKER_PORT)}
     if not settings.pinned_memory:
         env["MAESTRO_PINNED_MEMORY"] = "0"
+    if settings.keep_models_in_vram:
+        env["MAESTRO_KEEP_MODELS_IN_VRAM"] = "1"
     if settings.r2_configured:
         env.update(pod_r2_env(settings, output_scope))
         if preload_models:
@@ -118,7 +120,7 @@ def build_run_spec(settings: RemoteWorkerSettings, output_scope: str = "",
             env["MAESTRO_PRELOAD_MODELS"] = ",".join(preload_models)
     configuration: dict[str, Any] = {
         "type": "service",
-        "name": settings.run_name,
+        "name": run_name or settings.run_name,
         "image": settings.image,
         "commands": [clone, f"bash {SOURCE_DIR}/app/scripts/remote_worker_boot.sh"],
         "port": WORKER_PORT,
@@ -150,7 +152,7 @@ def build_run_spec(settings: RemoteWorkerSettings, output_scope: str = "",
         }
     if settings.fleet:
         configuration["fleets"] = [settings.fleet]
-    return {"run_name": settings.run_name, "configuration": configuration}
+    return {"run_name": run_name or settings.run_name, "configuration": configuration}
 
 
 # Seconds an instance stays in the fleet after the worker run ends. Maestro
@@ -163,7 +165,7 @@ def build_fleet_spec(settings: RemoteWorkerSettings) -> dict[str, Any]:
     configuration: dict[str, Any] = {
         "type": "fleet",
         "name": settings.fleet,
-        "nodes": {"min": 0, "max": 1},
+        "nodes": {"min": 0, "max": settings.pool_size},
         "resources": worker_resources(settings),
         "backends": list(settings.backends),
         "spot_policy": settings.spot_policy,

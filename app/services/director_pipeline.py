@@ -20,10 +20,11 @@ import math
 import shutil
 import subprocess
 import sys
+import functools
 import threading
 import traceback
 from functools import wraps
-from typing import Optional
+from typing import Callable, Optional
 
 from services.job_lifecycle import (
     GENERATED_MEDIA_EXTENSIONS,
@@ -6502,6 +6503,36 @@ def render_bible_image(bible_id: str, element_id: str, variant_id: str, *, image
     return bible
 
 
+# Hosted image APIs take several requests at once; fal and Replicate queue
+# beyond their own limits, so a few in flight is safe.
+CLOUD_BIBLE_PARALLEL = 4
+# How many local-model renders may run at once (launch.py points it at the
+# remote worker pool's capacity; a single local GPU runs one).
+bible_render_slots: Callable[[], int] = lambda: 1
+
+
+def _bible_parallelism(image_model: str) -> int:
+    if str(image_model or "").startswith("cloud_"):
+        return CLOUD_BIBLE_PARALLEL
+    try:
+        return max(1, int(bible_render_slots()))
+    except Exception:
+        return 1
+
+
+def _run_bible_renders(renders: list[Callable[[], None]], parallel: int) -> None:
+    """Run bible renders ``parallel`` at a time; each records its own outcome."""
+    if parallel <= 1 or len(renders) <= 1:
+        for render in renders:
+            render()
+        return
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=min(parallel, len(renders)), thread_name_prefix="bible-render") as pool:
+        for future in [pool.submit(render) for render in renders]:
+            future.result()
+
+
 def render_bible_views(bible_id: str, element_id: str, variant_id: str, *, image_model: str = "",
                        image_params: Optional[dict] = None) -> dict:
     """Render every angle of a character's look (face, three-quarter, profile, back), in the background.
@@ -6529,9 +6560,12 @@ def render_bible_views(bible_id: str, element_id: str, variant_id: str, *, image
         jobs.append((view, slot))
 
     def run() -> None:
-        for view, slot in jobs:
-            _render_bible_slot(bible_id, element_id, variant_id, slot, image_model=image_model,
-                               image_params=image_params or {}, view=view)
+        # The angles only read the approved look image: they render side by side.
+        _run_bible_renders([
+            functools.partial(_render_bible_slot, bible_id, element_id, variant_id, slot,
+                              image_model=image_model, image_params=image_params or {}, view=view)
+            for view, slot in jobs
+        ], _bible_parallelism(image_model))
 
     threading.Thread(target=run, name=f"bible-views-{element_id}", daemon=True).start()
     return bible
@@ -6572,17 +6606,25 @@ def generate_bible_assets(bible_id: str, *, image_model: str = "", image_params:
         jobs.append((element["id"], variant["id"], slot))
 
     def run() -> None:
-        # Default looks first; then the other looks, each edited from the
-        # default rendered in this batch (else from the approved one).
-        defaults: dict[str, str] = {}
-        for element_id, variant_id, slot in sorted(jobs, key=lambda job: job[1] != bibles.DEFAULT_VARIANT):
-            base = None
-            if variant_id != bibles.DEFAULT_VARIANT and element_id in defaults:
-                base = bibles.slot_file(bible_id, element_id, defaults[element_id])
-            _render_bible_slot(bible_id, element_id, variant_id, slot, image_model=image_model,
-                               image_params=image_params or {}, base_image=base)
+        # Default looks first, side by side; then the other looks, each edited
+        # from the default rendered in this batch (else from the approved one).
+        parallel = _bible_parallelism(image_model)
+        defaults = {element_id: slot for element_id, variant_id, slot in jobs
+                    if variant_id == bibles.DEFAULT_VARIANT}
+        _run_bible_renders([
+            functools.partial(_render_bible_slot, bible_id, element_id, variant_id, slot,
+                              image_model=image_model, image_params=image_params or {})
+            for element_id, variant_id, slot in jobs if variant_id == bibles.DEFAULT_VARIANT
+        ], parallel)
+        looks = []
+        for element_id, variant_id, slot in jobs:
             if variant_id == bibles.DEFAULT_VARIANT:
-                defaults[element_id] = slot
+                continue
+            base = bibles.slot_file(bible_id, element_id, defaults[element_id]) if element_id in defaults else None
+            looks.append(functools.partial(_render_bible_slot, bible_id, element_id, variant_id, slot,
+                                           image_model=image_model, image_params=image_params or {},
+                                           base_image=base))
+        _run_bible_renders(looks, parallel)
 
     threading.Thread(target=run, name=f"bible-generate-{bible_id}", daemon=True).start()
     return bible

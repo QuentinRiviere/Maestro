@@ -166,8 +166,11 @@ class RemoteJobForwarder:
         store_factory: Callable[[Any], R2Store | None] = R2Store.from_settings,
         poll_interval: float = 2.0,
         sleep: Callable[[float], None] = time.sleep,
+        pool: Any = None,
     ) -> None:
         self._manager = manager
+        # With a pool, each job runs on the least busy of its pods.
+        self._pool = pool
         self._client_factory = client_factory
         self._store_factory = store_factory
         self._poll_interval = poll_interval
@@ -193,11 +196,15 @@ class RemoteJobForwarder:
         each new one (bytes, content type, the worker's preview descriptor).
         """
         model_type = str(params.get("model_type") or "")
-        self._manager.job_started()
+        if self._pool is not None:
+            manager = self._pool.acquire()
+        else:
+            manager = self._manager
+            manager.job_started()
         try:
             update(phase="Remote worker", message="Waiting for the remote GPU worker…")
             waiting_since = time.monotonic()
-            status = self._manager.ensure_ready(
+            status = manager.ensure_ready(
                 model_type,
                 should_abort=is_cancelled,
                 on_update=lambda s: update(
@@ -207,8 +214,8 @@ class RemoteJobForwarder:
             )
             if is_cancelled():
                 raise RemoteJobCancelled()
-            client = self._client_factory(str(status["service_url"]), self._manager.settings.token)
-            store = self._store_factory(self._manager.settings)
+            client = self._client_factory(str(status["service_url"]), manager.settings.token)
+            store = self._store_factory(manager.settings)
 
             self._preload(client, model_type, update=update, is_cancelled=is_cancelled)
             remote_params = self._transfer_inputs(
@@ -227,7 +234,7 @@ class RemoteJobForwarder:
                 client, store, remote_id, remote, job_id=job_id or remote_id, out_dir=out_dir, update=update,
             )
         finally:
-            self._manager.job_finished()
+            manager.job_finished()
 
     # ── steps ──────────────────────────────────────────────────────────────
 

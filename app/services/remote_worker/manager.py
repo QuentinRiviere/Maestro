@@ -69,7 +69,13 @@ class RemoteWorkerManager:
         proxy_check: Callable[[str, str], bool] | None = None,
         environ: Mapping[str, str] | None = None,
         pending_work: Callable[[], bool] | None = None,
+        parent: "RemoteWorkerManager | None" = None,
+        index: int = 0,
     ) -> None:
+        # A pool's extra pods (index 1, 2...) share the first pod's settings,
+        # queue hooks and R2 key store; each runs under its own run name.
+        self._parent = parent
+        self._index = index
         self._store = store
         self._env = env_overrides(environ)
         self._stored = store.load()
@@ -86,6 +92,10 @@ class RemoteWorkerManager:
         self.review_pause: Callable[[], float | None] = lambda: None
         # Models the queued work will need, preloaded from R2 at boot.
         self.upcoming_models: Callable[[], list[str]] = lambda: []
+        if parent is not None:
+            self.pending_work = lambda: parent.pending_work()
+            self.review_pause = lambda: parent.review_pause()
+            self.upcoming_models = lambda: parent.upcoming_models()
         self._lock = threading.RLock()
         self._active_jobs = 0
         self._ready_since: float | None = None
@@ -99,7 +109,7 @@ class RemoteWorkerManager:
         self._proxy_ok_run: str | None = None
         self._watchdog: threading.Thread | None = None
         self._watchdog_stop = threading.Event()
-        self.r2_keys = EphemeralR2Keys(store.path.parent / "remote_worker_r2_keys.json")
+        self.r2_keys = parent.r2_keys if parent else EphemeralR2Keys(store.path.parent / "remote_worker_r2_keys.json")
         self._network_filter: dict[str, Any] = {}
         self._preload_models: list[str] = []
         self._boot_submission: str | None = None
@@ -125,13 +135,29 @@ class RemoteWorkerManager:
 
     @property
     def settings(self) -> RemoteWorkerSettings:
+        if self._parent is not None:
+            return self._parent.settings
         with self._lock:
             return self._settings
+
+    @property
+    def run_name(self) -> str:
+        return self.settings.pod_run_name(self._index)
+
+    @property
+    def active_jobs(self) -> int:
+        return self._active_jobs
+
+    @property
+    def ready(self) -> bool:
+        return self._ready_since is not None
 
     def public_settings(self) -> dict[str, Any]:
         return self.settings.public(self.env_locked)
 
     def update_settings(self, data: Mapping[str, Any]) -> dict[str, Any]:
+        if self._parent is not None:
+            return self._parent.update_settings(data)
         with self._lock:
             updated = RemoteWorkerSettings.from_mapping(vars(self._stored))
             payload = dict(data)
@@ -172,7 +198,7 @@ class RemoteWorkerManager:
         settings = self.settings
         base: dict[str, Any] = {
             "state": "not_configured",
-            "run_name": settings.run_name,
+            "run_name": self.run_name,
             "idle_ttl_minutes": settings.idle_ttl_minutes,
             "route_generations": settings.route_generations,
             "model_type": self._requested_model or settings.default_model_type or None,
@@ -186,7 +212,7 @@ class RemoteWorkerManager:
         if not settings.configured:
             return base
         try:
-            run = self.client().get_run(settings.run_name)
+            run = self.client().get_run(self.run_name)
         except (DstackError, RemoteWorkerError) as exc:
             return {**base, "state": "unknown", "message": str(exc)}
         return {**base, **self._describe(run)}
@@ -291,7 +317,7 @@ class RemoteWorkerManager:
             cursor = self._boot_cursor
         if poll:
             try:
-                lines = self.client().poll_logs(self.settings.run_name, submission_id,
+                lines = self.client().poll_logs(self.run_name, submission_id,
                                                 start_time=cursor, limit=1000)
             except (DstackError, RemoteWorkerError):
                 lines = []
@@ -362,11 +388,12 @@ class RemoteWorkerManager:
         with self._lock:
             if model_type:
                 self._requested_model = model_type
-            run = client.get_run(settings.run_name)
+            run_name = self.run_name
+            run = client.get_run(run_name)
             if run and str(run.get("status") or "") not in _FINISHED_RUN and not run.get("deleted"):
                 return self.status()
-            output_scope = f"{settings.run_name}-{uuid.uuid4().hex[:12]}"
-            keys = self.pod_r2_keys(settings, settings.run_name, output_scope=output_scope)
+            output_scope = f"{run_name}-{uuid.uuid4().hex[:12]}"
+            keys = self.pod_r2_keys(settings, run_name, output_scope=output_scope)
             for name, value in dstack_secrets(settings, keys).items():
                 client.set_secret(name, value)
             if settings.manage_fleet and settings.fleet:
@@ -374,16 +401,17 @@ class RemoteWorkerManager:
             self._stop_reason = None
             self._last_activity = self._clock()
             self._preload_models = self._models_to_preload(model_type)
-            run_spec = build_run_spec(settings, output_scope, preload_models=self._preload_models)
+            run_spec = build_run_spec(settings, output_scope, preload_models=self._preload_models,
+                                      run_name=run_name)
             try:
                 self._network_filter = pin_fast_offers(
                     run_spec, lambda spec: client.get_plan(spec, max_offers=PLAN_OFFERS), settings,
                 )
             except VastFilterError as exc:
-                self._revoke_pod_keys(settings.run_name)
+                self._revoke_pod_keys(run_name)
                 raise RemoteWorkerError(str(exc)) from exc
             client.apply(run_spec)
-            log.info("remote worker %s submitted (model %s)", settings.run_name, model_type or "-")
+            log.info("remote worker %s submitted (model %s)", run_name, model_type or "-")
         return self.status()
 
     def _models_to_preload(self, model_type: str | None) -> list[str]:
@@ -400,13 +428,13 @@ class RemoteWorkerManager:
         settings = self.settings
         client = self.client()
         with self._lock:
-            run = client.get_run(settings.run_name)
+            run = client.get_run(self.run_name)
             if run and str(run.get("status") or "") not in _FINISHED_RUN:
-                client.stop_run(settings.run_name, abort=False)
-                log.info("remote worker %s stop requested: %s", settings.run_name, reason)
+                client.stop_run(self.run_name, abort=False)
+                log.info("remote worker %s stop requested: %s", self.run_name, reason)
             self._stop_reason = reason
             self._mark_not_ready()
-        self._revoke_pod_keys(settings.run_name)
+        self._revoke_pod_keys(self.run_name)
         return self.status()
 
     # ── per-pod R2 keys ────────────────────────────────────────────────────
@@ -452,13 +480,12 @@ class RemoteWorkerManager:
         return self.r2_keys.reconcile(self.settings, self.run_active)
 
     def logs(self, since: str | None = None) -> list[dict[str, str]]:
-        settings = self.settings
         client = self.client()
-        run = client.get_run(settings.run_name)
+        run = client.get_run(self.run_name)
         submission = (run or {}).get("latest_job_submission") or {}
         if not submission.get("id"):
             return []
-        return client.poll_logs(settings.run_name, str(submission["id"]), start_time=since)
+        return client.poll_logs(self.run_name, str(submission["id"]), start_time=since)
 
     # ── use by generation jobs ─────────────────────────────────────────────
 

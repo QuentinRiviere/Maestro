@@ -81,10 +81,31 @@ class RemoteWorkerSettings:
     # default). Off, a card that holds the whole model skips minutes of
     # copying; models then move to VRAM from ordinary RAM.
     pinned_memory: bool = True
+    # Leave the model in VRAM between generations instead of moving it back
+    # to RAM after each one; for cards that hold the whole pipeline.
+    keep_models_in_vram: bool = False
+    # Parallel pods (maestro-worker, maestro-worker-2, ...) and jobs sent to
+    # each ahead of time, so transfers overlap the previous job's GPU work.
+    worker_count: int = 1
+    jobs_per_worker: int = 1
 
     @property
     def configured(self) -> bool:
         return bool(self.server_url and self.project and self.token)
+
+    @property
+    def pool_size(self) -> int:
+        """Pods the pool may run at once (1 to 4)."""
+        return max(1, min(4, int(self.worker_count or 1)))
+
+    @property
+    def queue_depth(self) -> int:
+        """Jobs one pod holds at once (1 to 3)."""
+        return max(1, min(3, int(self.jobs_per_worker or 1)))
+
+    def pod_run_name(self, index: int) -> str:
+        """Run name of pod ``index`` (0 keeps the plain name)."""
+        return self.run_name if index == 0 else f"{self.run_name}-{index + 1}"
 
     @property
     def r2_configured(self) -> bool:
