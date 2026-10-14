@@ -5390,7 +5390,7 @@ def shot_is_tight(plan: dict) -> bool:
 
 
 def scene_shot_refs(image_model: str, plan: dict, prompt: str, *, master: str, identity: list[str],
-                    layout: bool = False) -> tuple[list[str], str]:
+                    layout: bool = False, empty_set: bool = False) -> tuple[list[str], str]:
     """References and prompt of a scene shot that is not the scene's master.
 
     The people (character sheets, named props) come first, for identity; the
@@ -5398,11 +5398,16 @@ def scene_shot_refs(image_model: str, plan: dict, prompt: str, *, master: str, i
     that says so, and is dropped for close-ups and inserts, whose set the text
     describes. ``layout`` keeps the last slot free for the blocking diagram.
     The editor must take these refs without a canvas (see ``director_shot_prompt_type``).
+
+    ``empty_set``: ``master`` is the place's own image with nobody in it (the
+    bible location). It has no people's framing to copy, so every shot keeps
+    it, close-ups and inserts included, and the scene keeps one room and one
+    light from shot to shot.
     """
     budget = director_image_ref_budget(image_model)
     slots = None if budget is None else max(1, budget - (1 if layout else 0))
     people = list(dict.fromkeys(r for r in identity if r and r != master))
-    keep_master = bool(master) and not shot_is_tight(plan)
+    keep_master = bool(master) and (empty_set or not shot_is_tight(plan))
     if slots is not None:
         people = people[: max(1, slots - (1 if keep_master else 0))]
         keep_master = keep_master and len(people) < slots
@@ -5413,7 +5418,10 @@ def scene_shot_refs(image_model: str, plan: dict, prompt: str, *, master: str, i
         names = ", ".join(_ref_name(image_model, n) for n in range(1, len(people) + 1))
         lead += (f"{names} {'show' if len(people) > 1 else 'shows'} who and what is in this shot: keep faces, "
                  "clothes and hairstyles, not their pose or framing. ")
-    if keep_master:
+    if keep_master and empty_set:
+        lead += (f"{_ref_name(image_model, len(refs))} shows this place empty: keep its walls, furniture, colours "
+                 "and light; the camera may stand anywhere in it. ")
+    elif keep_master:
         lead += (f"{_ref_name(image_model, len(refs))} only shows the set's surfaces and light; do not copy its "
                  "framing or camera position. ")
     else:
@@ -5446,8 +5454,11 @@ def director_shot_image_request(image_model: str, plan: dict, prompt: str, *, sc
     """
     subject_refs = list(subject_refs or [])
     if scene_master:
-        refs, scene_prompt = scene_shot_refs(image_model, plan, prompt, master=scene_master,
-                                             identity=subject_refs or [anchor], layout=layout)
+        # The place's own empty image keeps the room and the light without a
+        # composition to copy; the scene's first shot stands in without one.
+        refs, scene_prompt = scene_shot_refs(image_model, plan, prompt, master=scene_location or scene_master,
+                                             identity=subject_refs or [anchor], layout=layout,
+                                             empty_set=bool(scene_location))
         blocking = str(plan.get("_director_opening_blocking") or "").strip()
         if blocking and blocking.lower() not in prompt.lower():
             scene_prompt += f" Positions at the start of this shot: {blocking}"

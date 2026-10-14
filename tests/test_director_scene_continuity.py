@@ -88,21 +88,21 @@ class SceneContinuityImageTests(unittest.TestCase):
         self.assertEqual(requests[0]["refs"], ["anchor.jpg", "hall.jpg", "girl.jpg"])
         self.assertEqual(requests[0]["type"], "KI")
         self.assertNotIn(pipeline.SCENE_SHOT_PREFIX, requests[0]["prompt"])
-        # A close-up: the character sheet only, the set in words, no canvas.
+        # A close-up: the character, then the place's own empty image (never
+        # the master and its framing), so the room and the light stay; no canvas.
         close = requests[1]
-        self.assertEqual(close["refs"], ["girl.jpg"])
+        self.assertEqual(close["refs"], ["girl.jpg", "hall.jpg"])
         self.assertEqual(close["type"], "I")
         self.assertTrue(close["prompt"].startswith(pipeline.SCENE_SHOT_PREFIX))
         self.assertIn("reference image 1 shows who and what is in this shot", close["prompt"])
-        self.assertIn("Setting: Hallway.", close["prompt"])
+        self.assertIn("reference image 2 shows this place empty", close["prompt"])
         self.assertIn("screen left by the lockers", close["prompt"])
         self.assertNotIn("set's surfaces", close["prompt"])
-        # A medium shot: the people first, the master after them for the set only.
+        # A medium shot: the same, the people first and the empty place after them.
         medium = requests[2]
-        self.assertEqual(medium["refs"], ["girl.jpg", "shot1.jpg"])
+        self.assertEqual(medium["refs"], ["girl.jpg", "hall.jpg"])
         self.assertEqual(medium["type"], "I")
-        self.assertIn("reference image 2 only shows the set's surfaces and light; do not copy its framing "
-                      "or camera position", medium["prompt"])
+        self.assertIn("reference image 2 shows this place empty", medium["prompt"])
         # A new scene starts from its own set, not from the first scene's anchor.
         self.assertEqual(requests[3]["refs"], ["roof.jpg", "girl.jpg"])
         self.assertEqual(requests[3]["type"], "KI")
@@ -112,7 +112,8 @@ class SceneContinuityImageTests(unittest.TestCase):
         params, plans = self._hallway_scene()
         plans[2] = {**plans[2], "_director_scene_type": "insert"}
         _, requests = self._run(params, plans[:3], ["shot1.jpg", "shot2.jpg", "shot3.jpg"])
-        self.assertEqual(requests[2]["refs"], ["girl.jpg"])
+        self.assertNotIn("shot1.jpg", requests[2]["refs"])
+        self.assertIn("hall.jpg", requests[2]["refs"])
 
     def test_a_rerun_rebuilds_the_references_of_the_run(self):
         params, plans = self._hallway_scene("qwen_image_edit_2511_20B_fp8_lightning_8step")
@@ -139,7 +140,7 @@ class SceneContinuityImageTests(unittest.TestCase):
 
         # Same set, people, layout, roles and canvas mode as the run, shot by shot.
         self.assertEqual(reruns, run)
-        self.assertEqual(reruns[2]["refs"], ["girl.jpg", "shot1.jpg"])
+        self.assertEqual(reruns[2]["refs"], ["girl.jpg", "hall.jpg"])
         self.assertIn("Framing: medium shot.", reruns[2]["prompt"])
         self.assertEqual(reruns[0]["refs"], ["anchor.jpg", "hall.jpg", "girl.jpg"])
 
