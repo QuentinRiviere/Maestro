@@ -523,7 +523,10 @@ def _director_episode_review_model() -> str:
 
 
 def _director_takes_per_shot() -> int:
-    """Takes rendered per shot (1 = no extra take), used with auto review."""
+    """Baseline takes per shot (1 = no extra take), used with auto review.
+
+    Shot type adjusts it per shot when takes run (see ``shot_takes``).
+    """
     try:
         value = int(wgp.server_config.get("services", {}).get("director_takes_per_shot", 2))
     except (TypeError, ValueError):
@@ -584,7 +587,7 @@ def _judge_publisher(label: str):
 def _run_director_review(pid: str, base: str, wait_for_save: bool, takes: int = 1) -> None:
     from services import cloud_image
     from services.director.video_judge import (
-        compare_takes, episode_context, review_clips, review_episode, save_review, select_takes,
+        compare_takes, episode_context, review_clips, review_episode, save_review, select_takes, shot_takes,
     )
     from services.director_pipeline import (
         _update_saved_pipeline, load_pipeline_state, rejoin_clips, rerun_clip_video,
@@ -612,7 +615,10 @@ def _run_director_review(pid: str, base: str, wait_for_save: bool, takes: int = 
         if takes > 1 and not state.get("seamless", True) and state.get("clips"):
             # Joined (seamless) renders cannot swap one shot without breaking
             # their continuity; only per-shot projects get extra takes.
-            print(f"[Director review] {pid}: rendering {takes - 1} extra take(s) per shot")
+            # ``takes`` is the baseline: shot type moves it per shot (1 for
+            # inserts and chained shots, more for lip-sync and close-ups).
+            per_shot = shot_takes(state["clips"], takes)
+            print(f"[Director review] {pid}: takes per shot {per_shot}")
             save_review(state_dir, pid, {"status": "running", "phase": "takes", "model": model,
                                          "style_contract": contract, "shots": []})
 
@@ -622,7 +628,7 @@ def _run_director_review(pid: str, base: str, wait_for_save: bool, takes: int = 
                 _update_saved_pipeline(base, pid, keep)
 
             take_results = select_takes(
-                state["clips"], state_dir, extra_takes=takes - 1,
+                state["clips"], state_dir, extra_takes=[count - 1 for count in per_shot],
                 rerun=lambda index: rerun_clip_video(base, pid, index)["filename"],
                 restore=restore, publish=publish,
                 compare=lambda url_a, url_b, brief: compare_takes(

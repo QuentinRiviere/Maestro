@@ -1325,6 +1325,8 @@ def _save_pipeline_state_locked(pid: str) -> bool:
             # Scene bookkeeping the storyboard uses to keep a scene's set.
             "_director_continuity_group": plan.get("_director_continuity_group"),
             "_director_continuity_strategy": plan.get("_director_continuity_strategy"),
+            "_director_scene_type": plan.get("_director_scene_type"),
+            "_director_camera_framing": plan.get("_director_camera_framing"),
             "_director_location": plan.get("_director_location"),
             "_director_keep_sec": plan.get("_director_keep_sec"),
             "_director_audio_plan": plan.get("_director_audio_plan"),
@@ -5401,6 +5403,8 @@ def _resume_pipeline_reserved(pid: str, out_dir: str) -> tuple[bool, str]:
         "_director_closing_blocking": c.get("_director_closing_blocking"),
         "_director_continuity_group": c.get("_director_continuity_group"),
         "_director_continuity_strategy": c.get("_director_continuity_strategy"),
+        "_director_scene_type": c.get("_director_scene_type"),
+        "_director_camera_framing": c.get("_director_camera_framing"),
         "_director_location": c.get("_director_location"),
         "_director_keep_sec": c.get("_director_keep_sec"),
         "_director_audio_plan": c.get("_director_audio_plan"),
@@ -7288,6 +7292,11 @@ def _run_planning_v2(pid: str, params: dict, pipeline_type: str):
                 shot, "continuity_strategy", "independent"
             ),
             "_director_continuity_group": continuity_group,
+            # Shot type and framing set how many takes the review renders.
+            "_director_scene_type": str(getattr(shot, "scene_type", "") or ""),
+            "_director_camera_framing": str(
+                getattr(getattr(shot, "camera_plan", None), "framing", "") or ""
+            ),
             "_director_location": str(metadata.get("location") or ""),
             "_director_opening_blocking": getattr(
                 shot, "spatial_setup", ""

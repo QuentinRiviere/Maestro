@@ -190,6 +190,55 @@ class SelectTakesTests(unittest.TestCase):
             restore=lambda i, n: None, publish=lambda p: p, compare=lambda *a: {})
         self.assertEqual((results[0]["kept"], results[0]["error"]), ("a1.mp4", "worker down"))
 
+    def test_per_shot_counts_are_honored(self):
+        clips = [clip(0, 4, video_filename="a1.mp4"), clip(4, 8, video_filename="b1.mp4"),
+                 clip(8, 9, video_filename="c1.mp4")]
+        rendered = []
+
+        def rerun(index):
+            rendered.append(index)
+            return f"s{index}_{len(rendered)}.mp4"
+        results = video_judge.select_takes(
+            clips, self.dir, extra_takes=[2, 0, 1], rerun=rerun, restore=lambda i, n: None,
+            publish=lambda p: p, compare=lambda *a: {"winner": "A", "confidence": 0.9})
+        self.assertEqual(rendered, [0, 0, 2])
+        self.assertEqual([len(r["takes"]) for r in results], [3, 1, 2])
+        self.assertEqual([r["kept"] for r in results], ["a1.mp4", "b1.mp4", "c1.mp4"])
+
+
+class ShotTakesTests(unittest.TestCase):
+    def shot(self, scene_type="", framing="", dialogue=None, strategy="independent"):
+        return {"_director_scene_type": scene_type, "_director_camera_framing": framing,
+                "_director_dialogue_beats": dialogue or [], "_director_continuity_strategy": strategy}
+
+    def test_shot_type_moves_the_baseline(self):
+        line = [{"spoken_text": "We leave tonight.", "speaker_id": "mara"}]
+        clips = [
+            self.shot("establishing", "wide shot"),
+            self.shot("exchange", "medium shot", dialogue=line),
+            self.shot("reaction", "close-up"),
+            self.shot("insert", "extreme close-up"),
+            self.shot("action", "close-up"),
+            self.shot("exchange", "medium shot", dialogue=[{"spoken_text": "  "}]),
+        ]
+        self.assertEqual(video_judge.shot_takes(clips, 2), [2, 3, 3, 1, 2, 2])
+        self.assertEqual(video_judge.shot_takes(clips, 3), [3, 3, 3, 1, 3, 3])
+
+    def test_shot_chained_into_the_next_keeps_one_take(self):
+        line = [{"spoken_text": "Now."}]
+        clips = [self.shot("exchange", "close-up", dialogue=line),
+                 self.shot("exchange", "close-up", dialogue=line, strategy="extend_previous"),
+                 self.shot("action", "wide shot")]
+        self.assertEqual(video_judge.shot_takes(clips, 2), [1, 3, 2])
+
+    def test_legacy_clips_without_plan_fields_use_the_default(self):
+        self.assertEqual(video_judge.shot_takes([clip(0, 4), clip(4, 8)], 2), [2, 2])
+
+    def test_cap_limits_performance_shots(self):
+        clips = [self.shot("reaction", "CU")]
+        self.assertEqual(video_judge.shot_takes(clips, 2, maximum=2), [2])
+        self.assertEqual(video_judge.shot_takes(clips, 2), [3])
+
 
 class StyleContractTests(unittest.TestCase):
     def test_contract_parsing_and_planner_block(self):

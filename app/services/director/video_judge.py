@@ -17,7 +17,7 @@ import re
 import subprocess
 import tempfile
 import time
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 import httpx
 
@@ -452,11 +452,46 @@ def review_clips(
     return review
 
 
+# Takes worth spending on a shot: performance shots (lip-sync dialogue,
+# emotional close-ups) fail often and are judged hardest, inserts rarely.
+PERFORMANCE_TAKES = 3
+MAX_TAKES_PER_SHOT = 4
+
+
+def _is_close_framing(framing: str) -> bool:
+    words = set(re.findall(r"[a-z]+", framing))
+    return "close" in framing or bool(words & {"cu", "ecu", "mcu", "closeup"})
+
+
+def shot_takes(clips: list[dict], default: int, *, maximum: int = MAX_TAKES_PER_SHOT) -> list[int]:
+    """Takes to render for each shot, from its saved plan, with ``default`` as baseline.
+
+    A shot the next one extends from its last frame keeps its single take (a
+    new take would break the handoff), inserts get one, lip-sync dialogue and
+    close-up reactions get at least ``PERFORMANCE_TAKES``, the rest ``default``.
+    """
+    default = max(1, int(default))
+    counts: list[int] = []
+    for index, clip in enumerate(clips):
+        following = clips[index + 1] if index + 1 < len(clips) else {}
+        scene_type = str(clip.get("_director_scene_type") or "").strip().lower()
+        framing = str(clip.get("_director_camera_framing") or "").strip().lower()
+        speaks = any(str(beat.get("spoken_text") or "").strip()
+                     for beat in clip.get("_director_dialogue_beats") or [] if isinstance(beat, Mapping))
+        if str(following.get("_director_continuity_strategy") or "") == "extend_previous" or scene_type == "insert":
+            counts.append(1)
+        elif speaks or (_is_close_framing(framing) and scene_type in ("reaction", "exchange", "")):
+            counts.append(min(max(default, PERFORMANCE_TAKES), maximum))
+        else:
+            counts.append(default)
+    return counts
+
+
 def select_takes(
     clips: list[dict],
     out_dir: str,
     *,
-    extra_takes: int,
+    extra_takes: int | Sequence[int],
     rerun: Callable[[int], str],
     restore: Callable[[int, str], None],
     publish: Callable[[str], str],
@@ -466,11 +501,13 @@ def select_takes(
 ) -> list[dict]:
     """Render extra takes per shot and keep the one the judge prefers.
 
+    ``extra_takes`` is one count for every shot or one count per shot.
     ``rerun`` renders a new take of a shot (the project then points at it) and
     returns its filename; ``restore`` points the project back at a kept take.
     The incumbent stays unless the challenger wins in both orders with enough
     confidence, so judge noise never swaps a good take for a coin flip.
     """
+    per_shot = [extra_takes] * len(clips) if isinstance(extra_takes, int) else list(extra_takes)
     results: list[dict] = []
     with tempfile.TemporaryDirectory(prefix="director-takes-") as tmp:
         def preview(name: str, label: str) -> str:
@@ -487,7 +524,7 @@ def select_takes(
                 continue
             best, latest = current, current
             brief = shot_brief(clip)
-            for take in range(extra_takes):
+            for take in range(max(0, int(per_shot[index] if index < len(per_shot) else 0))):
                 try:
                     latest = rerun(index)
                     record["takes"].append(latest)

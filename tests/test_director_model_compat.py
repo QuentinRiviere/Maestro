@@ -405,6 +405,9 @@ class TestDirectorModelAssessment(unittest.TestCase):
         self.assertEqual(
             plans[0]["_director_continuity_group"], "friends_kitchen"
         )
+        # Shot type survives for the review's per-shot take count.
+        self.assertEqual(plans[0]["_director_scene_type"], "dialogue")
+        self.assertEqual(plans[0]["_director_camera_framing"], "")
         self.assertEqual(
             clips[0]["_director_closing_blocking"],
             "Joey sits screen-left at the kitchen table",
