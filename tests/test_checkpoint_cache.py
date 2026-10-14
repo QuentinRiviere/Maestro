@@ -164,6 +164,7 @@ class CheckpointCacheTests(unittest.TestCase):
         before = first.snapshot()
         self._download(roots)
         _write(os.path.join(roots["ckpts"], "mask", ".cache", "huggingface", "download", "sam.metadata"), b"m")
+        _write(os.path.join(roots["ckpts"], "xet", "logs", "xet_20261013.log"), b"log")
         self.assertEqual(first.publish("m", before), 3)
         # An older manifest that listed one (with a size gone stale) still hydrates.
         manifest = os.path.join(self.tmp, "r2", "videogen", "maestro", "manifests", "m.json")
@@ -171,7 +172,8 @@ class CheckpointCacheTests(unittest.TestCase):
             payload = handle.read()
         with open(manifest, "w") as handle:
             handle.write(payload.replace('"files": [', '"files": [{"root": "ckpts", '
-                                         '"path": "d/.cache/huggingface/download/x.metadata", "size": 9},', 1))
+                                         '"path": "d/.cache/huggingface/download/x.metadata", "size": 9},'
+                                         '{"root": "ckpts", "path": "xet/logs/xet_1.log", "size": 9},', 1))
         second, _roots = self._pod("pod2")
         self.assertEqual(second.hydrate("m"), 3)
 

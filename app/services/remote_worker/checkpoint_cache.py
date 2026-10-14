@@ -37,13 +37,15 @@ log = logging.getLogger("maestro.remote_worker.cache")
 _SKIP_SUFFIXES = (".part", ".lock", ".incomplete", ".tmp")
 # huggingface_hub's local_dir bookkeeping: rewritten by every later download
 # into the same folder (so its cached size goes stale), and never needed since
-# Maestro only checks that the weights themselves are on disk.
-_SKIP_DIR = ".cache"
+# Maestro only checks that the weights themselves are on disk. ``xet`` holds
+# hf_xet's download logs, which keep growing after the snapshot (a pull of the
+# listed size then reads as incomplete).
+_SKIP_DIRS = {".cache", "xet"}
 
 
 def _cached_path(path: str) -> bool:
     """Whether a root-relative path belongs in the cache."""
-    return not path.endswith(_SKIP_SUFFIXES) and _SKIP_DIR not in path.split("/")
+    return not path.endswith(_SKIP_SUFFIXES) and not _SKIP_DIRS.intersection(path.split("/"))
 
 
 Runner = Callable[..., subprocess.CompletedProcess]
@@ -269,7 +271,7 @@ class R2CheckpointCache:
             if not os.path.isdir(root):
                 continue
             for directory, dirs, names in os.walk(root):
-                dirs[:] = [d for d in dirs if d != _SKIP_DIR]
+                dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
                 for name in names:
                     full = os.path.join(directory, name)
                     rel = os.path.relpath(full, root).replace(os.sep, "/")
