@@ -71,6 +71,14 @@ class RemoteWorkerSettings:
     # rented; 0 disables the check. The key defaults to the dstack config's.
     min_download_mbps: int = 800
     vast_api_key: str = ""
+    # A pod still pulling the worker image (dstack ``provisioning``) after
+    # this many seconds sits on a slow host: it is stopped and another one
+    # requested, at most ``slow_pull_max_retries`` times. 0 disables it.
+    # Two slow hosts in a row from one data center keep that data center out
+    # for ``slow_region_exclusion_seconds``.
+    slow_pull_seconds: int = 240
+    slow_pull_max_retries: int = 3
+    slow_region_exclusion_seconds: int = 1200
     # behaviour
     idle_ttl_minutes: int = 30
     # Stop as soon as nothing is queued or running instead of waiting the TTL.
