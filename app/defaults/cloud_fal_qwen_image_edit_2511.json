@@ -27,6 +27,10 @@
             "input": {
                 "output_format": "png",
                 "enable_safety_checker": false
+            },
+            "price": {
+                "per_megapixel": 0.02,
+                "edit_per_megapixel": 0.03
             }
         }
     },

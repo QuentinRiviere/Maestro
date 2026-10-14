@@ -10947,6 +10947,16 @@ def director_pipeline_status(pid: str):
     return p
 
 
+@api.get("/api/v1/director/pipeline/{pid}/costs")
+def director_pipeline_costs(pid: str):
+    """What the project spent (GPU pods, cloud calls) by stage, and $ per final minute."""
+    from services.director import cost_ledger
+    from services.director_pipeline import get_pipeline_status
+    p = get_pipeline_status(pid, wgp.server_config.get("save_path", "outputs")) or {}
+    final, rendered = cost_ledger.project_lengths(p.get("clips") or [])
+    return cost_ledger.summary(pid, final_seconds=final or None, rendered_seconds=rendered or None)
+
+
 @api.get("/api/v1/director/pipeline/{pid}/cast/{kind}/{index}/image")
 def director_cast_image(pid: str, kind: str, index: int):
     """Serve one cast reference image (character sheet or location plate)."""
@@ -26580,6 +26590,18 @@ def _cloud_lora_r2_url():
     return url_for
 
 
+def _record_director_cost(raw_params: dict, kind: str, **entry) -> None:
+    """Log a Director job's spend in its project's cost ledger (other jobs are not tracked)."""
+    pid = raw_params.get("_director_pipeline_id")
+    if not pid:
+        return
+    from services.director import cost_ledger
+    if kind == "gpu" and entry:
+        entry["queued_at"] = time.time() - (entry.get("wait_seconds") or 0) - (entry.get("work_seconds") or 0)
+    cost_ledger.record(str(pid), kind, stage=cost_ledger.stage_of(raw_params),
+                       model_type=raw_params.get("model_type"), **entry)
+
+
 def _run_cloud_generation(job: dict, raw_params: dict, *, finalize: bool) -> bool:
     """Generate images through a hosted provider API and save them here."""
     from datetime import datetime
@@ -26612,6 +26634,8 @@ def _run_cloud_generation(job: dict, raw_params: dict, *, finalize: bool) -> boo
         detail = str(error)
         finish_job(job, "failed", error=detail, message=f"Error: {detail}")
         return False
+    _record_director_cost(raw_params, "cloud", provider=spec["provider"], images=len(images),
+                          usd=cloud_image.estimate_cost(spec, raw_params, images))
     out_dir = job.get("out_dir") or wgp.save_path
     os.makedirs(out_dir, exist_ok=True)
     stamp = datetime.now().strftime("%Y-%m-%d-%Hh%Mm%Ss")
@@ -26673,6 +26697,7 @@ def _run_remote_generation(job: dict, raw_params: dict, *, finalize: bool) -> bo
         return False
     if is_cancel_requested(job):
         return False
+    _record_director_cost(raw_params, "gpu", **result.billing)
     finalizing = {"progress": 99, "step": 0, "total_steps": 0, "phase": "Finalizing", "message": "Finalizing..."}
     if defer_output_publication and not finalize:
         return update_job(

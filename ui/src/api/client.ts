@@ -1035,6 +1035,32 @@ export interface VideoReview {
   shots: VideoReviewShot[]
 }
 
+export interface PipelineCostStage {
+  usd: number
+  jobs: number
+  gpu_seconds: number
+  unpriced: number
+}
+
+/** What a Director project spent (GPU pods, cloud calls) and its $ per final minute. */
+export interface PipelineCosts {
+  usd: number
+  gpu_usd: number
+  cloud_usd: number
+  unpriced_calls: number
+  pods: number
+  stages: Record<string, PipelineCostStage>
+  final_seconds: number | null
+  rendered_seconds: number | null
+  usd_per_final_minute: number | null
+}
+
+export async function fetchPipelineCosts(pid: string): Promise<PipelineCosts> {
+  const res = await fetch(`${BASE}/api/v1/director/pipeline/${encodeURIComponent(pid)}/costs`)
+  if (!res.ok) throw new Error('Could not read the project costs')
+  return res.json()
+}
+
 export async function requestPipelineReview(pid: string): Promise<void> {
   const res = await fetch(`${BASE}/api/v1/director/pipeline/${encodeURIComponent(pid)}/review`, { method: 'POST' })
   if (!res.ok) {

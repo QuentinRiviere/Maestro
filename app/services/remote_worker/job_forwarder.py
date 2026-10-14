@@ -59,6 +59,8 @@ class RemoteJobResult:
     join_output_file: str | None = None
     # Local output name -> R2 key of its retained remote copy.
     r2_objects: dict[str, str] = field(default_factory=dict)
+    # What the pod billed around this job (see ``_billing``), for cost reports.
+    billing: dict[str, Any] = field(default_factory=dict)
 
 
 class WorkerClient:
@@ -231,13 +233,17 @@ class RemoteJobForwarder:
             if preview_mode is not None:
                 body["preview_mode"] = preview_mode
             remote_id = str(client.post_json("api/v1/worker/jobs", body)["job_id"])
+            work_started = time.monotonic()
             remote = self._follow(
                 client, remote_id, update=update, is_cancelled=is_cancelled,
                 on_preview=on_preview, on_preview_notice=on_preview_notice,
             )
-            return self._fetch_outputs(
+            result = self._fetch_outputs(
                 client, store, remote_id, remote, job_id=job_id or remote_id, out_dir=out_dir, update=update,
             )
+            result.billing = _billing(manager, status, waited=work_started - waiting_since,
+                                      worked=time.monotonic() - work_started)
+            return result
         finally:
             manager.job_finished()
 
@@ -425,6 +431,28 @@ class RemoteJobForwarder:
             join_output_file=renamed.get(join) if join else None,
             r2_objects={renamed[n]: k for n, k in objects.items() if n in renamed},
         )
+
+
+def _billing(manager: Any, ready: Mapping[str, Any], *, waited: float, worked: float) -> dict[str, Any]:
+    """The pod's run, price and accrued cost when the job got it and when it ended.
+
+    A project's GPU spend is then each run's cost growth over the project
+    (boot and idle included), not only the seconds its jobs computed.
+    """
+    try:
+        ended = manager.status()
+    except Exception:  # a cost report must never fail a finished job
+        ended = {}
+    return {
+        "pod": getattr(manager, "run_name", ""),
+        "run": str(ended.get("job_submission_id") or ready.get("job_submission_id") or ""),
+        "submitted_at": ready.get("submitted_at"),
+        "price_per_hour": ended.get("price_per_hour") or ready.get("price_per_hour"),
+        "cost_start": ready.get("cost"),
+        "cost_end": ended.get("cost"),
+        "wait_seconds": round(waited, 1),
+        "work_seconds": round(worked, 1),
+    }
 
 
 def format_progress(progress: Mapping[str, Any] | None) -> str:

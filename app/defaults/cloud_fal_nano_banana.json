@@ -27,6 +27,9 @@
             "max_count": 4,
             "input": {
                 "output_format": "png"
+            },
+            "price": {
+                "per_image": 0.0398
             }
         }
     },

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, Component, type ReactNode } from 'react'
 import { X, ChevronDown, ChevronRight, Play, ImageIcon, Check, AlertTriangle, Clock, Brain, Sparkles, Loader2, Camera, Film, Combine, Pencil, Trash2, BookOpen } from 'lucide-react'
 import { useStore } from '../../stores/useStore'
-import { getFileUrl, updateClipPrompt } from '../../api/client'
+import { fetchPipelineCosts, getFileUrl, updateClipPrompt, type PipelineCosts } from '../../api/client'
 import type { PipelineClipState, SavedPipelineState } from '../../types'
 import { QualityReviewPanel } from './QualityReviewPanel'
 import { SaveCastToBible } from '../Sidebar/DirectorBible'
@@ -525,6 +525,35 @@ function ClipCard({ clip, pipeline, busy = false, onTag, onRerunImage, onRerunVi
   )
 }
 
+
+const STAGE_LABELS: Record<string, string> = {
+  cast: 'cast', image: 'shot images', video: 'video', rerun_image: 'image reruns',
+  rerun_video: 'takes & reruns', overhead: 'boot, loading, idle',
+}
+
+/** The project's spend and $ per final minute, refreshed when its status changes. */
+function ProjectCost({ pid, status }: { pid: string; status?: string }) {
+  const [costs, setCosts] = useState<PipelineCosts | null>(null)
+  useEffect(() => {
+    let live = true
+    fetchPipelineCosts(pid).then(c => { if (live) setCosts(c) }).catch(() => { if (live) setCosts(null) })
+    return () => { live = false }
+  }, [pid, status])
+  if (!costs || !costs.usd) return null
+  const detail = [
+    ...Object.entries(costs.stages).map(([name, stage]) => `${STAGE_LABELS[name] ?? name}: $${stage.usd.toFixed(2)}`
+      + (stage.gpu_seconds ? ` (${Math.round(stage.gpu_seconds / 60)} GPU min)` : '')),
+    costs.final_seconds ? `final ${costs.final_seconds.toFixed(0)} s of ${costs.rendered_seconds?.toFixed(0) ?? '?'} s rendered` : '',
+    costs.unpriced_calls ? `${costs.unpriced_calls} cloud call(s) without a known price` : '',
+  ].filter(Boolean).join('\n')
+  return (
+    <span className="px-2 py-1 text-[10px] text-text-muted" title={detail}>
+      ${costs.usd.toFixed(2)}
+      {costs.usd_per_final_minute != null && <> · ${costs.usd_per_final_minute.toFixed(2)}/min</>}
+    </span>
+  )
+}
+
 export function DirectorDashboard() {
   const open = useStore(s => s.dashboardOpen)
 
@@ -794,6 +823,7 @@ function DirectorDashboardInner() {
                 To bible
               </button>
             ) : null}
+            <ProjectCost pid={selectedPipeline.pipeline_id} status={selectedPipeline.status} />
             <button
               onClick={() => {
                 if (!selectedPipeline) return

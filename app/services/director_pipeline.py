@@ -2376,6 +2376,7 @@ def _rerun_clip_image_impl(out_dir: str, pid: str, clip_index: int, prompt_overr
             m.split(";")[0] for m in (image_loras.get("loras_multipliers", "") or "").split(" ") if m
         ),
         "_director_pipeline_id": pid,
+        "_director_cost_stage": "rerun_image",
         "_director_detached_operation": True,
     }
     with _pipeline_lock:
@@ -3251,6 +3252,7 @@ def _rerun_clip_video_impl(out_dir: str, pid: str, clip_index: int, prompt_overr
             m.split(";")[0] for m in (video_loras.get("loras_multipliers", "") or "").split(" ") if m
         ),
         "_director_pipeline_id": pid,
+        "_director_cost_stage": "rerun_video",
         "_director_detached_operation": True,
     }
     _apply_director_h3_optimizations(
@@ -3664,6 +3666,7 @@ def _rerun_h3_sequence_video(
             m.split(";")[0] for m in (video_loras.get("loras_multipliers", "") or "").split(" ") if m
         ),
         "_director_pipeline_id": pid,
+        "_director_cost_stage": "rerun_video",
         "_director_detached_operation": True,
     }
     _apply_director_h3_optimizations(gen_params, video_params, execution_profile)
@@ -7215,6 +7218,7 @@ def _render_cast_image(pid: str, params: dict, kind: str, entry: dict, style: st
         "negative_prompt": "",
         "video_length": 1,
         "_director_pipeline_id": pid,
+        "_director_cost_stage": "cast",
     }
     try:
         files = _submit_and_wait(gen_params, timeout_s=600, workspace=workspace, out_dir=out_dir)
@@ -8379,6 +8383,7 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
             "activated_loras": image_loras.get("activated_loras", []),
             "loras_multipliers": image_loras.get("loras_multipliers", ""),
             "_director_pipeline_id": pid,
+            "_director_cost_stage": "image",
         }
         if spatial_upsampling:
             gen_params["spatial_upsampling"] = spatial_upsampling
@@ -9466,6 +9471,7 @@ def _run_video_generation(pid: str, params: dict, clip_plans: list[dict],
             "negative_prompt": "",
             "self_refiner_setting": self_refiner,
             "_director_pipeline_id": pid,
+            "_director_cost_stage": "video",
             **lora_params,
             **audio_params,
         }
@@ -9653,6 +9659,7 @@ def _run_video_generation(pid: str, params: dict, clip_plans: list[dict],
             "negative_prompt": "",
             "self_refiner_setting": self_refiner,
             "_director_pipeline_id": pid,
+            "_director_cost_stage": "video",
             **lora_params,
             **audio_params,
         }

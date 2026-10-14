@@ -33,6 +33,7 @@ the CivitAI model ID when known, else its Files API.
 from __future__ import annotations
 
 import base64
+import io
 import json
 import mimetypes
 import os
@@ -416,6 +417,34 @@ class ReplicateClient:
 
 
 CLIENTS = {"fal": FalClient, "replicate": ReplicateClient}
+
+
+def estimate_cost(spec: Mapping[str, Any], params: Mapping[str, Any], images: list["CloudImage"]) -> float | None:
+    """The provider's price for these outputs, from the definition's ``price``; None when unknown.
+
+    ``price`` holds ``per_image`` or ``per_megapixel`` (``edit_per_image`` /
+    ``edit_per_megapixel`` when reference images were sent to an editor).
+    """
+    price = spec.get("price") or {}
+    if not price or not images:
+        return None
+    edited = bool(spec.get("image_field") and input_images(params))
+    per_image = price.get("edit_per_image" if edited else "per_image", price.get("per_image"))
+    if per_image is not None:
+        return round(float(per_image) * len(images), 5)
+    per_mp = price.get("edit_per_megapixel" if edited else "per_megapixel", price.get("per_megapixel"))
+    if per_mp is None:
+        return None
+    total = 0.0
+    for image in images:
+        try:
+            from PIL import Image
+            with Image.open(io.BytesIO(image.data)) as opened:
+                width, height = opened.size
+        except Exception:
+            return None
+        total += float(per_mp) * width * height / 1_000_000
+    return round(total, 5)
 
 
 def generate(
