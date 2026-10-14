@@ -302,6 +302,11 @@ class SequenceLengthTests(unittest.TestCase):
         self.assertNotIn("_director_keep_sec", plans[0])
         self.assertEqual(plans[2]["_director_keep_sec"], [0.0, 2.5])
 
+    def test_planned_length_comes_from_the_planner_even_on_a_fitted_timeline(self):
+        fitted = {"duration_frames": 124, "duration_sec": 124 / 24, "_director_duration_sec": 4.0}
+        self.assertEqual(dp._planned_shot_frames(fitted, 124, 24.0), 96)
+        self.assertEqual(dp._planned_shot_frames({"duration_frames": 72}, 72, 24.0), 72)
+
     def test_a_sequence_run_keeps_short_planned_shots_unmerged(self):
         from unittest.mock import patch
 

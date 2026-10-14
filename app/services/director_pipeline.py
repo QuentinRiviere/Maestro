@@ -8151,6 +8151,19 @@ def _compile_h3_sequence_prompts(
     return prompts
 
 
+def _planned_shot_frames(planned_clip: dict, clip_frames: int, fps: float) -> int:
+    """A shot's planned screen length in frames.
+
+    The planner's own length is kept beside the timeline, so it survives a
+    resumed run whose timeline was already raised to the model minimum.
+    """
+    try:
+        planned_sec = float(planned_clip.get("_director_duration_sec") or 0)
+    except (TypeError, ValueError):
+        planned_sec = 0.0
+    return max(1, round(planned_sec * fps)) if planned_sec > 0 else clip_frames
+
+
 def _fit_h3_sequence_lengths(
     clip_plans: list[dict],
     planned_clips: list[dict],
@@ -9392,6 +9405,9 @@ def _run_video_generation(pid: str, params: dict, clip_plans: list[dict],
                         label=f"Director shot {i + 1}",
                     )
                 per_clip_frames.append(clip_frames)
+                # H3 sequences film members at their planned length, not at the
+                # model minimum the render lengths are raised to.
+                planned_shot_frames.append(_planned_shot_frames(pc, clip_frames, fps))
                 continue
 
             window_prompts = plan.get("window_prompts", []) or []
