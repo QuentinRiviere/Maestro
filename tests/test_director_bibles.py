@@ -126,6 +126,9 @@ class BibleLookTests(unittest.TestCase):
         self.assertEqual(bible["characters"][0]["image"], images[1]["file"])
         bible = bibles.delete_image("spring_rain", self.girl, "default", images[0]["id"])
         self.assertEqual(len(bible["characters"][0]["variants"][0]["images"]), 1)
+        # The deleted image's file goes with it; the kept one stays.
+        self.assertIsNone(bibles.image_path("spring_rain", images[0]["file"]))
+        self.assertIsNotNone(bibles.image_path("spring_rain", images[1]["file"]))
 
     def test_an_approved_image_can_go_back_to_candidate(self):
         bibles.add_image("spring_rain", self.girl, "default", self.upload)

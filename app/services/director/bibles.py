@@ -528,16 +528,29 @@ def unapprove_image(bible_id: str, element_id: str, variant_id: str, image_id: s
     return _mutate(bible_id, change)[0]
 
 
+def _image_files(bible: dict) -> set[str]:
+    return {image["file"] for plural in KINDS.values() for element in bible.get(plural) or []
+            for variant in element.get("variants") or [] for image in variant.get("images") or []
+            if image.get("file")}
+
+
 def delete_image(bible_id: str, element_id: str, variant_id: str, image_id: str) -> dict:
-    """Drop one image; its file is kept, an older project may still use a copy of it."""
-    def change(bible: dict) -> None:
+    """Drop one image and its file; projects keep their own copies of the images they use."""
+    def change(bible: dict) -> str:
         _, element = find_element(bible, element_id)
         variant = find_variant(element, variant_id)
-        before = len(variant["images"])
-        variant["images"] = [i for i in variant["images"] if i["id"] != image_id]
-        if len(variant["images"]) == before:
+        dropped = next((i for i in variant["images"] if i["id"] == image_id), None)
+        if dropped is None:
             raise BibleError("Unknown image")
-    return _mutate(bible_id, change)[0]
+        variant["images"] = [i for i in variant["images"] if i["id"] != image_id]
+        return dropped.get("file") or ""
+    with _LOCK:
+        bible, name = _mutate(bible_id, change)
+        if name and name not in _image_files(bible):
+            path = image_path(bible_id, name)
+            if path is not None:
+                path.unlink(missing_ok=True)
+    return bible
 
 
 def reference_paths(bible: dict, element: dict, variant: dict, chain_from: list[str] | None = None,
