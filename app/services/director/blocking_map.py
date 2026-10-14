@@ -198,6 +198,82 @@ def framing_line(blocking: Optional[dict]) -> str:
     return f"Framing: {framing} shot.{order}"
 
 
+def _angle_from_camera(blocking: dict, facing: float) -> float:
+    """0 when a person faces the camera, 180 when they turn their back to it."""
+    relative = (facing - blocking["camera"]["facing_deg"]) % 360.0
+    return abs(((relative - 180.0) + 180.0) % 360.0 - 180.0)
+
+
+def subject_view(blocking: Optional[dict], name: str) -> str:
+    """The bible angle that shows ``name`` as this shot sees them ("" for the look's own image).
+
+    A person facing the camera keeps their look image; one turned three
+    quarters, in profile or away gets that angle, so the editor does not
+    copy a front-facing pose into a shot where they look at someone else.
+    """
+    if not blocking:
+        return ""
+    wanted = str(name or "").strip().casefold()
+    subject = next((s for s in blocking["subjects"] if str(s.get("name") or "").strip().casefold() == wanted), None)
+    if subject is None or subject.get("facing_deg") is None:
+        return ""
+    angle = _angle_from_camera(blocking, subject["facing_deg"])
+    if angle < 30:
+        return "face_front" if blocking["camera"]["framing"] == "close-up" else ""
+    if angle < 65:
+        return "face_three_quarter"
+    if angle < 125:
+        return "face_profile"
+    return "back"
+
+
+def gaze_targets(blocking: Optional[dict]) -> dict[str, str]:
+    """Who looks at whom: the person each subject faces, within 45 degrees."""
+    if not blocking:
+        return {}
+    targets: dict[str, str] = {}
+    for subject in blocking["subjects"]:
+        if subject.get("facing_deg") is None:
+            continue
+        theta = math.radians(subject["facing_deg"])
+        fx, fy = math.sin(theta), -math.cos(theta)
+        best, best_angle = None, 45.0
+        for other in blocking["subjects"]:
+            if other is subject:
+                continue
+            dx, dy = other["x"] - subject["x"], other["y"] - subject["y"]
+            length = math.hypot(dx, dy)
+            if length < 1e-6:
+                continue
+            angle = math.degrees(math.acos(max(-1.0, min(1.0, (fx * dx + fy * dy) / length))))
+            if angle < best_angle:
+                best, best_angle = other, angle
+        if best is not None:
+            targets[subject["name"]] = best["name"]
+    return targets
+
+
+def staging_line(blocking: Optional[dict]) -> str:
+    """The layout in words plus who is in frame, once each, and where they look.
+
+    Image editors given a portrait add a second copy of the person or turn
+    them to the lens; naming the count and the eyelines prevents both.
+    """
+    line = framing_line(blocking)
+    if not line:
+        return ""
+    placed = [s for s in blocking["subjects"] if _to_camera(blocking, s["x"], s["y"])[1] > 0.02]
+    if placed:
+        count = len(placed)
+        line += (f" Exactly {count} {'person' if count == 1 else 'people'} in frame, each shown once"
+                 " and never duplicated.")
+    names = {s["name"] for s in placed}
+    looks = [f"{who} looks at {whom}" for who, whom in gaze_targets(blocking).items() if who in names]
+    if looks:
+        line += " " + "; ".join(looks) + "."
+    return line + " Nobody looks into the camera."
+
+
 def render_blocking_map(blocking: dict, path: str, size: int = 768) -> str:
     """Draw the shot's top view with the camera at the bottom looking up.
 

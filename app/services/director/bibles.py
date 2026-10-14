@@ -766,6 +766,17 @@ def project_cast(bible: dict, out_dir: str, *, characters: Any = None, locations
                     entry["portrait"] = copied
                 else:
                     entry["image"] = copied
+            if views:
+                # Each approved angle, for shots that see the person from that side.
+                entry["views"] = {}
+                for view, name in views.items():
+                    if not (folder / name).is_file():
+                        continue
+                    copied = f"bible_{bible['id']}_{name}"
+                    target = os.path.join(out_dir, copied)
+                    if not os.path.isfile(target):
+                        shutil.copyfile(folder / name, target)
+                    entry["views"][view] = copied
             cast[plural].append(entry)
     return cast
 

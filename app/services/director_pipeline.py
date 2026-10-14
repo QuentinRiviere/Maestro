@@ -2349,7 +2349,8 @@ def _rerun_clip_image_impl(out_dir: str, pid: str, clip_index: int, prompt_overr
         scene_master=scene_master, anchor=ref_path,
         scene_location=location_by_name.get(str(clip.get("_director_location") or "")) or "",
         first_scene=group == first_group, scene_sets=bool(group and location_by_name),
-        subject_refs=shot_subject_refs(clip, prompt, character_needles, prop_needles, valid_character_refs),
+        subject_refs=shot_identity_refs(snapshot, clip, shot_subject_refs(
+            clip, prompt, character_needles, prop_needles, valid_character_refs)),
         extra_refs=valid_character_refs + valid_location_refs, layout=bool(layout_ref),
     )
 
@@ -5532,6 +5533,29 @@ def image_stage_ref(params: dict, path: str) -> str:
     return portraits.get(path, path) if isinstance(portraits, dict) else path
 
 
+def shot_identity_refs(params: dict, plan: dict, refs: list[str]) -> list[str]:
+    """Each person's reference as this shot sees them: front, three quarters, profile or back.
+
+    The angle comes from the shot's blocking (where the person faces against
+    the camera); a person without that angle keeps their look image.
+    """
+    from services.director.blocking_map import parse_blocking_map, subject_view
+
+    views = params.get("_director_image_views") or {}
+    blocking = parse_blocking_map(plan.get("_director_blocking_map")) if views else None
+    if not blocking:
+        return list(refs)
+    names = {}
+    for label, path in zip(params.get("character_ref_labels") or [], params.get("character_ref_paths") or []):
+        names[path] = label
+        names[image_stage_ref(params, path)] = label
+    out = []
+    for ref in refs:
+        view = subject_view(blocking, names.get(ref, ""))
+        out.append((views.get(ref) or {}).get(view) or ref if view else ref)
+    return out
+
+
 def cast_ref_needles(params: dict, out_dir: str) -> tuple[list[tuple[str, list[str]]], list[tuple[str, list[str]]]]:
     """(character, prop) reference images with the words that name them in a shot.
 
@@ -7380,6 +7404,7 @@ def _apply_cast_references(pid: str, params: dict, cast: dict) -> None:
     previous = set(params.get("_director_cast_ref_paths") or [])
     added = []
     portraits: dict[str, str] = {}
+    views: dict[str, dict[str, str]] = {}
     for kind, plural in (("character", "characters"), ("location", "locations")):
         paths = [p for p in params.get(f"{kind}_ref_paths") or [] if p not in previous]
         labels = list(params.get(f"{kind}_ref_labels") or [])[: len(paths)]
@@ -7393,10 +7418,17 @@ def _apply_cast_references(pid: str, params: dict, cast: dict) -> None:
                 portrait = os.path.join(out_dir, entry["portrait"]) if entry.get("portrait") else ""
                 if portrait and os.path.isfile(portrait):
                     portraits[path] = portrait
+                angles = {view: os.path.join(out_dir, name) for view, name in (entry.get("views") or {}).items()
+                          if os.path.isfile(os.path.join(out_dir, name))}
+                if angles:
+                    for key in (path, portrait):
+                        if key:
+                            views[key] = angles
         params[f"{kind}_ref_paths"] = paths
         params[f"{kind}_ref_labels"] = labels
     params["_director_cast_ref_paths"] = added
     params["_director_image_portraits"] = portraits
+    params["_director_image_views"] = views
     if str(params.get("shot_image_guidance") or "auto").strip().lower() == "auto":
         params["_director_shot_image_policy"] = _resolve_fresh_shot_image_policy(params)
     _update_pipeline(pid, cast=copy.deepcopy(cast))
@@ -8331,9 +8363,10 @@ def _render_shot_layout(pid: str, index: int, blocking_map: dict, out_dir: str) 
 
 
 def blocking_framing_line(blocking_map: dict) -> str:
-    from services.director.blocking_map import framing_line, parse_blocking_map
+    """The shot's layout in words: framing, who is in frame once each, and their eyelines."""
+    from services.director.blocking_map import parse_blocking_map, staging_line
 
-    return framing_line(parse_blocking_map(blocking_map))
+    return staging_line(parse_blocking_map(blocking_map))
 
 
 def director_shot_layout(pid: str, index: int, plan: dict, prompt: str, image_model: str,
@@ -8345,7 +8378,14 @@ def director_shot_layout(pid: str, index: int, plan: dict, prompt: str, image_mo
     """
     blocking_map = plan.get("_director_blocking_map") if plan.get("_director_continuity_group") else None
     if not isinstance(blocking_map, dict):
-        return "", prompt
+        names = [str(subject.get("speaker_name") or subject.get("name") or "").strip()
+                 for subject in plan.get("_director_subjects_on_screen") or [] if isinstance(subject, dict)]
+        names = [name for name in dict.fromkeys(names) if name]
+        if not names:
+            return "", prompt
+        count = len(names)
+        return "", (f"{prompt.rstrip()} Exactly {count} {'person' if count == 1 else 'people'} in frame "
+                    f"({', '.join(names)}), each shown once and never duplicated. Nobody looks into the camera.")
     # The diagram is drawn for the Dashboard only: image editors reproduce
     # their references, so a diagram sent to them was painted into the shot.
     # Every model reads the layout as a sentence.
@@ -8723,8 +8763,8 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
                     scene_master=scene_master or "", anchor=ref_image_path or "",
                     scene_location=scene_location or "", first_scene=group == first_group,
                     scene_sets=bool(group and location_by_name),
-                    subject_refs=shot_subject_refs(plan, prompt, character_needles, prop_needles,
-                                                   valid_character_refs),
+                    subject_refs=shot_identity_refs(params, plan, shot_subject_refs(
+                        plan, prompt, character_needles, prop_needles, valid_character_refs)),
                     extra_refs=extra_refs, layout=bool(layout_ref),
                 )
                 if scene_master:

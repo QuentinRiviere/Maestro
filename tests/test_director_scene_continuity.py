@@ -390,3 +390,41 @@ class CastLocationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StagingTests(unittest.TestCase):
+    """Who is in frame, once each, where they look, and which angle of each person the editor gets."""
+
+    TWO_SHOT = {"camera": {"x": 0.5, "y": 0.95, "facing_deg": 0, "framing": "medium"},
+                "subjects": [{"name": "Mina", "x": 0.35, "y": 0.4, "facing_deg": 90},
+                             {"name": "Joon", "x": 0.65, "y": 0.4, "facing_deg": 270}]}
+
+    def test_the_layout_names_the_count_and_the_eyelines(self):
+        from services.director.blocking_map import parse_blocking_map, staging_line
+
+        line = staging_line(parse_blocking_map(self.TWO_SHOT))
+        self.assertIn("Exactly 2 people in frame, each shown once", line)
+        self.assertIn("Mina looks at Joon", line)
+        self.assertIn("Joon looks at Mina", line)
+        self.assertTrue(line.endswith("Nobody looks into the camera."))
+
+    def test_people_facing_each_other_get_their_profile_angle(self):
+        from services.director.blocking_map import parse_blocking_map, subject_view
+
+        blocking = parse_blocking_map(self.TWO_SHOT)
+        self.assertEqual(subject_view(blocking, "Mina"), "face_profile")
+        params = {"character_ref_labels": ["Mina"], "character_ref_paths": ["/p/sheet.png"],
+                  "_director_image_portraits": {"/p/sheet.png": "/p/look.png"},
+                  "_director_image_views": {"/p/look.png": {"face_profile": "/p/profile.png"},
+                                            "/p/sheet.png": {"face_profile": "/p/profile.png"}}}
+        plan = {"_director_blocking_map": self.TWO_SHOT}
+        self.assertEqual(pipeline.shot_identity_refs(params, plan, ["/p/look.png", "/p/other.png"]),
+                         ["/p/profile.png", "/p/other.png"])
+        facing = {**self.TWO_SHOT, "subjects": [{"name": "Mina", "x": 0.5, "y": 0.4, "facing_deg": 180}]}
+        self.assertEqual(pipeline.shot_identity_refs(params, {"_director_blocking_map": facing}, ["/p/look.png"]),
+                         ["/p/look.png"])
+
+    def test_a_shot_without_layout_still_counts_its_people(self):
+        plan = {"_director_subjects_on_screen": [{"speaker_name": "Mina"}, {"speaker_name": "Joon"}]}
+        _, prompt = pipeline.director_shot_layout("p", 0, plan, "two-shot at the table", "flux2_klein_9b", "/tmp")
+        self.assertIn("Exactly 2 people in frame (Mina, Joon)", prompt)
