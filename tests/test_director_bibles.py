@@ -451,6 +451,11 @@ class BibleGenerateTests(unittest.TestCase):
         self.assertTrue(roof["image"] and girl["variants"][1]["images"][0]["status"] == "approved")
         with self.assertRaises(bibles.BibleError):
             pipeline.generate_bible_assets("spring_rain")
+        # One element's looks only: the girl's two looks get a new candidate, the places none.
+        self.assertEqual([(e["id"], v["id"]) for e, v in bibles.missing_images(bible, every_look=True, element_id=girl["id"])],
+                         [(girl["id"], "default"), (girl["id"], "winter")])
+        with self.assertRaises(bibles.BibleError):
+            pipeline.generate_bible_assets("spring_rain", every_look=True, element_id="nobody")
 
 
 class BibleRenderSettingsTests(unittest.TestCase):

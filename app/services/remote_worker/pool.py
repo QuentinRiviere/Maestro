@@ -136,7 +136,8 @@ class RemoteWorkerPool:
                             and str(status.get("message") or "").startswith("Last run failed")):
                         self._started.discard(pod._index)
                         self._failed[pod._index] = str(status["message"])
-                live = [p for p in pods if (self._statuses.get(p._index) or {}).get("state") not in ("stopped", None)]
+                # Pods already up or on their way count first: a burst only starts the missing ones.
+                live = [p for p in pods if (self._statuses.get(p._index) or {}).get("state") in ("starting", "booting", "ready")]
                 wanted = min(len(pods), -(-demand // depth))
                 for pod in pods:
                     if len(live) >= wanted:

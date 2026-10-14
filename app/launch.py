@@ -11064,7 +11064,7 @@ async def director_bible_assistant(bible_id: str, request: Request):
 
 @api.post("/api/v1/director/bibles/{bible_id}/generate")
 async def director_bible_generate(bible_id: str, request: Request):
-    """Render every look of the bible that has no approved image yet (in the background)."""
+    """Render every look of the bible (or of one element) that has no approved image yet, in the background."""
     from services.director_pipeline import generate_bible_assets
     _init_pipeline()  # renders need the wgp module, wired on first Director use
     body = await request.json() if request.headers.get("content-length", "0") != "0" else {}
@@ -11072,7 +11072,7 @@ async def director_bible_generate(bible_id: str, request: Request):
     bible = _bible_call(
         generate_bible_assets, bible_id, image_model=str(body.get("image_model") or ""),
         image_params=body.get("image_params") if isinstance(body.get("image_params"), dict) else {},
-        every_look=bool(body.get("every_look")),
+        every_look=bool(body.get("every_look")), element_id=str(body.get("element_id") or ""),
     )
     return {"bible": bible}
 

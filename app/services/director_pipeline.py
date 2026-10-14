@@ -6595,8 +6595,10 @@ def render_bible_views(bible_id: str, element_id: str, variant_id: str, *, image
 
 
 def generate_bible_assets(bible_id: str, *, image_model: str = "", image_params: Optional[dict] = None,
-                          every_look: bool = False) -> dict:
+                          every_look: bool = False, element_id: str = "") -> dict:
     """Render every look that has no approved image yet (``every_look``: every look), in the background.
+
+    ``element_id`` limits the batch to the looks of one character, place or prop.
 
     With ``every_look`` each look gets a new candidate next to its approved
     image, which stays the reference until another one is approved.
@@ -6614,14 +6616,16 @@ def generate_bible_assets(bible_id: str, *, image_model: str = "", image_params:
     if not bible:
         raise bibles.BibleError("Unknown bible")
     image_model = image_model or "flux2_klein_9b"
-    pending = bibles.missing_images(bible, every_look=every_look)
+    if element_id:
+        bibles.find_element(bible, element_id)
+    pending = bibles.missing_images(bible, every_look=every_look, element_id=element_id)
     # A text-only model renders default looks only: other looks need an editor.
     if image_model_reference_limit(image_model) == 0:
         pending = [(e, v) for e, v in pending if v["id"] == bibles.DEFAULT_VARIANT]
     if not pending:
         raise bibles.BibleError(
             _text_only_look_error(image_model) if image_model_reference_limit(image_model) == 0
-            and bibles.missing_images(bible, every_look=every_look)
+            and bibles.missing_images(bible, every_look=every_look, element_id=element_id)
             else "Every look is already rendering" if every_look else "Every look already has an approved image")
     jobs = []
     for element, variant in pending:

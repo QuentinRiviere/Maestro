@@ -391,6 +391,7 @@ function ElementCard({ bible, element, saved, onChange, onRemove, onBible }: {
   const upload = useRef<HTMLInputElement>(null)
   const variant = element.variants.find(v => v.id === variantId) ?? element.variants[0]
   const ask = useContext(AskContext)
+  const lookRendering = element.variants.some(v => v.images.some(i => !i.view && inProgress(i.status)))
   const others = (element.kind === 'character' ? [] : [...bible.locations, ...bible.props])
     .filter(e => e.id !== element.id && e.image)
 
@@ -413,6 +414,21 @@ function ElementCard({ bible, element, saved, onChange, onRemove, onBible }: {
         <input className={`${input} font-medium`} value={element.name} aria-label="Name"
           onChange={e => onChange({ ...element, name: e.target.value })} />
         <span className="shrink-0 text-[10px] text-text-muted">{element.tag}</span>
+        {saved && (
+          <button disabled={busy || lookRendering}
+            title={lookRendering ? 'Wait for the renders under way' : `Render a new candidate of every look of ${element.name} with ${imageModel}`}
+            onClick={() => ask({
+              title: `Regenerate every look of ${element.name}?`, confirmLabel: 'Regenerate all',
+              message: <>A new candidate for each of its {element.variants.length} look{element.variants.length > 1 ? 's' : ''},
+                rendered with <b>{imageModel}</b>. Approved images stay the references until you approve a new one.
+                {element.kind === 'character' && ' Angles are not re-rendered: use Re-render angles once a new look is approved.'}
+                {!readsImages && <span className="mt-2 block text-amber-300">{imageModel} {TEXT_ONLY_NOTE} Only the Default look will render.</span>}</>,
+              run: () => act(() => generateBibleAssets(bible.id, imageModel, true, element.id)),
+            })}
+            className="shrink-0 flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[10px] text-text-secondary hover:text-text-primary disabled:opacity-40">
+            <RefreshCw size={10} /> Regenerate all
+          </button>
+        )}
         <button aria-label="Remove element" className="shrink-0 text-text-muted hover:text-chip-red"
           onClick={() => ask({
             title: `Remove ${element.name || 'this element'}?`, confirmLabel: 'Remove', danger: true,

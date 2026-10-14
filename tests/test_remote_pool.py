@@ -62,6 +62,14 @@ class PoolTests(unittest.TestCase):
         busy.job_finished()
         self.assertIs(self.pool.acquire("m", poll_interval=0), pods[0])
 
+    def test_pods_already_running_are_used_before_starting_new_ones(self):
+        pods = self._fake_pods(3, ready=(0,))
+        self.boot[1] = 5  # pod 2 is already booting
+        taken = [self.pool.acquire("m", poll_interval=0) for _ in range(2)]
+        self.assertEqual(taken[0], pods[0])
+        self.assertEqual(self.started, [])  # the second job waited for the booting pod
+        self.assertIs(taken[1], pods[1])
+
     def test_a_failed_pod_is_skipped_and_all_failing_raises(self):
         pods = self._fake_pods(1)
         pods[0].start = lambda model_type=None: {"state": "starting"}

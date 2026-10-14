@@ -211,17 +211,19 @@ def normalize_bible(raw: Any, folder: Path) -> dict:
     return bible
 
 
-def missing_images(bible: dict, *, every_look: bool = False) -> list[tuple[dict, dict]]:
+def missing_images(bible: dict, *, every_look: bool = False, element_id: str = "") -> list[tuple[dict, dict]]:
     """(element, look) pairs to render, default looks first.
 
     Looks with no approved image and no render under way; with
     ``every_look``, every look without a render under way (a new candidate
-    next to its approved image).
+    next to its approved image). ``element_id`` keeps one element's looks.
     """
     pending = []
     skip = IN_PROGRESS if every_look else ("approved", *IN_PROGRESS)
     for plural in KINDS.values():
         for element in bible.get(plural) or []:
+            if element_id and element.get("id") != element_id:
+                continue
             for variant in element.get("variants") or []:
                 images = [i for i in variant.get("images") or [] if not i.get("view")]
                 if not any(i["status"] in skip for i in images):

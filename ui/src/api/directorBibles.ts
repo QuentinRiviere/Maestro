@@ -186,9 +186,11 @@ export interface BibleAssistantAnswer {
 }
 
 /** Render every look that has no approved image yet (``everyLook``: a new candidate for every look), in the background. */
-export function generateBibleAssets(bibleId: string, imageModel: string, everyLook = false): Promise<DirectorBible> {
+/** Render the bible's looks (``elementId``: one element's looks); ``everyLook`` adds a candidate to approved ones too. */
+export function generateBibleAssets(bibleId: string, imageModel: string, everyLook = false,
+  elementId = ''): Promise<DirectorBible> {
   return bibleCall(`/api/v1/director/bibles/${encodeURIComponent(bibleId)}/generate`,
-    jsonBody({ image_model: imageModel, every_look: everyLook }), 'Could not start the generation')
+    jsonBody({ image_model: imageModel, every_look: everyLook, element_id: elementId }), 'Could not start the generation')
 }
 
 /** One assistant turn on the bible being edited. */
