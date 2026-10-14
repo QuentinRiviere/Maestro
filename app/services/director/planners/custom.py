@@ -54,6 +54,11 @@ def fit_shot_range(low: float, high: float, bounds: tuple[float, float] | None) 
     return low, min(max(float(high), low), model_high)
 
 
+# Shot lengths when H3 sequences film a scene's shots back to back, and the
+# most shots such a plan may hold (shorter shots, so more of them).
+SEQUENCE_SHOT_RANGE = (1.5, 5.0)
+SEQUENCE_MAX_SHOTS = 24
+
 _GRAMMAR_LABELS = {
     "coverage": "Coverage", "cutting_rhythm": "Cutting rhythm", "camera_default": "Camera default",
     "blocking": "Blocking", "lighting_continuity": "Lighting continuity", "acting": "Acting",
@@ -171,7 +176,14 @@ class CustomSkillPlanner(BasePlanner):
             raise ValueError(f"{spec.get('name')} needs a brief")
         options = {str(k): str(v) for k, v in (skill_options or {}).items()}
         has_reference = bool(reference_image_path)
-        low, high = fit_shot_range(*(spec.get("shot_duration") or [3, 8])[:2], model_shot_bounds(kwargs))
+        # H3 sequences render several shots in one generation at their exact
+        # length, so a shot is planned at its final screen time instead of
+        # being rendered long and cut short.
+        sequence_shots = bool(kwargs.get("sequence_shots")) and not clips
+        if sequence_shots:
+            low, high = SEQUENCE_SHOT_RANGE
+        else:
+            low, high = fit_shot_range(*(spec.get("shot_duration") or [3, 8])[:2], model_shot_bounds(kwargs))
         target_duration = int(target_duration or spec.get("default_duration") or 30)
         clip_durations = [
             max(0.5, float(c.get("duration_sec") or (float(c.get("end", 0)) - float(c.get("start", 0))) or low))
@@ -184,10 +196,20 @@ class CustomSkillPlanner(BasePlanner):
                            + ", ".join(f"{d:.1f}" for d in clip_durations) + ".")
         else:
             average = (low + high) / 2
-            target_scenes = max(1, min(int(spec.get("max_shots") or 12), round(target_duration / average)))
+            max_shots = int(spec.get("max_shots") or 12)
+            if sequence_shots:
+                # Shorter shots: as many as the target length needs, within reason.
+                max_shots = max(max_shots, min(SEQUENCE_MAX_SHOTS, math.ceil(target_duration / average)))
+            target_scenes = max(1, min(max_shots, round(target_duration / average)))
             timing_rule = (f"Output exactly {target_scenes} shot plans totaling about {target_duration}s, "
                            f"each between {low:g} and {high:g} seconds. Every shot is rendered on its own, so give "
                            "each one enough action to fill its full duration.")
+            if sequence_shots:
+                timing_rule = (f"Output exactly {target_scenes} shot plans totaling about {target_duration}s, "
+                               f"each between {low:g} and {high:g} seconds. duration_sec is the shot's final screen "
+                               "time: shots of one scene are filmed back to back with hard cuts and nothing is "
+                               "trimmed, so keep_sec is always [0, duration_sec]. Reactions and inserts last "
+                               "1.5-3 s, exchanges 2-4 s, establishing shots 3-5 s.")
 
         char_profiles = [
             CharacterProfile(id=f"char_{i}", display_name=c.get("name", ""),
@@ -332,7 +354,8 @@ OUTPUT FORMAT — respond with ONLY a JSON array of shot objects:
                     **({"closing_blocking": closing} if closing else {}),
                     **({"blocking_map": blocking} if (blocking := parse_blocking_map(
                         raw.get("blocking_map"), cam.get("framing"))) else {}),
-                    **({"keep_sec": keep} if (keep := normalize_keep(raw.get("keep_sec"), duration)) else {}),
+                    **({"keep_sec": keep} if not sequence_shots
+                       and (keep := normalize_keep(raw.get("keep_sec"), duration)) else {}),
                 },
             ))
             if continues_previous:

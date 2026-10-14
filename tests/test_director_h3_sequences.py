@@ -287,3 +287,33 @@ class SplitVideoTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SequenceLengthTests(unittest.TestCase):
+    def test_members_last_their_planned_length_and_lone_shots_keep_only_theirs(self):
+        from services import director_pipeline as pipeline
+
+        plans = [{}, {}, {}]
+        planned = [{}, {}, {}]
+        # Shots 1-2 form a sequence; shot 3 is alone and renders the 124-frame minimum.
+        pipeline._fit_h3_sequence_lengths(plans, planned, [[0, 1]], [48, 72, 60], [124, 124, 124], 24.0)
+        self.assertEqual([p["duration_sec"] for p in planned], [2.0, 3.0, 124 / 24])
+        self.assertEqual(planned[2]["start"], 5.0)
+        self.assertNotIn("_director_keep_sec", plans[0])
+        self.assertEqual(plans[2]["_director_keep_sec"], [0.0, 2.5])
+
+    def test_a_sequence_run_keeps_short_planned_shots_unmerged(self):
+        from unittest.mock import patch
+
+        from services import director_pipeline as pipeline
+
+        clips = [{"start": 0, "end": 2, "duration_sec": 2}, {"start": 2, "end": 4.5, "duration_sec": 2.5}]
+        params = {"video_model": "minimax_h3", "pipeline_type": "short_film_story", "director_skill": "custom:k"}
+        model_def = {"fps": 24, "frames_minimum": 124, "frames_maximum": 345, "frames_steps": 17}
+        from types import SimpleNamespace
+
+        with patch.object(pipeline, "_wgp", SimpleNamespace(get_model_def=lambda name: model_def)), \
+                patch.object(pipeline, "video_strategy", return_value=pipeline.BOUNDED_START_END), \
+                patch.object(pipeline, "h3_sequences_enabled", return_value=True):
+            plans, planned = pipeline.prepare_director_timeline(params, [{}, {}], clips)
+        self.assertEqual(len(planned), 2)

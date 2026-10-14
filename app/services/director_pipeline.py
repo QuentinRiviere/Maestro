@@ -533,6 +533,11 @@ def prepare_director_timeline(params: dict, clip_plans: list, planned_clips: lis
     )
     if not planned_clips or (strategy not in {BOUNDED_START_END, OMNI_REFERENCE} and ltx_max is None):
         return clip_plans, planned_clips
+    if h3_sequences_enabled(params, model_def):
+        # Shots planned at their final length are filmed back to back as H3
+        # sequences; merging the short ones here would drop their prompts.
+        # The video stage gives a shot left alone the model minimum.
+        return clip_plans, planned_clips
     fps = float(model_def.get("fps") or 24)
     minimum = int(model_def.get("frames_minimum") or 1)
     step = int(model_def.get("frames_steps") or 1)
@@ -7607,6 +7612,8 @@ def _run_planning_v2(pid: str, params: dict, pipeline_type: str):
                 effective_max_frames
                 if native_bounded else None
             ),
+            # Shots planned at their final length, filmed as H3 sequences.
+            "sequence_shots": h3_sequences_enabled(params, selected_video_def),
         })
     elif pipeline_type == "short_film_audio":
         planner_kwargs.update({
@@ -7939,6 +7946,38 @@ def _compile_h3_sequence_prompts(
         record["prompt_mode"] = mode
         prompts[first] = prompt
     return prompts
+
+
+def _fit_h3_sequence_lengths(
+    clip_plans: list[dict],
+    planned_clips: list[dict],
+    groups: list[list[int]],
+    group_frames: list[int],
+    rendered_frames: list[int],
+    fps: float,
+) -> None:
+    """Give each shot of a sequence run its screen length on the timeline.
+
+    A sequence member lasts exactly its planned length. A shot left alone
+    renders at least the model minimum, so the edit keeps only its planned
+    length (unless it already has a keep window of its own).
+    """
+    members = {index for group in groups for index in group}
+    cursor = 0.0
+    for index, planned in enumerate(planned_clips):
+        if index >= len(group_frames) or index >= len(rendered_frames):
+            break
+        screen = group_frames[index] / float(fps)
+        rendered = (group_frames if index in members else rendered_frames)[index] / float(fps)
+        planned.update({"start": cursor, "end": cursor + rendered, "duration_sec": rendered,
+                        "duration_frames": int(round(rendered * fps))})
+        if index < len(clip_plans):
+            plan = clip_plans[index]
+            plan["_director_duration_sec"] = rendered
+            plan["_director_generation_frames"] = int(round(rendered * fps))
+            if index not in members and screen < rendered - 0.05 and not plan.get("_director_keep_sec"):
+                plan["_director_keep_sec"] = [0.0, round(screen, 3)]
+        cursor += rendered
 
 
 def _collapse_h3_sequence_params(
@@ -9066,6 +9105,9 @@ def _run_video_generation(pid: str, params: dict, clip_plans: list[dict],
         image_start_paths = []
         image_end_paths = []
         per_clip_frames = []
+        # Each shot's planned length before any model minimum, for H3
+        # sequences, which film their members at exactly this length.
+        planned_shot_frames: list[int] = []
         per_clip_prompt_modes = []
         has_sliding_window = False
         h3_timing_repaired = False
@@ -9184,6 +9226,7 @@ def _run_video_generation(pid: str, params: dict, clip_plans: list[dict],
                     shot_duration = 20 * max(window_count, num_keyframes + 1)
                 clip_frames = max(round(shot_duration * fps), round(5 * fps))
                 per_clip_frames.append(clip_frames)
+                planned_shot_frames.append(clip_frames)
                 has_sliding_window = True
             else:
                 # SECONDS are the fps-agnostic ground truth. planned_clips
@@ -9201,6 +9244,7 @@ def _run_video_generation(pid: str, params: dict, clip_plans: list[dict],
                 if clip_frames > round(32 * fps):
                     has_sliding_window = True
                 per_clip_frames.append(max(clip_frames, round(5 * fps)))
+                planned_shot_frames.append(max(1, int(clip_frames)))
 
         if is_minimax_h3 and bounded_director:
             from models.minimax_h3.minimax_h3_handler import (
@@ -9275,9 +9319,17 @@ def _run_video_generation(pid: str, params: dict, clip_plans: list[dict],
         # H3 sequences: consecutive shots of one scene render as one
         # generation with timed hard cuts, then split back into shots.
         sequence_groups: list[list[int]] = []
-        if is_minimax_h3 and bounded_director and h3_sequences_enabled(params, model_def):
+        sequence_mode = bool(is_minimax_h3 and bounded_director and h3_sequences_enabled(params, model_def))
+        # Members are filmed at their planned length; a lone shot keeps its
+        # rendered length (at least the model minimum).
+        group_frames = (
+            [min(planned, rendered) for planned, rendered in zip(planned_shot_frames, per_clip_frames)]
+            if sequence_mode and len(planned_shot_frames) == len(per_clip_frames)
+            else list(per_clip_frames)
+        )
+        if sequence_mode:
             sequence_groups = plan_h3_sequences(
-                clip_plans, per_clip_frames,
+                clip_plans, group_frames,
                 max_frames=bounded_maximum,
                 min_frames=bounded_minimum,
                 frame_step=bounded_step,
@@ -9295,10 +9347,16 @@ def _run_video_generation(pid: str, params: dict, clip_plans: list[dict],
             )
         if sequence_groups or any(plan.get(SEQUENCE_KEY) for plan in clip_plans):
             annotate_h3_sequences(
-                clip_plans, sequence_groups, per_clip_frames,
+                clip_plans, sequence_groups, group_frames,
                 fps=fps, min_frames=bounded_minimum, frame_step=bounded_step,
             )
             _update_pipeline(pid, clip_plans=clip_plans)
+        if sequence_mode:
+            _fit_h3_sequence_lengths(
+                clip_plans, planned_clips, sequence_groups, group_frames, per_clip_frames, fps,
+            )
+            params["planned_clips"] = planned_clips
+            _update_pipeline(pid, _planned_clips=planned_clips, clip_plans=clip_plans)
         if sequence_groups:
             print(
                 f"[Pipeline {pid}] H3 sequences: "
@@ -9569,7 +9627,10 @@ def _run_video_generation(pid: str, params: dict, clip_plans: list[dict],
                 pid=pid,
                 prompt_modes=final_prompt_modes,
                 durations=[
-                    float(planned_clips[i]["duration_sec"])
+                    # A sequence member's dialogue fits its own cut, not a full render.
+                    clip_plans[i][SEQUENCE_KEY]["frames"] / fps
+                    if i < len(clip_plans) and isinstance(clip_plans[i].get(SEQUENCE_KEY), dict)
+                    else float(planned_clips[i]["duration_sec"])
                     if planned_clips[i].get("music_timing_version") == 1 else frames / fps
                     for i, frames in enumerate(per_clip_frames)
                 ],
