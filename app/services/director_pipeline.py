@@ -5757,7 +5757,15 @@ def get_pipeline_status(pid: str, out_dir: str) -> Optional[dict]:
         "pause_reason": None,
         "llm_streaming": False,
         "recovered_from_disk": True,
+        "storyboard_judge": _saved_storyboard_report(out_dir, pid),
     }
+
+
+def _saved_storyboard_report(out_dir: str, pid: str) -> Optional[dict]:
+    from services.director.storyboard_judge import load_report
+
+    state_file = _find_pipeline_file(out_dir, pid)
+    return load_report(os.path.dirname(state_file), pid) if state_file else None
 
 
 def continue_pipeline(pid: str, updates: Optional[dict] = None):
@@ -6493,13 +6501,25 @@ def _run_pipeline(pid: str, resume: bool = False):
                 clip_images, len(clip_plans), pipeline_out_dir,
             )
 
+        # Judge the fresh shot images before paying for any video render:
+        # failures are regenerated, what stays bad is flagged for review.
+        storyboard_flags = []
+        if requires_shot_images and not _prepared_imgs_ok and not _resume_imgs_ok:
+            from services.director import storyboard_judge
+            judged = storyboard_judge.run_stage(pid, params, clip_plans, clip_images, pipeline_out_dir)
+            storyboard_flags = (judged or {}).get("flagged") or []
+            if _pipelines[pid]["status"] == "cancelled":
+                return
+
         # In non-auto mode, pause for image review
         if (
             (not auto_mode or params.get("storyboard_review"))
             and requires_shot_images and not _prepared_imgs_ok
         ):
+            review_message = "Review images" + (
+                f" ({len(storyboard_flags)} flagged by the storyboard judge)" if storyboard_flags else "")
             _update_pipeline(pid, status="paused", pause_reason="review_images",
-                             progress={"current": 2, "total": 3, "message": "Review images", "step": 0, "total_steps": 0})
+                             progress={"current": 2, "total": 3, "message": review_message, "step": 0, "total_steps": 0})
             _wait_for_resume(pid)
             if _pipelines[pid]["status"] == "cancelled":
                 return
