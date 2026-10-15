@@ -7358,7 +7358,36 @@ def _apply_style_references(pid: str, params: dict) -> str:
     return block
 
 
-_SETTINGS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "settings")
+def _apply_cinema_grammar(pid: str, params: dict, skill_type: str, planner_kwargs: dict | None = None) -> str:
+    """The CINEMA GRAMMAR planner block ("" when off).
+
+    ``director_cinema_grammar`` is "on" or "off"; without it, on for K-drama
+    custom skills (e.g. ``custom:k_drama_mini``). The choice and the block size
+    are recorded in the params snapshot.
+    """
+    from services.director.cinema_grammar import cinema_grammar_mode, planner_block
+    from services.director.planners.custom import SEQUENCE_SHOT_RANGE, model_shot_bounds
+
+    mode = cinema_grammar_mode(params, skill_type)
+    params["director_cinema_grammar"] = mode
+    if mode != "on":
+        params["_director_cinema_grammar"] = {}
+        return ""
+    kwargs = planner_kwargs or {}
+    shot_range = SEQUENCE_SHOT_RANGE if kwargs.get("sequence_shots") else model_shot_bounds(kwargs)
+    target = params.get("target_duration") or kwargs.get("target_duration")
+    try:
+        target = float(target) if target else None
+    except (TypeError, ValueError):
+        target = None
+    block = planner_block(target_duration=target, shot_range=shot_range)
+    params["_director_cinema_grammar"] = {"chars": len(block), "target_duration": target,
+                                          "shot_range": list(shot_range) if shot_range else None}
+    print(f"[Pipeline {pid}] Cinema grammar on ({len(block)} chars)")
+    return block
+
+
+_SETTINGS_DIR =os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "settings")
 
 
 def image_model_defaults(image_model: str) -> dict:
@@ -8193,6 +8222,14 @@ def _run_planning_v2(pid: str, params: dict, pipeline_type: str):
         style_block = ""
     if style_block:
         planner_kwargs["polish_block"] = "\n\n".join(filter(None, [planner_kwargs.get("polish_block", ""), style_block]))
+    # Film grammar and micro-drama rhythm (on by default for K-drama skills).
+    try:
+        grammar_block = _apply_cinema_grammar(pid, params, skill_type, planner_kwargs)
+    except Exception as error:  # noqa: BLE001 - guidance only, never fail planning
+        print(f"[Pipeline {pid}] Cinema grammar skipped: {error}")
+        grammar_block = ""
+    if grammar_block:
+        planner_kwargs["polish_block"] = "\n\n".join(filter(None, [planner_kwargs.get("polish_block", ""), grammar_block]))
 
     # Style contract: the medium this project aims for (any style, not only
     # realism). The planner writes for it and quality review judges against it.
