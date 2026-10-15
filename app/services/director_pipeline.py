@@ -24,7 +24,7 @@ import functools
 import threading
 import traceback
 from functools import wraps
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from services.job_lifecycle import (
     GENERATED_MEDIA_EXTENSIONS,
@@ -1350,6 +1350,8 @@ def _save_pipeline_state_locked(pid: str) -> bool:
             "_director_camera_framing": plan.get("_director_camera_framing"),
             "_director_location": plan.get("_director_location"),
             "_director_keep_sec": plan.get("_director_keep_sec"),
+            "_director_hand_detail": plan.get("_director_hand_detail"),
+            "_director_props": plan.get("_director_props"),
             # H3 sequence membership: one render split back into its shots.
             "_director_sequence": plan.get("_director_sequence"),
             "_director_audio_plan": plan.get("_director_audio_plan"),
@@ -3254,7 +3256,9 @@ def _rerun_clip_video_impl(out_dir: str, pid: str, clip_index: int, prompt_overr
             else "S" if start_path
             else ""
         ),
-        "num_inference_steps": video_params.get("num_inference_steps", 8),
+        "num_inference_steps": max(director_hand_detail_steps(
+            video_model, [clip], video_params.get("num_inference_steps", 8),
+        ) or [video_params.get("num_inference_steps", 8)]),
         "guidance_scale": video_params.get("guidance_scale", 1),
         "input_video_strength": video_params.get("input_video_strength", 1.0),
         "resolution": (
@@ -3672,7 +3676,9 @@ def _rerun_h3_sequence_video(
         "prompt": sequence_prompt,
         "image_mode": 0,
         "image_prompt_type": "SE" if start_path and end_path else "S" if start_path else "",
-        "num_inference_steps": video_params.get("num_inference_steps", 8),
+        "num_inference_steps": max(director_hand_detail_steps(
+            video_model, member_clips, video_params.get("num_inference_steps", 8),
+        ) or [video_params.get("num_inference_steps", 8)]),
         "guidance_scale": video_params.get("guidance_scale", 1),
         "input_video_strength": video_params.get("input_video_strength", 1.0),
         "resolution": (
@@ -6110,6 +6116,8 @@ def _resume_pipeline_reserved(pid: str, out_dir: str) -> tuple[bool, str]:
         "_director_camera_framing": c.get("_director_camera_framing"),
         "_director_location": c.get("_director_location"),
         "_director_keep_sec": c.get("_director_keep_sec"),
+        "_director_hand_detail": c.get("_director_hand_detail"),
+        "_director_props": c.get("_director_props"),
         "_director_sequence": c.get("_director_sequence"),
         "_director_audio_plan": c.get("_director_audio_plan"),
     } for c in saved_clips]
@@ -8065,6 +8073,10 @@ def _run_planning_v2(pid: str, params: dict, pipeline_type: str):
             "_director_duration_sec": getattr(shot, "duration_sec", None),
             # Part of the rendered shot the tight edit keeps (render long, cut short).
             "_director_keep_sec": metadata.get("keep_sec"),
+            # Delicate hand/object beat: more denoising steps on fused Turbo.
+            "_director_hand_detail": bool(metadata.get("hand_detail")),
+            # Objects the action uses; the start image must show them.
+            "_director_props": list(metadata.get("props") or []),
         }
         if is_h3_model:
             audio_plan = getattr(shot, "audio_plan", None)
@@ -8204,6 +8216,27 @@ def _fit_h3_sequence_lengths(
         cursor += rendered
 
 
+# MiniMax H3 fused Turbo renders in 4 steps by default. A shot the planner
+# flags with a delicate hand/object detail (``_director_hand_detail``) gets
+# more denoising steps; a multi-shot H3 sequence holding one gets them too.
+H3_FUSED_TURBO_MODEL = "minimax_h3_fused_turbo"
+HAND_DETAIL_STEPS = 8
+
+
+def director_hand_detail_steps(video_model: str, plans: list[dict], base_steps: Any) -> Optional[list[int]]:
+    """Denoising steps per shot, or None when no shot needs more than ``base_steps``."""
+    if str(video_model or "").strip().lower() != H3_FUSED_TURBO_MODEL:
+        return None
+    try:
+        base = int(base_steps)
+    except (TypeError, ValueError):
+        base = 4
+    flags = [bool((plan or {}).get("_director_hand_detail")) for plan in plans]
+    if not any(flags) or base >= HAND_DETAIL_STEPS:
+        return None
+    return [HAND_DETAIL_STEPS if flag else base for flag in flags]
+
+
 def _collapse_h3_sequence_params(
     gen_params: dict,
     units: list[list[int]],
@@ -8240,6 +8273,10 @@ def _collapse_h3_sequence_params(
                 values[unit[-1] if key == "image_end" else unit[0]]
                 for unit in units
             ]
+    steps = gen_params.get("per_clip_num_inference_steps")
+    if isinstance(steps, list) and len(steps) == shot_count:
+        # A sequence holding a hand-detail shot renders with its steps.
+        gen_params["per_clip_num_inference_steps"] = [max(steps[i] for i in unit) for unit in units]
     gen_params["video_length"] = sum(gen_params["per_clip_frames"])
     gen_params["sliding_window_size"] = max(gen_params["per_clip_frames"])
 
@@ -9804,6 +9841,9 @@ def _run_video_generation(pid: str, params: dict, clip_plans: list[dict],
             **lora_params,
             **audio_params,
         }
+        hand_steps = director_hand_detail_steps(video_model, clip_plans, steps)
+        if hand_steps:
+            gen_params["num_inference_steps"] = max(hand_steps)
         if first_start:
             gen_params["image_start"] = first_start
         if h3_first_last_seamless:
@@ -9995,6 +10035,11 @@ def _run_video_generation(pid: str, params: dict, clip_plans: list[dict],
             **lora_params,
             **audio_params,
         }
+        hand_steps = director_hand_detail_steps(video_model, clip_plans, steps)
+        if hand_steps:
+            gen_params["per_clip_num_inference_steps"] = hand_steps
+            print(f"[Pipeline {pid}] Hand-detail shots render with {HAND_DETAIL_STEPS} steps: "
+                  f"{[i + 1 for i, n in enumerate(hand_steps) if n == HAND_DETAIL_STEPS]}")
         if has_any_start and director_strategy != OMNI_REFERENCE:
             gen_params["image_start"] = image_start_paths
         if has_any_end:

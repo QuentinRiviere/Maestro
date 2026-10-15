@@ -288,6 +288,8 @@ class TestDirectorModelAssessment(unittest.TestCase):
                 "closing_blocking": (
                     "Joey sits screen-left at the kitchen table"
                 ),
+                "hand_detail": True,
+                "props": ["a plate of toast on the kitchen table"],
             },
             continuity_strategy="independent",
             narrative_role="setup",
@@ -408,6 +410,10 @@ class TestDirectorModelAssessment(unittest.TestCase):
         # Shot type survives for the review's per-shot take count.
         self.assertEqual(plans[0]["_director_scene_type"], "dialogue")
         self.assertEqual(plans[0]["_director_camera_framing"], "")
+        # The hand-detail flag and the shot's props reach both structures.
+        self.assertIs(plans[0]["_director_hand_detail"], True)
+        self.assertIs(clips[0]["_director_hand_detail"], True)
+        self.assertEqual(plans[0]["_director_props"], ["a plate of toast on the kitchen table"])
         self.assertEqual(
             clips[0]["_director_closing_blocking"],
             "Joey sits screen-left at the kitchen table",

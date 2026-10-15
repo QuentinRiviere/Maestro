@@ -27385,6 +27385,10 @@ def _run_generation(job_id: str, *, finalize: bool = True, _slot_owned: bool = F
                 per_clip_continuations = raw_params.pop(
                     "per_clip_continue_from_previous", None,
                 )
+                # Director: more denoising steps for hand-detail shots.
+                per_clip_steps = raw_params.pop(
+                    "per_clip_num_inference_steps", None,
+                )
                 # Director: the one voice each single-voice clip speaks with
                 # ("" = no voice for that clip).
                 per_clip_voices = raw_params.pop(
@@ -27499,6 +27503,8 @@ def _run_generation(job_id: str, *, finalize: bool = True, _slot_owned: bool = F
                             clip_params["prompt"]
                         ]
                     clip_params["image_start"] = image_starts[i] if i < len(image_starts) else None
+                    if isinstance(per_clip_steps, list) and i < len(per_clip_steps) and per_clip_steps[i]:
+                        clip_params["num_inference_steps"] = int(per_clip_steps[i])
                     clip_end = image_ends[i] if i < len(image_ends) else None
                     clip_params["image_end"] = clip_end if clip_end else None
                     if per_clip_h3_references is not None:

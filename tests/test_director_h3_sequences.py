@@ -213,6 +213,24 @@ class RenderUnitTests(unittest.TestCase):
         self.assertEqual(gen["per_clip_prompt_modes"], [0, 0, 0])
         self.assertEqual((gen["video_length"], gen["sliding_window_size"]), (525, 260))
 
+    def test_collapse_gives_a_sequence_its_hand_detail_steps(self):
+        gen = {
+            "prompt": self.SEP.join(["p0", "p1", "p2", "p3"]),
+            "per_clip_frames": [124, 124, 130, 141],
+            "per_clip_num_inference_steps": [4, 4, 8, 8],
+        }
+        dp._collapse_h3_sequence_params(gen, [[0], [1, 2], [3]], {1: "SEQ"}, [0, 260, 0], self.SEP)
+        self.assertEqual(gen["per_clip_num_inference_steps"], [4, 8, 8])
+
+    def test_hand_detail_steps_only_on_fused_turbo(self):
+        plans = [{}, {"_director_hand_detail": True}, {"_director_hand_detail": False}]
+        self.assertEqual(dp.HAND_DETAIL_STEPS, 8)
+        self.assertEqual(dp.director_hand_detail_steps("minimax_h3_fused_turbo", plans, 4), [4, 8, 4])
+        self.assertIsNone(dp.director_hand_detail_steps("minimax_h3_fused_turbo", [{}, {}], 4))
+        self.assertIsNone(dp.director_hand_detail_steps("minimax_h3", plans, 4))
+        # A run already at or above the hand-detail count keeps its own steps.
+        self.assertIsNone(dp.director_hand_detail_steps("minimax_h3_fused_turbo", plans, 10))
+
     def test_outputs_map_back_to_one_file_per_shot(self):
         plans = [_plan("a"), _plan("b"), _plan("b"), _plan("b"), _plan("c")]
         annotate_h3_sequences(plans, [[1, 2, 3]], [124, 80, 80, 80, 124], fps=24, **LATTICE)
