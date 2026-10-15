@@ -31983,6 +31983,12 @@ else:
 # Entry point
 # ============================================================================
 
+def _warm_error(exc: Exception) -> str:
+    """Head and tail of a warm failure: s5cmd puts the cause at the end."""
+    text = str(exc)
+    return text if len(text) <= 900 else text[:300] + " ... " + text[-600:]
+
+
 def _run_cache_warm(model_types: list[str]) -> int:
     """``--cache-warm a,b``: put models in the R2 cache from a CPU pod, then exit.
 
@@ -32041,7 +32047,7 @@ def _run_cache_warm(model_types: list[str]) -> int:
                 cache.hydrate(key)
                 rehashed = cache.rehash(key)
             except Exception as exc:
-                emit(model_type, "failed", error=str(exc)[:300])
+                emit(model_type, "failed", error=_warm_error(exc))
                 failures += 1
                 continue
             emit(model_type, "cached", message=f"Hashed {rehashed} cached file(s)", seconds=round(time.time() - started))
@@ -32052,7 +32058,7 @@ def _run_cache_warm(model_types: list[str]) -> int:
             published = _download_model_files_cached(base_type, background_publish=False,
                                                       precision_overrides=overrides)
         except Exception as exc:
-            emit(model_type, "failed", error=str(exc)[:300])
+            emit(model_type, "failed", error=_warm_error(exc))
             failures += 1
             continue
         emit(model_type, "cached", files=published, seconds=round(time.time() - started))

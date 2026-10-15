@@ -164,7 +164,7 @@ class R2CheckpointCache:
             raise CheckpointCacheError(f"s5cmd {args[0]} timed out after {int(error.timeout)}s") from error
         if check and result.returncode != 0:
             raise CheckpointCacheError(
-                f"s5cmd {args[0]} failed ({result.returncode}): {(result.stderr or '').strip()[:500]}"
+                f"s5cmd {args[0]} failed ({result.returncode}): {(result.stderr or '').strip()[-1500:]}"
             )
         return result
 
@@ -194,7 +194,7 @@ class R2CheckpointCache:
                 on_line(line.rstrip("\n"))
             stderr = process.stderr.read() if process.stderr else ""
             if process.wait() != 0:
-                raise CheckpointCacheError(f"s5cmd run failed ({process.returncode}): {stderr.strip()[:500]}")
+                raise CheckpointCacheError(f"s5cmd run failed ({process.returncode}): {stderr.strip()[-1500:]}")
         finally:
             os.unlink(batch)
 
