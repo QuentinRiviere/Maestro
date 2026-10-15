@@ -481,6 +481,23 @@ def _create_director_video_execution_profile(
     return profile
 
 
+def _apply_profile_turbo(video_params: dict, profile: dict) -> None:
+    """Carry a profile's H3 Turbo preset into the job video params.
+
+    A resumed run rebuilds its profile from the saved snapshot, so a preset
+    chosen through ``director_h3_turbo_preset`` lives only in the profile
+    until it is copied back into the params every H3 job reads.
+    """
+    preset_id = profile.get("turbo_preset")
+    if not preset_id:
+        return
+    from models.minimax_h3.turbo import minimax_h3_turbo_preset
+
+    video_params["minimax_h3_turbo_mode"] = True
+    video_params["minimax_h3_turbo_preset"] = preset_id
+    video_params["num_inference_steps"] = int(minimax_h3_turbo_preset(preset_id)["steps"])
+
+
 def _director_video_execution_profile(params: dict) -> dict:
     profile = params.get("_director_video_execution_profile")
     return dict(profile) if isinstance(profile, dict) else {}
@@ -6263,6 +6280,7 @@ def _resume_pipeline_reserved(pid: str, out_dir: str) -> tuple[bool, str]:
         return False, str(exc)
     params["_director_video_execution_profile"] = execution_profile
     params.setdefault("video_params", {})
+    _apply_profile_turbo(params["video_params"], execution_profile)
     if execution_profile.get("normalized_resolution"):
         params["video_params"]["resolution"] = execution_profile[
             "normalized_resolution"

@@ -31,6 +31,22 @@ def project(model="minimax_h3", **extra):
 
 
 class DirectorTurboPresetTests(unittest.TestCase):
+    def test_resumed_profile_carries_preset_into_job_video_params(self):
+        state = {"video_model": "minimax_h3",
+                 "video_params": {"resolution": "864x480", "num_inference_steps": 20, "minimax_h3_turbo_mode": False},
+                 "_params_snapshot": project(director_h3_turbo_preset="pdd")}
+        profile = pipeline._saved_director_video_execution_profile(state, model_def=model_definition("minimax_h3"))
+        video_params = dict(state["video_params"])
+        pipeline._apply_profile_turbo(video_params, profile)
+        self.assertIs(video_params["minimax_h3_turbo_mode"], True)
+        self.assertEqual(video_params["minimax_h3_turbo_preset"], PDD)
+        self.assertEqual(video_params["num_inference_steps"], 8)
+
+    def test_profile_without_turbo_leaves_job_video_params(self):
+        video_params = {"num_inference_steps": 20}
+        pipeline._apply_profile_turbo(video_params, {"turbo_mode": False})
+        self.assertEqual(video_params, {"num_inference_steps": 20})
+
     def test_default_leaves_base_h3_unaccelerated(self):
         params = project()
         profile = pipeline._create_director_video_execution_profile(
