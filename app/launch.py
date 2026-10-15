@@ -1521,14 +1521,25 @@ _model_downloads: dict = {}
 _model_downloads_lock = threading.Lock()
 
 
-def _download_model_files(model_type: str):
+def _download_model_files(model_type: str, precision_overrides: dict | None = None):
     """Resolve and fetch every file load_models() would download.
 
     Mirrors the file-resolution block at the top of wgp.load_models()
-    (wgp.py:4041-4143) — keep the two in sync.
+    (wgp.py:4041-4143) — keep the two in sync. ``precision_overrides`` are a
+    job's validated per-job formats (shared/precision_overrides.py): the
+    transformer, H3 video VAE and H3 text encoder that job will load.
     """
+    from shared import precision_overrides as precision_overrides_lib
+
+    with precision_overrides_lib.scope(precision_overrides):
+        _download_model_files_in_scope(model_type, precision_overrides_lib.current())
+
+
+def _download_model_files_in_scope(model_type: str, precision_overrides: dict):
+    from shared import precision_overrides as precision_overrides_lib
+
     model_def = wgp.get_model_def(model_type)
-    quantization = wgp.transformer_quantization
+    quantization = precision_overrides_lib.effective_transformer_quantization(wgp.transformer_quantization)
     dtype_policy = wgp.transformer_dtype_policy
     transformer_dtype = wgp.get_transformer_dtype(model_type, dtype_policy)
 
@@ -1562,6 +1573,10 @@ def _download_model_files(model_type: str):
         wgp.download_models(filename, model_type, source_type, submodel_no)
 
     text_encoder_URLs = wgp.get_model_recursive_prop(model_type, "text_encoder_URLs", return_list=True)
+    if precision_overrides.get("text_encoder"):
+        # The H3 text encoder variant this job asked for, not the default one.
+        variant = ((model_def or {}).get("minimax_h3_text_encoder_variants") or {}).get(precision_overrides["text_encoder"]) or {}
+        text_encoder_URLs = variant.get("URLs") or text_encoder_URLs
     check_download_cancelled()
     if text_encoder_URLs is not None:
         te_quant = (model_def.get("text_encoder_quantization", None) if model_def else None) or wgp.text_encoder_quantization
@@ -1590,17 +1605,26 @@ def _download_model_files_cached(
     entry: dict | None = None,
     *,
     background_publish: bool = True,
+    precision_overrides: dict | None = None,
 ) -> int | None:
     """On a remote worker, wrap the download with the R2 checkpoint cache.
 
     The cache pulls the files this model needed last time, Maestro's own
     resolution fetches anything still missing, and new files are published
     back to R2. Cache failures only cost speed, never the download itself.
+
+    A job's ``precision_overrides`` select another set of files; they get a
+    cache manifest of their own (``minimax_h3@tq-bf16``...) so the default
+    manifest, which every new pod pulls, never grows with A/B variants.
     """
     from services.remote_worker.checkpoint_cache import (
         CheckpointCacheError,
         R2CheckpointCache,
     )
+    from shared import precision_overrides as precision_overrides_lib
+
+    precision_overrides = dict(precision_overrides or {})
+    cache_key = precision_overrides_lib.cache_key(model_type, precision_overrides)
 
     cache = None
     if _is_remote_worker_process:
@@ -1612,7 +1636,7 @@ def _download_model_files_cached(
             roots["loras"] = wgp.server_config["loras_root"]
         cache = R2CheckpointCache.from_environment(roots)
     if cache is None:
-        _download_model_files(model_type)
+        _download_model_files(model_type, precision_overrides)
         return None
 
     def phase(name: str) -> None:
@@ -1632,56 +1656,91 @@ def _download_model_files_cached(
         # The boot prefetch may already be pulling this model from R2.
         _wait_for_prefetch(model_type, on_progress=progress)
         try:
-            cache.hydrate(model_type, on_progress=progress)
+            cache.hydrate(cache_key, on_progress=progress)
         except CheckpointCacheError as exc:
-            print(f"[Worker] R2 cache pull failed for {model_type}, downloading instead: {exc}")
+            print(f"[Worker] R2 cache pull failed for {cache_key}, downloading instead: {exc}")
         before = cache.snapshot()
         phase("downloading")
         # Files found already on disk (shared with a model fetched before)
         # belong to this model's manifest too.
         with cache.record_checks() as checked:
-            _download_model_files(model_type)
+            _download_model_files(model_type, precision_overrides)
         used = cache.used_files(checked)
         after = cache.snapshot()
     phase("done")
 
     if not background_publish:
         # Cache warming: the upload is the point, so report it and its errors.
-        return cache.publish(model_type, before, after, used)
+        return cache.publish(cache_key, before, after, used)
 
     # The weights are usable now; uploading them only speeds up the next pod,
     # so it must not keep the generation that asked for them waiting.
     def _publish() -> None:
         try:
-            published = cache.publish(model_type, before, after, used)
-            print(f"[Worker] R2 cache published {published} new file(s) for {model_type}")
+            published = cache.publish(cache_key, before, after, used)
+            print(f"[Worker] R2 cache published {published} new file(s) for {cache_key}")
         except Exception as exc:
-            print(f"[Worker] R2 cache publish failed for {model_type}: {exc}")
+            print(f"[Worker] R2 cache publish failed for {cache_key}: {exc}")
 
-    threading.Thread(target=_publish, daemon=True, name=f"r2-publish-{model_type}").start()
+    threading.Thread(target=_publish, daemon=True, name=f"r2-publish-{cache_key}").start()
 
 
 @api.post("/api/v1/models/{model_type}/download")
-def download_model(model_type: str):
-    """Start downloading a model's files in the background."""
+async def download_model(model_type: str, request: Request):
+    """Start downloading a model's files in the background.
+
+    An optional JSON body ``{"precision_overrides": {...}}`` (job param names
+    such as ``override_transformer_quantization``) downloads the files a job
+    with those per-job overrides will load. Its progress is reported under
+    ``download_key`` (``<model_type>@...``) instead of the model type.
+    """
     md = wgp.get_model_def(model_type)
     if not md:
         return JSONResponse({"error": "Model not found"}, status_code=404)
+    payload = None
+    if await request.body():
+        try:
+            payload = await request.json()
+        except ValueError:
+            return JSONResponse({"error": "Body must be JSON"}, status_code=400)
+    requested = payload.get("precision_overrides") if isinstance(payload, dict) else None
+    try:
+        precision_overrides = _job_precision_overrides(md, requested if isinstance(requested, dict) else None)
+    except ValueError as error:
+        return JSONResponse({"error": str(error)}, status_code=400)
+    from shared import precision_overrides as precision_overrides_lib
+
+    download_key = precision_overrides_lib.cache_key(model_type, precision_overrides)
+    return _start_model_download(model_type, download_key, precision_overrides)
+
+
+def _job_precision_overrides(model_def: dict, params: dict | None) -> dict:
+    """Validated per-job precision overrides from job params (ValueError when invalid)."""
+    from shared import precision_overrides as precision_overrides_lib
+
+    raw = precision_overrides_lib.from_job_params(params)
+    return precision_overrides_lib.normalize(model_def, **raw)
+
+
+def _start_model_download(model_type: str, download_key: str, precision_overrides: dict) -> dict:
     with _model_downloads_lock:
-        entry = _model_downloads.get(model_type)
+        entry = _model_downloads.get(download_key)
         if entry and entry["status"] in {"downloading", "cancelling"}:
             active_control = entry.get("_download_control")
             status = active_control.snapshot()["status"] if active_control is not None else entry["status"]
-            return {"status": status, "model_type": model_type}
+            return {"status": status, "model_type": model_type, "download_key": download_key}
         control = create_download_control()
         entry = {"status": "downloading", "error": None, "started": time.time(), "_download_control": control}
-        _model_downloads[model_type] = entry
+        _model_downloads[download_key] = entry
 
     def _worker():
         status, error = "completed", None
         try:
             with download_scope(control):
-                _download_model_files_cached(model_type, entry)
+                if precision_overrides:
+                    _download_model_files_cached(model_type, entry, precision_overrides=precision_overrides)
+                else:
+                    _download_model_files_cached(model_type, entry)
                 control.check()
         except Exception as e:
             status, error = "failed", str(e)
@@ -1691,10 +1750,10 @@ def download_model(model_type: str):
             with _model_downloads_lock:
                 snapshot = control.finish(status)
                 entry.update(status=snapshot["status"], error=None if snapshot["status"] == "cancelled" else error)
-            print(f"[Models] Pre-download {snapshot['status']}: {model_type}")
+            print(f"[Models] Pre-download {snapshot['status']}: {download_key}")
 
-    threading.Thread(target=_worker, daemon=True, name=f"model-dl-{model_type}").start()
-    return {"status": "downloading", "model_type": model_type}
+    threading.Thread(target=_worker, daemon=True, name=f"model-dl-{download_key}").start()
+    return {"status": "downloading", "model_type": model_type, "download_key": download_key}
 
 
 @api.get("/api/v1/models/downloads/status")
@@ -12106,6 +12165,21 @@ async def _prepare_generation_submission(
                 ),
             )
         body["minimax_h3_text_encoder"] = selected_encoder
+    # Per-job precision overrides: validated here so a bad value is a 400,
+    # not a failed (and model-releasing) generation. Canonical values are
+    # written back; the params then travel unchanged to generate_video and
+    # to the remote worker.
+    try:
+        _precision_overrides = _job_precision_overrides(_generation_model_def, body)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    from shared.precision_overrides import JOB_PARAMS as _PRECISION_JOB_PARAMS
+
+    for _param, _key in _PRECISION_JOB_PARAMS.items():
+        if _key in _precision_overrides:
+            body[_param] = _precision_overrides[_key]
+    if _precision_overrides.get("text_encoder"):
+        body["minimax_h3_text_encoder"] = _precision_overrides["text_encoder"]
     if _generation_model_def.get("minimax_h3_audio_only"):
         from models.minimax_h3.voice_audio import normalize_audio_settings
         try:

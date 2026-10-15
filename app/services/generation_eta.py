@@ -292,9 +292,15 @@ def _task_profile(task: Mapping[str, Any]) -> _TaskProfile:
         "window_frames": window_frames,
         "window_overlap": overlap,
         "window_discard": window_discard,
-        "text_encoder": str(params.get("minimax_h3_text_encoder") or ""),
+        "text_encoder": str(
+            params.get("override_text_encoder")
+            or params.get("minimax_h3_text_encoder")
+            or ""
+        ),
         "transformer_quantization": str(
-            params.get("transformer_quantization") or ""
+            params.get("override_transformer_quantization")
+            or params.get("transformer_quantization")
+            or ""
         ),
         "conditioning": conditioning,
         "optimization": optimization,

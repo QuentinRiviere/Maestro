@@ -30,6 +30,7 @@ import requests
 from services.remote_worker.manager import RemoteWorkerManager
 from services.lora_r2 import read_pointer
 from services.remote_worker.r2_store import R2Store
+from shared.precision_overrides import JOB_PARAMS as _PRECISION_JOB_PARAMS, cache_key, from_job_params
 
 
 log = logging.getLogger("maestro.remote_worker.forwarder")
@@ -46,6 +47,9 @@ _LIVE_CLIPS_KEY = "live_clip_output_files"
 _LIVE_FETCH_ATTEMPTS = 3
 # Params whose values are free text, never file paths.
 _TEXT_KEYS = {"prompt", "negative_prompt", "alt_prompt", "multi_prompts", "prompt_enhancer"}
+# Per-job precision overrides; never file paths, and they select the files
+# the worker must download before the job (see ``_preload``).
+_PRECISION_OVERRIDE_PARAMS = tuple(_PRECISION_JOB_PARAMS)
 
 
 class RemoteJobError(RuntimeError):
@@ -267,7 +271,7 @@ class RemoteJobForwarder:
             client = self._client_factory(str(status["service_url"]), manager.settings.token)
             store = self._store_factory(manager.settings)
 
-            self._preload(client, model_type, update=update, is_cancelled=is_cancelled)
+            self._preload(client, model_type, update=update, is_cancelled=is_cancelled, params=params)
             remote_params = self._transfer_inputs(
                 client, store, params, model_type, resolve_lora=resolve_lora, update=update,
             )
@@ -296,18 +300,34 @@ class RemoteJobForwarder:
 
     # ── steps ──────────────────────────────────────────────────────────────
 
-    def _preload(self, client: WorkerClient, model_type: str, *, update, is_cancelled) -> None:
+    def _preload(self, client: WorkerClient, model_type: str, *, update, is_cancelled,
+                 params: Mapping[str, Any] | None = None) -> None:
         if not model_type:
             return
+        # A job that overrides its precision (transformer quantization, H3
+        # video VAE or text encoder) needs other files than the model's
+        # default set: the worker downloads that variant (R2 cache aware)
+        # and reports it under its own download key.
+        overrides = {
+            name: params[name] for name in _PRECISION_OVERRIDE_PARAMS
+            if params and str(params.get(name) or "").strip()
+        }
+        download_key = model_type
+        if overrides:
+            download_key = cache_key(model_type, from_job_params(overrides))
         downloads = (client.get_json("api/v1/models/downloads/status") or {}).get("downloads") or {}
-        if (downloads.get(model_type) or {}).get("status") == "completed":
+        if (downloads.get(download_key) or {}).get("status") == "completed":
             return
-        client.post_json(f"api/v1/models/{quote(model_type, safe='')}/download")
+        started_download = client.post_json(
+            f"api/v1/models/{quote(model_type, safe='')}/download",
+            {"precision_overrides": overrides} if overrides else None,
+        ) or {}
+        download_key = str(started_download.get("download_key") or download_key)
         started = time.monotonic()
         while True:
             if is_cancelled():
                 raise RemoteJobCancelled()
-            entry = ((client.get_json("api/v1/models/downloads/status") or {}).get("downloads") or {}).get(model_type) or {}
+            entry = ((client.get_json("api/v1/models/downloads/status") or {}).get("downloads") or {}).get(download_key) or {}
             state = entry.get("status")
             if state == "completed":
                 return
@@ -350,7 +370,7 @@ class RemoteJobForwarder:
             return uploaded[real]
 
         def rewrite(value: Any, key: str = "") -> Any:
-            if key in _TEXT_KEYS:
+            if key in _TEXT_KEYS or key in _PRECISION_OVERRIDE_PARAMS:
                 return value
             if isinstance(value, str) and value and os.path.isfile(value):
                 return upload(value)
