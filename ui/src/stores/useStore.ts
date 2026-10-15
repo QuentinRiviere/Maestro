@@ -7,6 +7,7 @@ import { vigglePreparationKey, viggleTimeline } from '../lib/viggle'
 import { DEFAULT_AVATAR_SPEAKER_LOCATIONS, isLongCatAvatarModel, isMultiSpeakerAvatarModel, parseAvatarSpeakerRegions } from '../lib/avatarWorkflow'
 import type { GenerateParams, OutputFile, MediaFilter, AspectRatio, ResolutionPreset, ScailResolutionProfile, GenerationJob, ModelFamily, ModelDef, GenerationMode, StudioVideoWorkflow, StudioVideoCreateRoute, StudioVideoEffectiveCreateRoute, StudioImageWorkflow, ModelOptions, SystemConfig, SettingsTab, OutputMetadata, MultiClip, ServicesConfig, LlmStatus, LlmModelOption, AudioAnalysisResult, PlannedClip, ClipPlan, DirectorClipImage, DirectorImageGenProgress, SpeakerMapping, DirectorSkill, DirectorShotImageGuidance, DirectorBibleSelection, ShortFilmCharacter, ShortFilmPath, ViralPlatform, ViralStyle, CivitAIModel, CivitAIDownload, PipelineListItem, PipelineClipState, PipelineRepairState, SavedPipelineState, DirectorQueueState, SystemDetectResponse, SystemStats, RecastCharacterMapping, RepaintRegionMapping, H3WindowPlan, MiniMaxH3Reference, AppMode } from '../types'
 import * as api from '../api/client'
+import { mergeRunPages } from '../lib/directorRunList'
 import type { DirectorView } from '../lib/directorRoute'
 import { applyThemePrefs, getStoredPrefs, type FamilyId, type ThemeMode, type ThemePrefs } from '../lib/theme'
 import {
@@ -45,6 +46,8 @@ const _civitRefreshedCheckpointDownloads = new Set<string>()
 const DIRECTOR_REPAIR_POLL_MS = 2000
 const DIRECTOR_REPAIR_ACTIVE = new Set(['queued', 'running', 'cancelling'])
 const DIRECTOR_PIPELINE_ACTIVE = new Set(['running', 'paused'])
+/** Newest saved runs kept in `dashboardPipelineList` (pickers page the rest). */
+const DIRECTOR_RECENT_RUNS_LIMIT = 40
 type DirectorRepairPoll = {
   operationId: string
   timer: number | null
@@ -4412,7 +4415,14 @@ export const useStore = create<AppState>((set, get) => ({
   loadPipelineList: async () => {
     const loadToken = ++_dashboardPipelineListLoadToken
     try {
-      const { pipelines } = await api.fetchPipelineList()
+      // Not every saved run: the newest page (auto-selection, recent
+      // sessions) plus every live or repairing run (reconnect and repair
+      // discovery below). Run pickers page through the rest on demand.
+      const [recentPage, activePage] = await Promise.all([
+        api.fetchPipelinePage({ limit: DIRECTOR_RECENT_RUNS_LIMIT }),
+        api.fetchPipelinePage({ limit: 200, status: 'running,paused,repairing' }),
+      ])
+      const pipelines = mergeRunPages(recentPage.pipelines, activePage.pipelines)
       if (loadToken !== _dashboardPipelineListLoadToken) return
       set({ dashboardPipelineList: pipelines })
 
