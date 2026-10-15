@@ -619,6 +619,51 @@ class BibleRenderSettingsTests(unittest.TestCase):
         with self.assertRaises(bibles.BibleError):
             pipeline.render_bible_views("spring_rain", girl, "default", image_model="cloud_fal_seedream_4", views=["side"])
 
+    def test_a_place_renders_its_reverse_view_from_the_approved_image(self):
+        upload = os.path.join(self.tmp.name, "hall.png")
+        with open(upload, "wb") as handle:
+            handle.write(b"png")
+        bible = bibles.save_bible({"name": "Spring Rain", "locations": [HALL],
+                                   "props": [{"name": "Umbrella", "description": "a clear umbrella"}]})
+        hall, umbrella = bible["locations"][0]["id"], bible["props"][0]["id"]
+        with self.assertRaises(bibles.BibleError):
+            pipeline.render_bible_views("spring_rain", hall, "default", image_model="cloud_fal_seedream_4")
+        bibles.add_image("spring_rain", hall, "default", upload)
+        approved = bibles.get_bible("spring_rain")["locations"][0]["image"]
+        sent = []
+        with patch.object(pipeline, "_submit_and_wait", side_effect=self._submit(sent)):
+            pipeline.render_bible_views("spring_rain", hall, "default", image_model="cloud_fal_seedream_4")
+            for _ in range(200):
+                if not bibles.active_renders():
+                    break
+                time.sleep(0.02)
+        # One angle for a place: the same empty room from its opposite wall.
+        self.assertEqual(len(sent), 1)
+        self.assertEqual([os.path.basename(r) for r in sent[0]["image_refs"]], [approved])
+        prompt = sent[0]["prompt"]
+        self.assertIn("seen from the opposite side of the same room", prompt)
+        self.assertIn("were behind that camera", prompt)
+        self.assertIn("same light sources", prompt)
+        self.assertIn("lockers on the right", prompt)
+        # The plate's frame, not a portrait's.
+        self.assertEqual(sent[0]["resolution"], "1280x720")
+        bible = bibles.get_bible("spring_rain")
+        variant = bible["locations"][0]["variants"][0]
+        self.assertEqual(list(bibles.approved_views(variant, bibles.LOCATION_VIEWS)), ["reverse"])
+        self.assertEqual(bible["locations"][0]["image"], approved)
+        out = os.path.join(self.tmp.name, "project")
+        cast = bibles.project_cast(bible, out)
+        place = cast["locations"][0]
+        # The place keeps its own image (no turnaround sheet) and carries the reverse view.
+        self.assertEqual(place["image"], f"bible_spring_rain_{approved}")
+        self.assertNotIn("portrait", place)
+        self.assertTrue(os.path.isfile(os.path.join(out, place["views"]["reverse"])))
+        # A character angle is not a place's, and props have none.
+        with self.assertRaises(bibles.BibleError):
+            bibles.start_render("spring_rain", hall, "default", "face_front")
+        with self.assertRaises(bibles.BibleError):
+            pipeline.render_bible_views("spring_rain", umbrella, "default", image_model="cloud_fal_seedream_4")
+
 
 def test_regenerate_all_adds_a_candidate_to_every_idle_look():
     with tempfile.TemporaryDirectory() as tmp, patch.object(bibles, "BIBLES_DIR", Path(tmp) / "bibles"):
