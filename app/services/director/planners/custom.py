@@ -152,7 +152,10 @@ scene_map. x goes from 0 (the left side as the scene's main camera sees it) to 1
 back wall) to 1 (the front, where the main camera stands). facing_deg: 0 faces the back wall, 90 the right side,
 180 the front, 270 the left side. Place the camera where this shot is taken from: close to the subject for a
 close-up, far for a wide. A person keeps their spot from shot to shot of a scene unless the action moves them;
-the camera moves around them. "subjects" names each person in frame by their cast name."""
+the camera moves around them. "subjects" names each person in frame by their cast name; add "moves": true to a
+person the action has moved since the scene's previous shot. "props" places the main furniture and set pieces,
+the same spots in every shot of the scene. The camera stays on one side of the line between the two main
+characters for the whole scene; add "crosses_line": true to the camera only when this shot deliberately crosses it."""
 
 SCENE_DESIGN_SYSTEM = """You are the director preparing the scenes of a short production before shooting.
 From the brief, the skill rules and the cast, design the scenes. Return ONLY a JSON array, one object per scene:
@@ -282,7 +285,8 @@ class CustomSkillPlanner(BasePlanner):
         # A top view per shot: the storyboard draws it so the image model
         # takes the framing from geometry instead of the scene's master image.
         blocking_field = (',\n  "blocking_map": {"camera": {"x": 0.5, "y": 0.95, "facing_deg": 0, "framing": "wide|medium|close-up"},'
-                          '\n                   "subjects": [{"name": "...", "x": 0.4, "y": 0.4, "facing_deg": 90}]}'
+                          '\n                   "subjects": [{"name": "...", "x": 0.4, "y": 0.4, "facing_deg": 90}],'
+                          '\n                   "props": [{"name": "table", "x": 0.5, "y": 0.4}]}'
                           ) if narrative else ""
         blocking_rule = BLOCKING_MAP_RULE + "\n\n" if narrative else ""
         density_rule = dialogue_density_rule(dialogue_density(spec, options)) if narrative else ""

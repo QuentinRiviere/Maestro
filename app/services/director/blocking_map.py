@@ -15,6 +15,7 @@ FRAMINGS = ("wide", "medium", "close-up")
 # Horizontal field of view drawn for each framing, in degrees.
 _FOV = {"wide": 70.0, "medium": 42.0, "close-up": 22.0}
 _MAX_SUBJECTS = 6
+_MAX_PROPS = 8
 # Share of the half field of view a subject may use, so its disc stays in the wedge.
 _FIT = 0.8
 # Nearest a subject may stand in front of the lens, in room widths.
@@ -78,15 +79,7 @@ def parse_blocking_map(raw: Any, fallback_framing: Any = "") -> Optional[dict]:
     camera = raw.get("camera")
     if not isinstance(camera, dict):
         return None
-    subjects = []
-    for item in raw.get("subjects") or []:
-        if not isinstance(item, dict):
-            continue
-        name = str(item.get("name") or "").strip()[:40]
-        sx, sy = _coordinate(item.get("x")), _coordinate(item.get("y"))
-        if not name or sx is None or sy is None:
-            continue
-        subjects.append({"name": name, "x": sx, "y": sy, "facing_deg": _angle(item.get("facing_deg"))})
+    subjects = _points(raw.get("subjects"), facing=True, flags=True)
     if not subjects:
         return None
     blocking = {
@@ -95,7 +88,38 @@ def parse_blocking_map(raw: Any, fallback_framing: Any = "") -> Optional[dict]:
                    "framing": normalize_framing(camera.get("framing") or fallback_framing)},
         "subjects": subjects[:_MAX_SUBJECTS],
     }
+    if _flag(camera.get("crosses_line")):
+        blocking["camera"]["crosses_line"] = True
+    # Set pieces, and people of the scene who are out of this shot (for eyelines).
+    for key, facing in (("props", False), ("offscreen", True)):
+        points = _points(raw.get(key), facing=facing)
+        if points:
+            blocking[key] = points[:_MAX_PROPS]
     return aim_camera(blocking)
+
+
+def _flag(value: Any) -> bool:
+    return value is True or str(value or "").strip().lower() in ("true", "yes", "1")
+
+
+def _points(raw: Any, *, facing: bool, flags: bool = False) -> list[dict]:
+    """Named floor points (people or props); unnamed or off-floor ones are dropped."""
+    points = []
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()[:40]
+        px, py = _coordinate(item.get("x")), _coordinate(item.get("y"))
+        if not name or px is None or py is None:
+            continue
+        point = {"name": name, "x": px, "y": py}
+        if facing:
+            point["facing_deg"] = _angle(item.get("facing_deg"))
+        if flags and (_flag(item.get("moves")) or _flag(item.get("moved"))):
+            # The action moved this person since the scene's previous shot.
+            point["moves"] = True
+        points.append(point)
+    return points
 
 
 def subjects_in_view(blocking: dict, fit: float = 1.0) -> bool:
@@ -240,7 +264,8 @@ def gaze_targets(blocking: Optional[dict]) -> dict[str, str]:
         theta = math.radians(subject["facing_deg"])
         fx, fy = math.sin(theta), -math.cos(theta)
         best, best_angle = None, 45.0
-        for other in blocking["subjects"]:
+        # People of the scene out of this shot still draw a look (a reverse's eyeline).
+        for other in [*blocking["subjects"], *blocking.get("offscreen", [])]:
             if other is subject:
                 continue
             dx, dy = other["x"] - subject["x"], other["y"] - subject["y"]
@@ -277,10 +302,293 @@ def staging_line(blocking: Optional[dict]) -> str:
         line += (f" Exactly {count} {'person' if count == 1 else 'people'} in frame, each shown once"
                  " and never duplicated.")
     names = {s["name"] for s in placed}
-    looks = [f"{who} looks at {whom}" for who, whom in gaze_targets(blocking).items() if who in names]
+    people = {p["name"]: p for p in [*blocking["subjects"], *blocking.get("offscreen", [])]}
+    looks = []
+    for who, whom in gaze_targets(blocking).items():
+        if who not in names:
+            continue
+        if whom in names:
+            looks.append(f"{who} looks at {whom}")
+            continue
+        # The person looked at is out of frame: the eyeline gives the screen direction.
+        side = screen_side(blocking, people[whom]["x"], people[whom]["y"])
+        toward = "just past the camera" if side == "center" else f"toward frame {side}"
+        looks.append(f"{who} looks {toward} at {whom}, who is out of frame")
     if looks:
         line += " " + "; ".join(looks) + "."
+    set_line = props_line(blocking)
+    if set_line:
+        line += " " + set_line
     return line + " Nobody looks into the camera."
+
+
+def screen_side(blocking: dict, x: float, y: float) -> str:
+    """The side of the frame a floor point is on, seen from this shot's camera: left, center or right."""
+    lateral, _depth = _to_camera(blocking, x, y)
+    if abs(lateral) < 0.02:
+        return "center"
+    return "right" if lateral > 0 else "left"
+
+
+def screen_sides(blocking: Optional[dict]) -> dict[str, str]:
+    """Each person of the scene (in this shot or out of it) and the frame side they are on."""
+    if not blocking:
+        return {}
+    return {p["name"]: screen_side(blocking, p["x"], p["y"])
+            for p in [*blocking["subjects"], *blocking.get("offscreen", [])]}
+
+
+def props_line(blocking: Optional[dict]) -> str:
+    """Where the scene's set pieces stand in this frame ("" when none is in view)."""
+    if not blocking or not blocking.get("props"):
+        return ""
+    half = math.tan(math.radians(_FOV.get(blocking["camera"]["framing"], _FOV["medium"]) / 2))
+    placed = []
+    for prop in blocking["props"]:
+        lateral, depth = _to_camera(blocking, prop["x"], prop["y"])
+        if depth <= 0.02:
+            continue
+        ratio = lateral / (depth * half)
+        if abs(ratio) > 1.0:
+            continue
+        where = "frame left" if ratio < -0.33 else "frame right" if ratio > 0.33 else "frame center"
+        placed.append(f"the {prop['name']} {where}")
+    return f"Set: {', '.join(placed)}." if placed else ""
+
+
+# ── Scene lock: one floor plan per scene ───────────────────────────────────
+#
+# The planner writes a blocking map per shot, and each one drifts a little
+# from the last: two people face to face become side by side, the reverse
+# angle swaps who is on the left. A scene keeps ONE floor plan instead
+# (where each person stands and faces, the set pieces, the master camera and
+# its side of the action line); later shots only move the camera.
+
+# A person this far (room widths) from their place in the scene layout contradicts it.
+_POSITION_DRIFT = 0.12
+# A person turned this far (degrees) from their facing in the layout contradicts it.
+_FACING_DRIFT = 60.0
+# A camera this close to the action line stands on it and is moved off it, to the scene's side.
+_ON_LINE = 0.04
+_LINE_OFFSET = 0.06
+# A camera turned this far (degrees) from the master's facing looks at the opposite wall.
+_REVERSE_ANGLE = 120.0
+
+
+def _name_key(name: Any) -> str:
+    return str(name or "").strip().casefold()
+
+
+def _angle_between(a: float, b: float) -> float:
+    difference = abs(a - b) % 360.0
+    return min(difference, 360.0 - difference)
+
+
+def _find(points: list[dict], name: Any) -> Optional[dict]:
+    key = _name_key(name)
+    return next((p for p in points if _name_key(p["name"]) == key), None)
+
+
+def scene_floor_layout(first: Optional[dict], scene_map: Any = None, main: Optional[list[str]] = None
+                       ) -> Optional[dict]:
+    """The scene's floor plan, from a structured scene map or else the scene's first blocking map.
+
+    Returns ``{"people": [{name, x, y, facing_deg}], "props": [{name, x, y}],
+    "camera": {x, y, facing_deg}, "line": [name, name], "side": -1 | 0 | 1}``:
+    ``camera`` is the master's (the view the place's main image shows),
+    ``line`` the two main characters the 180-degree line runs through and
+    ``side`` the side of that line the camera keeps (0 until a shot sets it).
+    ``main`` names the main characters, most important first.
+    """
+    people: list[dict] = []
+    props: list[dict] = []
+    camera = None
+    if isinstance(scene_map, dict):
+        people = _points(scene_map.get("subjects") or scene_map.get("people"), facing=True)[:_MAX_SUBJECTS]
+        props = _points(scene_map.get("props"), facing=False)[:_MAX_PROPS]
+        raw_camera = scene_map.get("camera") if isinstance(scene_map.get("camera"), dict) else {}
+        cx, cy = _camera_coordinate(raw_camera.get("x")), _camera_coordinate(raw_camera.get("y"))
+        facing = _angle(raw_camera.get("facing_deg"))
+        if cx is not None and cy is not None and facing is not None:
+            camera = {"x": cx, "y": cy, "facing_deg": facing}
+    if first:
+        for subject in first["subjects"]:
+            if _find(people, subject["name"]) is None:
+                people.append({k: subject.get(k) for k in ("name", "x", "y", "facing_deg")})
+        for prop in first.get("props", []):
+            if _find(props, prop["name"]) is None:
+                props.append(dict(prop))
+        if camera is None:
+            camera = {k: first["camera"][k] for k in ("x", "y", "facing_deg")}
+    if not people or camera is None:
+        return None
+    layout = {"people": people, "props": props, "camera": camera, "line": [], "side": 0}
+    _set_line(layout, main)
+    return layout
+
+
+def _set_line(layout: dict, main: Optional[list[str]] = None) -> None:
+    """The action line runs through the two main characters of the layout; the master camera picks the side."""
+    names = [p["name"] for p in (_find(layout["people"], n) for n in main or []) if p]
+    names += [p["name"] for p in layout["people"] if p["name"] not in names]
+    if len(names) < 2 or layout["line"]:
+        return
+    layout["line"] = names[:2]
+    distance = _line_distance(layout, layout["camera"]["x"], layout["camera"]["y"])
+    layout["side"] = 0 if distance is None or abs(distance) < _ON_LINE else (1 if distance > 0 else -1)
+
+
+def _line_distance(layout: dict, x: float, y: float) -> Optional[float]:
+    """Signed distance of a floor point from the action line (positive on its left, walking from A to B)."""
+    if len(layout["line"]) < 2:
+        return None
+    a, b = (_find(layout["people"], name) for name in layout["line"])
+    if a is None or b is None:
+        return None
+    dx, dy = b["x"] - a["x"], b["y"] - a["y"]
+    length = math.hypot(dx, dy)
+    if length < 1e-6:
+        return None
+    return (dx * (y - a["y"]) - dy * (x - a["x"])) / length
+
+
+def _line_normal(layout: dict) -> tuple[float, float]:
+    a, b = (_find(layout["people"], name) for name in layout["line"])
+    dx, dy = b["x"] - a["x"], b["y"] - a["y"]
+    length = math.hypot(dx, dy)
+    # Rotating A->B by -90 degrees points to the positive side of _line_distance.
+    return -dy / length, dx / length
+
+
+def _reflect_facing(layout: dict, facing: float) -> float:
+    """A facing mirrored across the action line."""
+    a, b = (_find(layout["people"], name) for name in layout["line"])
+    dx, dy = b["x"] - a["x"], b["y"] - a["y"]
+    length = math.hypot(dx, dy)
+    ux, uy = dx / length, dy / length
+    theta = math.radians(facing)
+    fx, fy = math.sin(theta), -math.cos(theta)
+    dot = fx * ux + fy * uy
+    rx, ry = 2 * dot * ux - fx, 2 * dot * uy - fy
+    return round(math.degrees(math.atan2(rx, -ry)) % 360.0, 2)
+
+
+def lock_shot_blocking(layout: dict, blocking: dict) -> tuple[dict, list[str]]:
+    """This shot's blocking on the scene's floor plan; returns it and what was changed, in words.
+
+    People keep their place and facing from the layout (only the camera
+    moves) unless the shot marks them ``moves`` (the action moved them; the
+    layout follows). A person the layout does not know yet joins it where
+    the shot puts them. The camera keeps the scene's side of the action line
+    unless it is marked ``crosses_line`` (the scene then stays on the new
+    side). ``layout`` is updated in place.
+    """
+    notes: list[str] = []
+    subjects = [dict(s) for s in blocking["subjects"]]
+    before = (sum(s["x"] for s in subjects) / len(subjects), sum(s["y"] for s in subjects) / len(subjects))
+    for subject in subjects:
+        known = _find(layout["people"], subject["name"])
+        if known is None:
+            layout["people"].append({k: subject.get(k) for k in ("name", "x", "y", "facing_deg")})
+            continue
+        if subject.get("moves"):
+            known.update(x=subject["x"], y=subject["y"])
+            if subject.get("facing_deg") is not None:
+                known["facing_deg"] = subject["facing_deg"]
+            notes.append(f"{subject['name']} moves to a new place, as planned")
+            continue
+        drift = math.hypot(subject["x"] - known["x"], subject["y"] - known["y"])
+        if drift > _POSITION_DRIFT:
+            notes.append(f"{subject['name']} kept at the scene position ({known['x']:.2f}, {known['y']:.2f}) "
+                         f"instead of ({subject['x']:.2f}, {subject['y']:.2f})")
+        subject.update(x=known["x"], y=known["y"])
+        if known.get("facing_deg") is None:
+            known["facing_deg"] = subject.get("facing_deg")
+        elif subject.get("facing_deg") is None:
+            subject["facing_deg"] = known["facing_deg"]
+        elif _angle_between(subject["facing_deg"], known["facing_deg"]) > _FACING_DRIFT:
+            notes.append(f"{subject['name']} kept facing {known['facing_deg']:.0f} degrees "
+                         f"instead of {subject['facing_deg']:.0f}")
+            subject["facing_deg"] = known["facing_deg"]
+    _set_line(layout)
+
+    # The camera keeps where it stood relative to the people it frames.
+    after = (sum(s["x"] for s in subjects) / len(subjects), sum(s["y"] for s in subjects) / len(subjects))
+    camera = dict(blocking["camera"])
+    camera.update(x=round(camera["x"] + after[0] - before[0], 4), y=round(camera["y"] + after[1] - before[1], 4))
+
+    distance = _line_distance(layout, camera["x"], camera["y"])
+    if distance is not None:
+        side = 0 if abs(distance) < _ON_LINE else (1 if distance > 0 else -1)
+        target = distance
+        if layout["side"] == 0:
+            layout["side"] = side
+        elif side == -layout["side"] and camera.get("crosses_line"):
+            layout["side"] = side
+            notes.append("the camera crosses the action line, as planned")
+        elif side == -layout["side"]:
+            target = -distance
+            camera["facing_deg"] = _reflect_facing(layout, camera["facing_deg"])
+            notes.append("camera moved back to the scene's side of the action line (180-degree rule)")
+        elif side == 0:
+            target = layout["side"] * _LINE_OFFSET
+        if target != distance:
+            nx, ny = _line_normal(layout)
+            camera.update(x=round(camera["x"] + nx * (target - distance), 4),
+                          y=round(camera["y"] + ny * (target - distance), 4))
+
+    for prop in blocking.get("props", []):
+        if _find(layout["props"], prop["name"]) is None:
+            layout["props"].append(dict(prop))
+    in_shot = {_name_key(s["name"]) for s in subjects}
+    locked = {**blocking, "camera": camera, "subjects": subjects}
+    offscreen = [dict(p) for p in layout["people"] if _name_key(p["name"]) not in in_shot]
+    locked.pop("offscreen", None)
+    if offscreen:
+        locked["offscreen"] = offscreen
+    if layout["props"]:
+        locked["props"] = [dict(p) for p in layout["props"]]
+    return aim_camera(locked), notes
+
+
+def camera_faces_reverse(layout: Optional[dict], blocking: Optional[dict]) -> bool:
+    """Whether this shot's camera looks at the wall opposite the one the master (and the place's image) sees."""
+    if not layout or not blocking or blocking["camera"].get("facing_deg") is None:
+        return False
+    return _angle_between(blocking["camera"]["facing_deg"], layout["camera"]["facing_deg"]) > _REVERSE_ANGLE
+
+
+def main_characters(blockings: list[Optional[dict]]) -> list[str]:
+    """The scene's people, most often in shot first (first appearance breaks ties)."""
+    counts: dict[str, list] = {}
+    for index, blocking in enumerate(blockings):
+        for subject in (blocking or {}).get("subjects", []):
+            entry = counts.setdefault(_name_key(subject["name"]), [0, index, subject["name"]])
+            entry[0] += 1
+    return [name for _count, _first, name in sorted(counts.values(), key=lambda e: (-e[0], e[1]))]
+
+
+def lock_scene_blockings(raw_maps: list[Any], *, scene_map: Any = None) -> list[dict]:
+    """Every shot of one scene on the scene's single floor plan.
+
+    Returns one entry per shot, in order: ``{"blocking": the locked map or
+    None, "reverse": the camera faces the opposite wall, "notes": [what the
+    lock changed]}``. The layout comes from ``scene_map`` when it is a
+    structured map, else from the first shot with a usable blocking map.
+    """
+    blockings = [parse_blocking_map(raw) for raw in raw_maps]
+    main = main_characters(blockings)
+    layout = None
+    results = []
+    for blocking in blockings:
+        if blocking is None:
+            results.append({"blocking": None, "reverse": False, "notes": []})
+            continue
+        if layout is None:
+            layout = scene_floor_layout(blocking, scene_map, main)
+        locked, notes = lock_shot_blocking(layout, blocking)
+        results.append({"blocking": locked, "reverse": camera_faces_reverse(layout, locked), "notes": notes})
+    return results
 
 
 def render_blocking_map(blocking: dict, path: str, size: int = 768) -> str:
