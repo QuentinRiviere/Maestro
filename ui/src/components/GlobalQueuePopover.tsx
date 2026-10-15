@@ -5,6 +5,7 @@ import { fetchBibleRenders, type BibleRender } from '../api/directorBibles'
 import { formatEtaDuration } from '../lib/format'
 import { PROMPT_ENHANCEMENT_ACTIVITY } from '../lib/promptEnhancementActivity'
 import { EnhancedJobReview } from './EnhancedJobReview'
+import { ProvenanceChip } from './ProvenanceChip'
 import type { GenerationJob } from '../types'
 
 const ACTIVE_JOB_STATUSES = new Set(['held', 'queued', 'running'])
@@ -530,6 +531,7 @@ export function GlobalQueuePopover({
                     <button type="button" title="Dismiss saved job" aria-label="Dismiss saved job" disabled={clearingCompleted}
                       onClick={() => dismissJob(job.id)} className="rounded p-1 text-text-muted hover:bg-bg-hover disabled:opacity-40"><X size={12}/></button>
                   </div>
+                  <ProvenanceChip provenance={job.provenance} className="mt-1.5" />
                   {job.enhancement && <button type="button" onClick={() => {setReviewJob(job); setOpen(false)}}
                     className="mt-2 min-h-8 rounded border border-border px-2 text-[10px] text-accent-blue hover:bg-bg-hover">View prompts</button>}
                 </div>)}

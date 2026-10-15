@@ -91,6 +91,8 @@ export interface ApiJobStatus {
   /** Present only on failed jobs that look like CUDA OOMs.
    *  See `OomInfo` in types/index.ts. */
   oom_info?: import('../types').OomInfo | null
+  /** Model, runtime, GPU, timing and cost of a finished job. */
+  provenance?: import('../types').GenerationProvenance | null
   /** Adaptive video-generation ETA. Values are absent for non-video jobs. */
   current_clip?: number
   total_clips?: number

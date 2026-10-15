@@ -2,6 +2,7 @@ import { Layers } from 'lucide-react'
 import { formatSeconds, type RunShot, type SceneGroup } from '../../lib/directorRun'
 import { JudgeBadge, ShotMedia, StatusDot } from './runUi'
 import { STATUS_LABEL } from './runStyles'
+import { ProvenanceChip } from '../ProvenanceChip'
 
 function ShotPanel({ shot, aspect, staged, onOpen }: {
   shot: RunShot
@@ -49,6 +50,9 @@ function ShotPanel({ shot, aspect, staged, onOpen }: {
         ))}
         {shot.dialogue.length > 2 && <p className="text-[9px] text-text-muted">+{shot.dialogue.length - 2} more line(s)</p>}
         {shot.action && <p className="text-[10px] text-text-muted line-clamp-2 italic">{shot.action}</p>}
+        {/* Inside the panel button: hover shows the details, the drawer lists them. */}
+        <ProvenanceChip provenance={shot.videoProvenance} label="Clip" expandable={false} />
+        <ProvenanceChip provenance={shot.imageProvenance} label="Frame" expandable={false} />
       </div>
     </button>
   )

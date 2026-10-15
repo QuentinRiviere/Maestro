@@ -17,6 +17,8 @@ import { getVideoPosterUrl } from '../../lib/thumbnailCache'
 import { useVideoPosterSize } from '../../lib/useVideoPosterSize'
 import { getMediaTimestamp } from '../../lib/mediaTimestamp'
 import { MediaMetadataDetails } from './MediaMetadataDetails'
+import { ProvenanceChip, ProvenanceDetails } from '../ProvenanceChip'
+import { hasProvenance } from '../../lib/provenance'
 
 interface Props {
   file: OutputFile
@@ -892,6 +894,7 @@ export function MediaFeedItem({ file, index, isActive, onActivate, onPlaybackSta
               {mediaTimestamp.compact}
             </div>
           )}
+          <ProvenanceChip provenance={meta?.provenance} className="mt-1" />
         </div>
 
         {browsingAllFolders && file.workspace && (
@@ -1178,6 +1181,12 @@ export function MediaFeedItem({ file, index, isActive, onActivate, onPlaybackSta
           onClick={event => event.stopPropagation()}
         >
           <MediaMetadataDetails file={file} metadata={meta} />
+          {hasProvenance(meta?.provenance) && (
+            <div className="mb-3">
+              <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-text-muted">Generated with</div>
+              <ProvenanceDetails provenance={meta?.provenance} />
+            </div>
+          )}
           {params && <>
           <div className="flex flex-wrap gap-1.5 mb-3">
             {h3Workflow && (

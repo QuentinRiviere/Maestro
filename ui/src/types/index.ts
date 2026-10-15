@@ -1,3 +1,7 @@
+import type { GenerationProvenance } from '../lib/provenance'
+
+export type { GenerationProvenance }
+
 export interface ModelFamily {
   id: string
   label: string
@@ -547,6 +551,8 @@ export interface GenerationJob {
   previewNotice?: string | null
   /** Present only on failed jobs that look like CUDA OOMs (see OomInfo). */
   oomInfo?: OomInfo | null
+  /** What produced the outputs: model, runtime, GPU, timing, cost. Set on finish. */
+  provenance?: GenerationProvenance | null
   /** Exact prompts assigned to an in-flight H3 sliding-window generation. */
   h3WindowPlan?: H3WindowPlan | null
   /** Adaptive video ETA fields; omitted for image/audio/tool jobs. */
@@ -1216,6 +1222,8 @@ export interface OutputProcessingInfo {
 }
 
 export interface OutputMetadata {
+  /** Model, runtime, LoRAs, acceleration, GPU and render time of this output. */
+  provenance?: GenerationProvenance | null
   model_details?: {
     architecture?: string
     sample_rate?: number
@@ -2026,6 +2034,9 @@ export interface PipelineClipState {
   tag: 'good' | 'needs_work' | null
   image_gen_time_sec: number | null
   video_gen_time_sec: number | null
+  /** What rendered the start image / the clip, from their output sidecars. */
+  image_provenance?: GenerationProvenance | null
+  video_provenance?: GenerationProvenance | null
 }
 
 export interface PipelineLlmPass {

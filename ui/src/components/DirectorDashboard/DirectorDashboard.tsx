@@ -10,6 +10,7 @@ import { RunsView } from './RunsView'
 import { RunPicker } from './RunPicker'
 import { runListItemFromState } from '../../lib/directorRunList'
 import { RunWorkspace } from './RunWorkspace'
+import { ProvenanceChip } from '../ProvenanceChip'
 
 const VIEW_TABS: Array<{ view: DirectorView; label: string; icon: typeof List; title: string }> = [
   { view: 'runs', label: 'Runs', icon: List, title: 'All Director runs, newest first' },
@@ -265,6 +266,12 @@ function ClipCard({ clip, pipeline, busy = false, onTag, onRerunImage, onRerunVi
       </div>
 
       <div className="p-2 space-y-2">
+        {(clip.video_provenance || clip.image_provenance) && (
+          <div className="space-y-1">
+            <ProvenanceChip provenance={clip.video_provenance} label="Clip" />
+            <ProvenanceChip provenance={clip.image_provenance} label="Frame" />
+          </div>
+        )}
         {/* Image section */}
         <div className="flex gap-2">
           {/* Thumbnail */}

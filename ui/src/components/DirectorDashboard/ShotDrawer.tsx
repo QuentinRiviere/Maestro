@@ -8,6 +8,8 @@ import type { AnnotationActions } from './useRunAnnotations'
 import { JudgeBadge, StatusDot } from './runUi'
 import { trimProps } from '../../lib/videoTrim'
 import { STATUS_LABEL, frameAspect } from './runStyles'
+import { ProvenanceDetails } from '../ProvenanceChip'
+import { hasProvenance } from '../../lib/provenance'
 
 export interface PromptUpdate {
   image_prompt?: string
@@ -232,6 +234,17 @@ export function ShotDrawer({ shot, aspect, stagedNote, actions, annotations = []
               <Fact label="Clip file" value={shot.video} />
             </div>
           </Section>
+
+          {hasProvenance(shot.videoProvenance) && (
+            <Section title="Clip generated with">
+              <ProvenanceDetails provenance={shot.videoProvenance} />
+            </Section>
+          )}
+          {hasProvenance(shot.imageProvenance) && (
+            <Section title="Start frame generated with">
+              <ProvenanceDetails provenance={shot.imageProvenance} />
+            </Section>
+          )}
 
           {(actions.editBlockedReason || stagedNote) && (
             <p className={`text-[11px] rounded px-2 py-1.5 border ${stagedNote

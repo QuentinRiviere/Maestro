@@ -9,6 +9,7 @@
  * statuses. No React, no fetch: everything here is unit-tested.
  */
 import type { SavedPipelineState } from '../types'
+import type { GenerationProvenance } from './provenance'
 
 export type StageStatus = 'pending' | 'running' | 'done' | 'failed' | 'flagged' | 'skipped'
 
@@ -95,6 +96,9 @@ export interface RunShot {
   imageStatus: StageStatus
   videoStatus: StageStatus
   tag: 'good' | 'needs_work' | null
+  /** What rendered the start image and the clip (model, GPU, time, cost), when recorded. */
+  imageProvenance: GenerationProvenance | null
+  videoProvenance: GenerationProvenance | null
 }
 
 export interface SceneGroup {
@@ -242,6 +246,10 @@ function videoStatusOf(hasVideo: boolean, stale: boolean, runStatus: string, act
 }
 
 /** Merge saved and live state into one ordered list of shots. */
+function provenanceOf(value: unknown): GenerationProvenance | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as GenerationProvenance : null
+}
+
 export function buildRunShots(
   saved: SavedPipelineState | null | undefined,
   live?: LiveRunStatus | null,
@@ -292,6 +300,8 @@ export function buildRunShots(
       imageStatus: imageStatusOf(!!startImage, judge, needsImage, runStatus, false),
       videoStatus: videoStatusOf(!!video, videoStale, runStatus, false),
       tag: savedClip.tag === 'good' || savedClip.tag === 'needs_work' ? savedClip.tag : null,
+      imageProvenance: provenanceOf(savedClip.image_provenance),
+      videoProvenance: provenanceOf(savedClip.video_provenance),
     })
   }
 

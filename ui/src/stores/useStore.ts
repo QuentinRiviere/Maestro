@@ -118,6 +118,11 @@ function _adaptiveEtaJobFields(status: api.ApiJobStatus): Partial<GenerationJob>
   }
 }
 
+/** A finished job's provenance; absent while running and on older backends. */
+function _provenanceJobFields(status: api.ApiJobStatus): Partial<GenerationJob> {
+  return status.provenance ? { provenance: status.provenance } : {}
+}
+
 function _previewJobFields(status: api.ApiJobStatus): Partial<GenerationJob> {
   if (status.status === 'completed' || status.status === 'failed' || status.status === 'cancelled') {
     return { preview: null, previewNotice: null }
@@ -8634,6 +8639,7 @@ export const useStore = create<AppState>((set, get) => ({
               enhancement: status.enhancement ?? j.enhancement,
               ..._adaptiveEtaJobFields(status),
               ..._previewJobFields(status),
+              ..._provenanceJobFields(status),
             }),
           }))
 
@@ -8818,6 +8824,7 @@ export const useStore = create<AppState>((set, get) => ({
             enhancement: j.enhancement,
             ..._adaptiveEtaJobFields(j),
             ..._previewJobFields(j),
+            ..._provenanceJobFields(j),
           }))
         // A successful retry is already accepted even if the history refresh
         // fails or is briefly stale. Publish and poll that confirmed job too.
@@ -8857,6 +8864,7 @@ export const useStore = create<AppState>((set, get) => ({
               enhancement: status.enhancement ?? j.enhancement,
                     ..._adaptiveEtaJobFields(status),
                     ..._previewJobFields(status),
+              ..._provenanceJobFields(status),
                   }),
                 }))
                 if (status.status === 'completed' || status.status === 'failed' || status.status === 'cancelled') {
