@@ -2342,6 +2342,8 @@ def _delete_pipeline_locked(out_dir: str, pid: str) -> dict:
     if state_removed:
         with _pipeline_lock:
             _pipelines.pop(pid, None)
+        from services.director_annotations import remove_annotations_file
+        remove_annotations_file(pipeline_dir, pid)
 
     try:
         from services.search_index import get_search_index

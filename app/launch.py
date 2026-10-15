@@ -11467,6 +11467,12 @@ async def save_pipeline_clip_prompt(pid: str, clip_index: int, request: Request)
     return {"status": "ok"}
 
 
+# Post-analysis notes on runs. They live in a sidecar file per run, so they
+# can be written while the run renders without racing its state saves.
+from services.director_annotations import register_routes as _register_director_annotations
+_register_director_annotations(api, get_base_dir=lambda: wgp.server_config.get("save_path", "outputs"))
+
+
 # ── Director Pipeline Re-run ──────────────────────────────────────────────
 
 @api.post("/api/v1/director/pipelines/{pid}/repair")
