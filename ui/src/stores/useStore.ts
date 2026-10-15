@@ -14114,6 +14114,7 @@ export const useStore = create<AppState>((set, get) => ({
         bible_locations: state.directorBibleSelection.locations,
         bible_props: state.directorBibleSelection.props,
         bible_variants: state.directorBibleSelection.variants,
+        director_style_reference: state.directorBibleSelection.style_reference || 'auto',
       } : {}),
       storyboard_review: state.directorStoryboardReview || undefined,
       workspace: get().activeWorkspace,

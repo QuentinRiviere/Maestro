@@ -41,8 +41,24 @@ function EpisodeSelection({ bible, disabled }: { bible: DirectorBible; disabled:
     setSelection({ ...selection, variants: Object.keys(variants).length ? variants : undefined })
   }
 
+  const analysed = (bible.style_references ?? []).filter(r => r.status === 'done' && r.grammar?.rules.length)
+  const enabled = analysed.filter(r => r.enabled)
+
   return (
     <div className="space-y-1">
+      {analysed.length > 0 && (
+        <div className="flex items-center gap-1"
+          title="Reference videos of the bible whose staging, editing and rhythm guide this storyboard">
+          <span className="w-10 shrink-0 text-[9px] text-text-muted">Style</span>
+          <select value={selection.style_reference ?? 'auto'} disabled={disabled} aria-label="Style reference"
+            onChange={e => setSelection({ ...selection, style_reference: e.target.value === 'auto' ? undefined : e.target.value })}
+            className="min-w-0 flex-1 bg-bg-tertiary border border-border rounded px-1 py-0.5 text-[9px] text-text-primary focus:outline-none focus:border-accent-blue">
+            <option value="auto">{enabled.length ? `Auto: ${enabled.map(r => r.label).join(', ')}` : 'Auto (none enabled)'}</option>
+            <option value="off">Off</option>
+            {analysed.map(r => <option key={r.id} value={r.id}>Only {r.label}</option>)}
+          </select>
+        </div>
+      )}
       {GROUPS.map(([group, title]) => bible[group].length > 0 && (
         <div key={group} className="flex flex-wrap items-center gap-1">
           <span className="w-10 shrink-0 text-[9px] text-text-muted">{title}</span>

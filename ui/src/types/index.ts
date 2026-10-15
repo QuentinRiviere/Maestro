@@ -13,6 +13,8 @@ export interface DirectorBibleSelection {
   locations?: string[]
   props?: string[]
   variants?: Record<string, string>
+  /** Reference videos whose staging grammar guides the planner: "auto" (default, every enabled one), "off" or one reference id. */
+  style_reference?: string
 }
 export type DirectorShotImagePolicy = 'generate' | 'prompt_only' | 'direct_references'
 
