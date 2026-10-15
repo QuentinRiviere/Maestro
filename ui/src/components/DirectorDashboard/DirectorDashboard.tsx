@@ -1,10 +1,20 @@
 import { useState, useEffect, useRef, Component, type ReactNode } from 'react'
-import { X, ChevronDown, ChevronRight, Play, ImageIcon, Check, AlertTriangle, Clock, Brain, Sparkles, Loader2, Camera, Film, Combine, Pencil, Trash2, BookOpen } from 'lucide-react'
+import { X, ChevronDown, ChevronRight, Play, ImageIcon, Check, AlertTriangle, Clock, Brain, Sparkles, Loader2, Camera, Film, Combine, Pencil, Trash2, BookOpen, LayoutGrid, Workflow, List, Clapperboard } from 'lucide-react'
 import { useStore } from '../../stores/useStore'
 import { fetchPipelineCosts, getFileUrl, updateClipPrompt, type PipelineCosts } from '../../api/client'
 import type { PipelineClipState, SavedPipelineState } from '../../types'
 import { QualityReviewPanel } from './QualityReviewPanel'
 import { SaveCastToBible } from '../Sidebar/DirectorBible'
+import type { DirectorView } from '../../lib/directorRoute'
+import { RunsView } from './RunsView'
+import { RunWorkspace } from './RunWorkspace'
+
+const VIEW_TABS: Array<{ view: DirectorView; label: string; icon: typeof List; title: string }> = [
+  { view: 'runs', label: 'Runs', icon: List, title: 'All Director runs, newest first' },
+  { view: 'storyboard', label: 'Storyboard', icon: LayoutGrid, title: 'Shots as storyboard panels, grouped by scene' },
+  { view: 'canvas', label: 'Canvas', icon: Workflow, title: 'Pipeline flow from inputs to the final edit, live while running' },
+  { view: 'details', label: 'Details', icon: Brain, title: 'LLM log, quality review and per-clip prompts' },
+]
 
 /** Safely coerce any value to a displayable string */
 function safeStr(val: unknown): string {
@@ -581,6 +591,8 @@ function DirectorDashboardInner() {
   const resumePipeline = useStore(s => s.resumePipeline)
   const deletePipeline = useStore(s => s.deletePipeline)
   const loadDirectorFromPipeline = useStore(s => s.loadDirectorFromPipeline)
+  const view = useStore(s => s.dashboardView)
+  const setView = useStore(s => s.setDashboardView)
   const [resuming, setResuming] = useState(false)
   const [bibleFor, setBibleFor] = useState<string | null>(null)
   // Keyed by pipeline id — a bare boolean would let "arm on pipeline A,
@@ -612,6 +624,7 @@ function DirectorDashboardInner() {
       autoLoadAttemptedPid.current = null
       return
     }
+    if (view === 'runs') return
     if (pipelineList.length > 0 && !selectedPipeline && !loading) {
       const active = pipelineList.find(p =>
         p.repair_status === 'queued'
@@ -625,7 +638,7 @@ function DirectorDashboardInner() {
       autoLoadAttemptedPid.current = pid
       void loadPipeline(pid)
     }
-  }, [pipelineList, selectedPipeline, loading, loadPipeline])
+  }, [pipelineList, selectedPipeline, loading, loadPipeline, view])
 
   const goodCount = selectedPipeline?.clips.filter(c => c.tag === 'good').length || 0
   const needsWorkCount = selectedPipeline?.clips.filter(c => c.tag === 'needs_work').length || 0
@@ -679,13 +692,41 @@ function DirectorDashboardInner() {
   return (
     <div className="fixed inset-0 z-[60] flex flex-col bg-bg-primary">
       {/* Header */}
-      <div className="px-4 py-3 border-b border-border flex flex-wrap items-center gap-2 shrink-0">
-        <h1 className="text-sm font-semibold text-text-primary shrink-0">Dashboard</h1>
+      <div className="pl-4 pr-14 py-3 border-b border-border flex flex-wrap items-center gap-2 shrink-0">
+        <h1 className="text-sm font-semibold text-text-primary shrink-0 flex items-center gap-1.5">
+          <Clapperboard size={14} className="text-accent-blue" /> Director
+        </h1>
+
+        <div role="tablist" aria-label="Director view" className="flex shrink-0 rounded-lg border border-border bg-bg-tertiary p-0.5">
+          {VIEW_TABS.map(tab => {
+            const Icon = tab.icon
+            const disabled = tab.view !== 'runs' && !selectedPipeline
+            return (
+              <button
+                key={tab.view}
+                role="tab"
+                aria-selected={view === tab.view}
+                disabled={disabled}
+                title={tab.title}
+                onClick={() => setView(tab.view)}
+                className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] transition-colors disabled:opacity-40 ${view === tab.view
+                  ? 'bg-toggle-active text-white shadow-accent-glow'
+                  : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'}`}
+              >
+                <Icon size={11} /> {tab.label}
+              </button>
+            )
+          })}
+        </div>
 
         {/* Pipeline selector */}
         <select
           value={selectedPipeline?.pipeline_id || ''}
-          onChange={e => { if (e.target.value) loadPipeline(e.target.value) }}
+          onChange={e => {
+            if (!e.target.value) return
+            void loadPipeline(e.target.value)
+            if (view === 'runs') setView('storyboard')
+          }}
           className="flex-1 min-w-0 max-w-md bg-bg-tertiary border border-border rounded-lg px-3 py-1.5 text-xs text-text-primary focus:outline-none focus:border-accent-blue truncate"
         >
           <option value="">Select pipeline...</option>
@@ -699,8 +740,8 @@ function DirectorDashboardInner() {
         </select>
 
         {/* Summary badges */}
-        {selectedPipeline && (
-          <div className="flex items-center gap-2 text-[10px] shrink-0">
+        {selectedPipeline && view !== 'runs' && (
+          <div className="flex flex-wrap items-center gap-2 text-[10px] min-w-0">
             <span className="flex items-center gap-0.5 text-indicator-success">
               <Check size={10} /> {goodCount}
             </span>
@@ -893,83 +934,101 @@ function DirectorDashboardInner() {
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+      <div className="flex-1 min-h-0 p-4 flex flex-col gap-3 overflow-hidden">
         {loading && (
-          <div className="flex items-center justify-center py-12 text-text-muted">
-            <Loader2 size={20} className="animate-spin mr-2" />
-            Loading pipeline...
+          <div className={`flex items-center justify-center text-text-muted shrink-0 ${selectedPipeline ? 'text-[11px]' : 'py-12'}`}>
+            <Loader2 size={selectedPipeline ? 12 : 20} className="animate-spin mr-2" />
+            {selectedPipeline ? 'Working…' : 'Loading pipeline...'}
           </div>
         )}
 
-        {!loading && !selectedPipeline && pipelineList.length === 0 && (
+        {view === 'runs' ? (
+          <div className="flex-1 min-h-0 overflow-y-auto">
+            <RunsView
+              runs={pipelineList}
+              selectedPid={selectedPipeline?.pipeline_id || null}
+              onOpenRun={pid => {
+                if (pid !== selectedPipeline?.pipeline_id) void loadPipeline(pid)
+                setView('storyboard')
+              }}
+            />
+          </div>
+        ) : !loading && !selectedPipeline && pipelineList.length === 0 ? (
           <div className="text-center py-12 text-text-muted">
             <p className="text-sm">No saved pipelines yet</p>
             <p className="text-xs mt-1">Run a Director pipeline and it will appear here</p>
           </div>
-        )}
+        ) : selectedPipeline ? (
+          <div className="flex-1 min-h-0">
+            <RunWorkspace
+              key={selectedPipeline.pipeline_id}
+              pipeline={selectedPipeline}
+              view={view}
+              busy={repairBusy}
+              details={
+                <div className="h-full overflow-y-auto space-y-4 pr-1">
+                  <div className="bg-bg-secondary rounded-lg border border-border p-3 space-y-2">
+                    <div className="flex items-center gap-2 text-xs">
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-medium ${
+                        selectedPipeline.status === 'completed' ? 'bg-green-500/20 text-indicator-success' :
+                        selectedPipeline.status === 'failed' || selectedPipeline.status === 'crashed' ? 'bg-red-500/20 text-chip-red' :
+                        'bg-blue-500/20 text-chip-blue'
+                      }`}>
+                        {selectedPipeline.status === 'crashed' ? 'crashed (process died)' : selectedPipeline.status}
+                      </span>
+                      <span className="text-text-muted">{selectedPipeline.pipeline_type}</span>
+                      <span className="text-text-muted">|</span>
+                      <span className="text-text-muted">{selectedPipeline.image_model}</span>
+                      <span className="text-text-muted">+</span>
+                      <span className="text-text-muted">{selectedPipeline.video_model}</span>
+                    </div>
+                    {selectedPipeline.scene_description && (
+                      <p className="text-[11px] text-text-secondary">{selectedPipeline.scene_description}</p>
+                    )}
+                    <PipelineProgressBar pipeline={selectedPipeline} />
+                  </div>
 
-        {selectedPipeline && (
-          <>
-            {/* Pipeline info */}
-            <div className="bg-bg-secondary rounded-lg border border-border p-3 space-y-2">
-              <div className="flex items-center gap-2 text-xs">
-                <span className={`px-2 py-0.5 rounded text-[10px] font-medium ${
-                  selectedPipeline.status === 'completed' ? 'bg-green-500/20 text-indicator-success' :
-                  selectedPipeline.status === 'failed' || selectedPipeline.status === 'crashed' ? 'bg-red-500/20 text-chip-red' :
-                  'bg-blue-500/20 text-chip-blue'
-                }`}>
-                  {selectedPipeline.status === 'crashed' ? 'crashed (process died)' : selectedPipeline.status}
-                </span>
-                <span className="text-text-muted">{selectedPipeline.pipeline_type}</span>
-                <span className="text-text-muted">|</span>
-                <span className="text-text-muted">{selectedPipeline.image_model}</span>
-                <span className="text-text-muted">+</span>
-                <span className="text-text-muted">{selectedPipeline.video_model}</span>
-              </div>
-              {selectedPipeline.scene_description && (
-                <p className="text-[11px] text-text-secondary">{selectedPipeline.scene_description}</p>
-              )}
-              <PipelineProgressBar pipeline={selectedPipeline} />
-            </div>
+                  {/* LLM Log */}
+                  <div className="bg-bg-secondary rounded-lg border border-border p-3">
+                    <h3 className="text-[11px] text-text-secondary uppercase tracking-wider font-medium mb-2">LLM Planning Log</h3>
+                    <LlmLogPanel pipeline={selectedPipeline} />
+                  </div>
 
-            {/* LLM Log */}
-            <div className="bg-bg-secondary rounded-lg border border-border p-3">
-              <h3 className="text-[11px] text-text-secondary uppercase tracking-wider font-medium mb-2">LLM Planning Log</h3>
-              <LlmLogPanel pipeline={selectedPipeline} />
-            </div>
-
-            {/* AI quality review (advisory, read-only) */}
-            <QualityReviewPanel
-              pipelineId={selectedPipeline.pipeline_id}
-              canReview={selectedPipeline.status === 'completed' && !repairBusy}
-            />
-
-            {/* Clip Grid */}
-            <div>
-              <h3 className="text-[11px] text-text-secondary uppercase tracking-wider font-medium mb-2">
-                Clips ({totalClips})
-              </h3>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                {selectedPipeline.clips.map(clip => (
-                  <ClipCard
-                    key={clip.index}
-                    clip={clip}
-                    pipeline={selectedPipeline}
-                    busy={repairBusy}
-                    onTag={(tag) => tagClip(selectedPipeline.pipeline_id, clip.index, tag)}
-                    onSavePrompt={async (idx, update) => {
-                      setRegenError(null)
-                      await updateClipPrompt(selectedPipeline.pipeline_id, idx, update)
-                      await loadPipeline(selectedPipeline.pipeline_id)
-                    }}
-                    onRerunImage={(idx, prompt) => { setRegenError(null); rerunClipImage(selectedPipeline.pipeline_id, idx, prompt).catch(e => setRegenError(String(e instanceof Error ? e.message : e))) }}
-                    onRerunVideo={(idx, prompt) => { setRegenError(null); rerunClipVideo(selectedPipeline.pipeline_id, idx, prompt).catch(e => setRegenError(String(e instanceof Error ? e.message : e))) }}
+                  {/* AI quality review (advisory, read-only) */}
+                  <QualityReviewPanel
+                    pipelineId={selectedPipeline.pipeline_id}
+                    canReview={selectedPipeline.status === 'completed' && !repairBusy}
                   />
-                ))}
-              </div>
-            </div>
-          </>
-        )}
+
+                  {/* Clip Grid */}
+                  <div>
+                    <h3 className="text-[11px] text-text-secondary uppercase tracking-wider font-medium mb-2">
+                      Clips ({totalClips})
+                    </h3>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                      {selectedPipeline.clips.map(clip => (
+                        <ClipCard
+                          key={clip.index}
+                          clip={clip}
+                          pipeline={selectedPipeline}
+                          busy={repairBusy}
+                          onTag={(tag) => tagClip(selectedPipeline.pipeline_id, clip.index, tag)}
+                          onSavePrompt={async (idx, update) => {
+                            setRegenError(null)
+                            await updateClipPrompt(selectedPipeline.pipeline_id, idx, update)
+                            await loadPipeline(selectedPipeline.pipeline_id)
+                          }}
+                          onRerunImage={(idx, prompt) => { setRegenError(null); rerunClipImage(selectedPipeline.pipeline_id, idx, prompt).catch(e => setRegenError(String(e instanceof Error ? e.message : e))) }}
+                          onRerunVideo={(idx, prompt) => { setRegenError(null); rerunClipVideo(selectedPipeline.pipeline_id, idx, prompt).catch(e => setRegenError(String(e instanceof Error ? e.message : e))) }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              }
+            />
+          </div>
+        ) : null}
       </div>
     </div>
   )

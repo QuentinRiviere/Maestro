@@ -845,7 +845,12 @@ export function DirectorChat() {
           <div className="flex items-center gap-2">
             <DirectorSessionSelect />
             <button
-              onClick={() => useStore.getState().setDashboardOpen(true)}
+              onClick={() => {
+                const state = useStore.getState()
+                // The chat's link opens a run (newest by default), not the runs list.
+                if (state.dashboardView === 'runs') state.setDashboardView('storyboard')
+                state.setDashboardOpen(true)
+              }}
               className="text-[10px] text-accent-blue hover:text-accent-blue/80 flex items-center gap-0.5 transition-colors"
               title="Open pipeline dashboard"
             >

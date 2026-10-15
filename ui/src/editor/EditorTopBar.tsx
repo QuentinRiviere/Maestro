@@ -14,7 +14,7 @@ import {
   Undo2,
 } from 'lucide-react'
 import { GlobalQueuePopover } from '../components/GlobalQueuePopover'
-import { AppModeToggle, MaestroBrand } from '../components/AppModeNavigation'
+import { AppModeToggle, DirectorRunsButton, MaestroBrand } from '../components/AppModeNavigation'
 import { useIsMobile } from '../lib/useIsMobile'
 import { useStore } from '../stores/useStore'
 import { EditorExportDialog } from './EditorExportDialog'
@@ -113,6 +113,7 @@ export function EditorTopBar() {
       <MaestroBrand compact={isMobile} className={isMobile ? '' : 'w-[158px]'} />
 
       <AppModeToggle size={isMobile ? 'sm' : 'md'} />
+      <DirectorRunsButton />
 
       <div ref={rootRef} className={`relative min-w-0 md:ml-2 md:max-w-[440px] ${isMobile ? 'order-3 w-full flex-none' : 'flex-1'}`}>
         <div className="flex min-w-0 items-center rounded-lg border border-border bg-bg-tertiary focus-within:border-accent-blue/60">

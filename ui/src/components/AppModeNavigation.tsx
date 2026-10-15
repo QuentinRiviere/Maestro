@@ -1,4 +1,6 @@
+import { Clapperboard } from 'lucide-react'
 import { useStore } from '../stores/useStore'
+import { openDirectorRuns } from './DirectorDashboard/useDirectorHashRoute'
 import type { AppMode } from '../types'
 
 const APP_MODES: Array<{ mode: AppMode; label: string }> = [
@@ -61,5 +63,23 @@ export function AppModeToggle({ size = 'md' }: { size?: 'sm' | 'md' }) {
         </button>
       ))}
     </div>
+  )
+}
+
+/** Persistent link to the Director runs page (#/director). */
+export function DirectorRunsButton({ iconSize = 16, className = '' }: { iconSize?: number; className?: string }) {
+  // A dot tells that a run is live without opening the page.
+  const live = useStore(state => state.dashboardPipelineList.some(run => run.status === 'running' || run.status === 'paused'))
+  return (
+    <button
+      type="button"
+      onClick={openDirectorRuns}
+      className={`relative p-1.5 rounded-lg hover:bg-bg-hover text-text-secondary hover:text-text-primary transition-colors ${className}`}
+      title="Director runs: storyboards and pipeline canvas"
+      aria-label="Open Director runs"
+    >
+      <Clapperboard size={iconSize} />
+      {live && <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-accent-blue animate-pulse" />}
+    </button>
   )
 }

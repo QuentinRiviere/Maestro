@@ -32,7 +32,7 @@ import { VideoWorkflowSelector } from './VideoWorkflowSelector'
 import { ImageWorkflowSelector } from './ImageWorkflowSelector'
 import { ImageWorkflowControls } from './ImageWorkflowControls'
 import { ControlVideoSection } from './ControlVideoSection'
-import { AppModeToggle, MaestroBrand } from '../AppModeNavigation'
+import { AppModeToggle, DirectorRunsButton, MaestroBrand } from '../AppModeNavigation'
 import { CharacterToolbarContext, PromptDock, SidebarLayoutContext } from './SidebarPanels'
 
 function inputRevealBounds(input: HTMLElement) {
@@ -326,6 +326,7 @@ export function Sidebar() {
             <MaestroBrand compact />
             <div className="flex items-center gap-1.5">
               <AppModeToggle size="sm" />
+              <DirectorRunsButton />
               <button
                 onClick={() => setSidebarOpen(false)}
                 aria-label="Close sidecar"
@@ -350,6 +351,7 @@ export function Sidebar() {
         <MaestroBrand />
         <div className="flex items-center gap-2">
           <AppModeToggle />
+          <DirectorRunsButton />
           <button
             onClick={toggleSettings}
             className="p-1.5 rounded-lg hover:bg-bg-hover text-text-secondary hover:text-text-primary transition-colors"

@@ -17,7 +17,8 @@ import { NotificationCoordinator } from './components/NotificationCoordinator'
 import { NotificationToastHost } from './components/NotificationToastHost'
 import { EditorWorkspace } from './editor/EditorWorkspace'
 import { BiblesWorkspace } from './components/Sidebar/BibleManagerDialog'
-import { MaestroBrand } from './components/AppModeNavigation'
+import { DirectorRunsButton, MaestroBrand } from './components/AppModeNavigation'
+import { useDirectorHashRoute } from './components/DirectorDashboard/useDirectorHashRoute'
 import { EditorRoundTripBanner } from './editor/EditorRoundTripBanner'
 import { useStore } from './stores/useStore'
 import { useIsMobileSidecar } from './lib/useIsMobile'
@@ -40,6 +41,7 @@ function App() {
   const isEditor = sidebarMode === 'editor'
   const isBibles = sidebarMode === 'bibles'
   const isFullPage = isEditor || isBibles
+  useDirectorHashRoute()
 
   useEffect(() => {
     loadModels()
@@ -74,6 +76,7 @@ function App() {
           </button>
           <MaestroBrand />
           <div className="justify-self-end flex items-center gap-0.5">
+            <DirectorRunsButton iconSize={20} className="p-2" />
             <GlobalQueuePopover iconSize={20} panelAlign="header-edge" />
             <button
               onClick={() => { setSidebarOpen(false); toggleSettings() }}
