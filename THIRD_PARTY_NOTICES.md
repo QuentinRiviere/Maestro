@@ -178,3 +178,23 @@ Source: https://huggingface.co/Kijai/MiniMax-H3-experimental/blob/a3e7d8da4ae7ba
 Users must review the linked model license and NOTICE before downloading or
 using this optional checkpoint; its terms and geographic scope differ from
 Maestro's application license.
+
+## Director cinema grammar
+
+`app/services/director/cinema_grammar/` summarises film-grammar guidance in
+Maestro's own words from the projects below; no source text is reproduced
+beyond short technical terms. `data/dramaboard_rhythm.json` holds aggregate
+statistics only, computed by `scripts/dramaboard_rhythm_stats.py`; no
+DramaBoard annotation is redistributed. Details are in the module README.
+
+- Shanyin-ai/shanyin-director-master, MIT, Copyright (c) 2026 Shanyin:
+  https://github.com/Shanyin-ai/shanyin-director-master
+- OSideMedia/higgsfield-ai-prompt-skill, MIT, Copyright (c) 2026 O-Side Media:
+  https://github.com/OSideMedia/higgsfield-ai-prompt-skill
+- fal-ai-community/skills, MIT: https://github.com/fal-ai-community/skills
+- inference-sh/skills, MIT: https://github.com/inference-sh/skills
+- Wan-Video/Wan2.2 (`wan/utils/system_prompt.py` vocabularies), Apache-2.0:
+  https://github.com/Wan-Video/Wan2.2
+- iLearn-Lab/DramaDirector (DramaBoard, arXiv 2606.24107), code MIT,
+  Copyright (c) 2026 iLearn; annotations describe copyrighted series and are
+  used for aggregate statistics only: https://github.com/iLearn-Lab/DramaDirector

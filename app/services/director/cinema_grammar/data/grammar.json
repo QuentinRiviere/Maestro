@@ -1,0 +1,751 @@
+{
+ "schema_version": 1,
+ "sources": {
+  "shanyin": "Shanyin-ai/shanyin-director-master (MIT): action-reaction unit, cut logic by shot scale, dialogue staging repertoire, storyboard duration references, director style notes",
+  "higgsfield": "OSideMedia/higgsfield-ai-prompt-skill (MIT): higgsfield-camera, higgsfield-acting, higgsfield-shotlist-director",
+  "fal": "fal-ai-community/skills (MIT): cinematography and storytelling skills",
+  "wan": "Wan-Video/Wan2.2 wan/utils/system_prompt.py (Apache-2.0): closed vocabularies for light source, light quality, light direction, shot size and angle",
+  "inference": "inference-sh/skills (MIT): storyboard-creation and video-prompting-guide",
+  "dramaboard": "iLearn-Lab/DramaDirector, arXiv 2606.24107 (code MIT): aggregate statistics only, see dramaboard_rhythm.json",
+  "mdl": "MyDramaList, 3GGG, 'Popular Visual Cues in K-Dramas' parts 1-4 (2019): summarised interpretation, no text reused",
+  "convention": "Common film and K-drama practice, written for Maestro"
+ },
+ "shot_sizes": [
+  {
+   "id": "extreme_wide",
+   "frames": "place dominates, people small",
+   "intent": "scale, isolation, a new location",
+   "use": "open a scene or a location change; rare in micro-drama (<1% of shots)",
+   "source": [
+    "fal",
+    "wan",
+    "dramaboard"
+   ]
+  },
+  {
+   "id": "wide",
+   "frames": "full body with surroundings",
+   "intent": "geography, who stands where, a master",
+   "use": "establish the scene once; re-establish after a big move; about 7% of micro-drama shots",
+   "source": [
+    "fal",
+    "wan",
+    "dramaboard"
+   ]
+  },
+  {
+   "id": "medium_wide",
+   "frames": "knees up",
+   "intent": "body language, distance between people",
+   "use": "two-shots, entrances, standoffs",
+   "source": [
+    "higgsfield",
+    "wan",
+    "dramaboard"
+   ]
+  },
+  {
+   "id": "medium",
+   "frames": "waist up",
+   "intent": "neutral narrative distance, dialogue",
+   "use": "the K-drama default for dialogue together with the medium close-up",
+   "source": [
+    "fal",
+    "wan",
+    "convention"
+   ]
+  },
+  {
+   "id": "medium_close_up",
+   "frames": "chest up (bust)",
+   "intent": "emotional conversation, reactions",
+   "use": "over-the-shoulder shot/reverse; the most robust framing for image-to-video faces",
+   "source": [
+    "fal",
+    "higgsfield",
+    "convention"
+   ]
+  },
+  {
+   "id": "close_up",
+   "frames": "face fills the frame",
+   "intent": "raw emotion, a decision, a turning point",
+   "use": "a deliberate emphasis: save the full-face close-up for the beat that turns the scene; the tighter the shot, the less the actor moves",
+   "source": [
+    "higgsfield",
+    "convention"
+   ]
+  },
+  {
+   "id": "extreme_close_up",
+   "frames": "one detail: eye, hand, mouth, object",
+   "intent": "tension, a clue, contained emotion",
+   "use": "inserts; at most one or two per episode on faces",
+   "source": [
+    "fal",
+    "higgsfield"
+   ]
+  },
+  {
+   "id": "insert",
+   "frames": "a body part or object in action",
+   "intent": "arrival, departure, a decisive detail, hiding a join",
+   "use": "feet entering and stopping, legs on an arrival, a hand tightening on a strap, a back walking away; robust for image-to-video",
+   "source": [
+    "higgsfield",
+    "fal",
+    "convention"
+   ]
+  }
+ ],
+ "angles": [
+  {
+   "id": "eye_level",
+   "intent": "neutral, grounded, dialogue",
+   "use": "default; 82% of micro-drama shots",
+   "source": [
+    "fal",
+    "dramaboard"
+   ]
+  },
+  {
+   "id": "over_the_shoulder",
+   "intent": "relationship, confrontation",
+   "use": "shot/reverse in dialogue; keeps both people in the space",
+   "source": [
+    "fal",
+    "wan",
+    "higgsfield"
+   ]
+  },
+  {
+   "id": "low_angle",
+   "intent": "power, dominance, threat",
+   "use": "the person who holds power in this beat",
+   "source": [
+    "fal",
+    "higgsfield",
+    "wan"
+   ]
+  },
+  {
+   "id": "high_angle",
+   "intent": "vulnerability, smallness, being watched",
+   "use": "the person who loses this beat",
+   "source": [
+    "fal",
+    "higgsfield",
+    "wan"
+   ]
+  },
+  {
+   "id": "profile",
+   "intent": "graphic tension, avoidance",
+   "use": "two people side by side facing the same way: intimacy without confrontation, or avoidance",
+   "source": [
+    "fal",
+    "shanyin"
+   ]
+  },
+  {
+   "id": "dutch",
+   "intent": "stress, instability, a world tipping over",
+   "use": "rare (<0.5%); the steeper the tilt and the longer it holds, the stronger the anxiety; strongest combined with a frame-within-frame",
+   "source": [
+    "mdl",
+    "fal",
+    "wan"
+   ]
+  },
+  {
+   "id": "overhead",
+   "intent": "fate, surveillance, a verdict",
+   "use": "a final beat or a body on the floor",
+   "source": [
+    "higgsfield",
+    "wan"
+   ]
+  },
+  {
+   "id": "pov",
+   "intent": "subjective experience",
+   "use": "the reverse of a look: what the character sees",
+   "source": [
+    "fal",
+    "inference"
+   ]
+  }
+ ],
+ "camera_moves": [
+  {
+   "id": "static",
+   "intent": "control, calm, dialogue, deadpan",
+   "use": "default for every shot; 94% of micro-drama shots are static",
+   "source": [
+    "dramaboard",
+    "higgsfield"
+   ]
+  },
+  {
+   "id": "push_in",
+   "intent": "realization, attention, contained anger, intimacy",
+   "use": "slow push toward a face or a hand that tightens; the end framing must be reachable from the start framing",
+   "source": [
+    "higgsfield",
+    "fal",
+    "convention"
+   ]
+  },
+  {
+   "id": "pull_out",
+   "intent": "isolation, leaving a character alone, a reveal of context",
+   "use": "after a breakdown, or to end a scene",
+   "source": [
+    "higgsfield",
+    "fal"
+   ]
+  },
+  {
+   "id": "tracking",
+   "intent": "follow movement with continuity",
+   "use": "an entrance, a walk, a pursuit",
+   "source": [
+    "fal",
+    "inference"
+   ]
+  },
+  {
+   "id": "pan",
+   "intent": "survey, follow a look from a fixed point",
+   "use": "camera stays in place and turns; reads as a chosen viewpoint",
+   "source": [
+    "higgsfield",
+    "inference"
+   ]
+  },
+  {
+   "id": "tilt",
+   "intent": "reveal height or status",
+   "use": "from shoes up to a face for an entrance; from a face down to a hand",
+   "source": [
+    "inference"
+   ]
+  },
+  {
+   "id": "arc",
+   "intent": "a turning point, two people bound together",
+   "use": "slow partial orbit; rare",
+   "source": [
+    "higgsfield",
+    "fal"
+   ]
+  },
+  {
+   "id": "crane",
+   "intent": "scale, emotional release",
+   "use": "rise away from a character at the end of an episode",
+   "source": [
+    "fal",
+    "higgsfield"
+   ]
+  },
+  {
+   "id": "handheld",
+   "intent": "panic, rage, chaos, raw intimacy",
+   "use": "sparingly, for the beat that loses control",
+   "source": [
+    "higgsfield",
+    "fal"
+   ]
+  }
+ ],
+ "camera_emotion": [
+  {
+   "emotion": "anger or tension held in",
+   "camera": "static or a very slow push-in on the hand or jaw that carries it"
+  },
+  {
+   "emotion": "calm, control, confidence",
+   "camera": "static, eye level"
+  },
+  {
+   "emotion": "sadness, vulnerability",
+   "camera": "static or a slow pull-out, slightly high"
+  },
+  {
+   "emotion": "shock, revelation",
+   "camera": "static, then at most a slow push-in after the hit"
+  },
+  {
+   "emotion": "breakdown, needs space",
+   "camera": "slow pull-out from medium to wide"
+  },
+  {
+   "emotion": "panic, open rage",
+   "camera": "handheld, short shot"
+  }
+ ],
+ "camera_rules": [
+  "One camera move per shot; never stack moves (no push-in plus pan plus tilt).",
+  "Name the move, its speed and the end framing; the move must be able to reach that framing.",
+  "Never write zoom for a physical move: push-in, pull-out, tracking, pan, tilt.",
+  "No three consecutive cuts sharing both shot size and camera move."
+ ],
+ "lenses": [
+  {
+   "id": "85mm_shallow",
+   "intent": "tight emotional close-up, isolation from the background",
+   "use": "close-ups and reaction inserts"
+  },
+  {
+   "id": "50mm",
+   "intent": "natural perspective, mid dialogue and two-shots",
+   "use": "medium and medium close-up coverage"
+  },
+  {
+   "id": "35mm",
+   "intent": "environment and blocking readable",
+   "use": "wide and establishing shots"
+  },
+  {
+   "id": "macro",
+   "intent": "texture, a detail that matters",
+   "use": "object inserts with focus locked on the object"
+  }
+ ],
+ "lighting": {
+  "source_vocabulary": [
+   "daylight",
+   "artificial light",
+   "moonlight",
+   "practical light",
+   "firelight",
+   "fluorescent light",
+   "overcast light",
+   "sunny light"
+  ],
+  "quality_vocabulary": [
+   "soft light",
+   "hard light"
+  ],
+  "direction_vocabulary": [
+   "top light",
+   "side light",
+   "underlight",
+   "edge light"
+  ],
+  "time_vocabulary": [
+   "day",
+   "night",
+   "dawn",
+   "sunrise"
+  ],
+  "tone_vocabulary": [
+   "warm colors",
+   "cool colors",
+   "mixed colors"
+  ],
+  "setups": [
+   {
+    "id": "soft_window_key",
+    "intent": "tenderness, first love, morning after"
+   },
+   {
+    "id": "hard_side_light",
+    "intent": "threat, a secret, a divided face"
+   },
+   {
+    "id": "top_light",
+    "intent": "interrogation, institutional harshness"
+   },
+   {
+    "id": "backlight_edge",
+    "intent": "longing, separation, a silhouette at a door"
+   },
+   {
+    "id": "practical_low_key",
+    "intent": "night confession, loneliness (lamp, phone screen, convenience-store neon)"
+   },
+   {
+    "id": "cold_dim",
+    "intent": "despair, isolation (often with a frame-within-frame)"
+   }
+  ],
+  "rule": "One motivated source per scene, named once, same direction on every shot of that scene.",
+  "source": [
+   "wan",
+   "fal",
+   "mdl"
+  ]
+ },
+ "action_reaction": {
+  "definition": "The basic unit of coverage: an action (a line, a gesture, a piece of information) and the reaction it causes (a face, a silence, a change in the space).",
+  "routine_share": "about 70% of units are routine (standard pair, stacked actions, escalation, chained); about 30% are memorable variants used at the beats that matter",
+  "variants": [
+   {
+    "id": "standard",
+    "pattern": "action then reaction",
+    "use": "clear cause and effect; the backbone"
+   },
+   {
+    "id": "reaction_first",
+    "pattern": "reaction, then the action that caused it",
+    "use": "a shocked face, then the message on the phone: curiosity window"
+   },
+   {
+    "id": "stacked_actions",
+    "pattern": "several actions, one reaction",
+    "use": "pressure builds, the reaction carries all of it"
+   },
+   {
+    "id": "withheld_reaction",
+    "pattern": "action, then cut away without the reaction",
+    "use": "the heaviest line of the episode; once or twice at most"
+   },
+   {
+    "id": "sound_only_action",
+    "pattern": "action heard off screen, picture on the reaction",
+    "use": "a slap, a door, a voice behind the character"
+   },
+   {
+    "id": "delayed_reaction",
+    "pattern": "action, ordinary behaviour, then the reaction breaks",
+    "use": "realism: the hit lands later"
+   },
+   {
+    "id": "same_frame",
+    "pattern": "action and reaction in one frame",
+    "use": "speaker in front, listener behind, no cut"
+   },
+   {
+    "id": "reaction_chain",
+    "pattern": "one action, several reactions",
+    "use": "news lands on a family or an office"
+   },
+   {
+    "id": "chained",
+    "pattern": "B's reaction is the next action",
+    "use": "keeps a scene moving without a break"
+   },
+   {
+    "id": "repeated_action",
+    "pattern": "same action with small changes, different reactions",
+    "use": "three knocks, each harder"
+   }
+  ],
+  "source": [
+   "shanyin"
+  ]
+ },
+ "cut_logic": [
+  "Most cuts move one scale step (wide to medium, medium to close-up); about 40-47% of micro-drama cuts keep the same scale.",
+  "A two-step jump (wide straight to close-up) is a shock device for a reveal or a break.",
+  "Inside a scene the scale tends to move closer as the scene deepens; pull back to end it or to reveal.",
+  "Open a new scene with a wide, or with a detail insert that the next shots explain.",
+  "Change the angle only when the power balance changes."
+ ],
+ "dialogue_coverage": [
+  {
+   "id": "ots_shot_reverse",
+   "use": "default; keeps the spatial relation"
+  },
+  {
+   "id": "dirty_single",
+   "use": "the listener's shoulder in the foreground, out of focus"
+  },
+  {
+   "id": "clean_single",
+   "use": "only the speaker: isolation"
+  },
+  {
+   "id": "progressive_push",
+   "use": "shot/reverse that moves one scale closer as the conflict rises"
+  },
+  {
+   "id": "two_shot_hold",
+   "use": "both in frame, no cut: equality or intimacy"
+  },
+  {
+   "id": "listener_shot",
+   "use": "the line plays on the listener's face; weight lives in the reaction"
+  },
+  {
+   "id": "side_by_side",
+   "use": "both face the same way: closeness without confrontation, or avoidance"
+  },
+  {
+   "id": "back_of_head",
+   "use": "hidden feelings, a lie"
+  },
+  {
+   "id": "reflection",
+   "use": "talking through a mirror or glass: a split or false self"
+  },
+  {
+   "id": "voyeur_frame",
+   "use": "through a door gap or window: someone overhears"
+  }
+ ],
+ "dialogue_choice": "Equal power: two-shot. Domination: scale or angle difference. Conflict: shot/reverse moving closer. Avoidance: profile or back. Intimacy: hold without cutting.",
+ "editing": [
+  {
+   "id": "cut_on_action",
+   "rule": "Cut in the middle of a movement; the next shot continues it from the same pose."
+  },
+  {
+   "id": "cut_on_look",
+   "rule": "A look off screen is answered by what is seen (eyeline match), from roughly that point of view."
+  },
+  {
+   "id": "axis_180",
+   "rule": "Keep the camera on one side of the line between two speakers; cross only with a visible move or a neutral shot."
+  },
+  {
+   "id": "screen_direction",
+   "rule": "A character exiting frame right enters the next shot from frame left."
+  },
+  {
+   "id": "j_cut",
+   "rule": "Let the next shot's sound or line start over the end of the current shot to pull the viewer forward."
+  },
+  {
+   "id": "l_cut",
+   "rule": "Let a line continue over the listener's reaction shot."
+  },
+  {
+   "id": "hold",
+   "rule": "Hold only while a reaction is still developing; a hold with nothing changing is dead air."
+  },
+  {
+   "id": "match_cut",
+   "rule": "End and start neighbouring shots on the same gesture so independently generated clips cut together."
+  }
+ ],
+ "kdrama_motifs": [
+  {
+   "id": "frame_within_frame",
+   "look": "a character boxed by a door frame, window or shelf, camera outside the room",
+   "meaning": "isolation, being trapped; the tighter the box, the stronger",
+   "source": [
+    "mdl"
+   ]
+  },
+  {
+   "id": "dividing_line",
+   "look": "a pole, door edge, shadow line, umbrella or glass pane between two people",
+   "meaning": "conflict, distrust, a rift the dialogue may deny",
+   "source": [
+    "mdl"
+   ]
+  },
+  {
+   "id": "grouping",
+   "look": "two people boxed together in one window pane, a third left outside",
+   "meaning": "alliance; the outsider is excluded",
+   "source": [
+    "mdl"
+   ]
+  },
+  {
+   "id": "dutch_plus_box",
+   "look": "a tilted frame on a boxed character",
+   "meaning": "rising anxiety, pressure; the most common combination",
+   "source": [
+    "mdl"
+   ]
+  },
+  {
+   "id": "mirror_reflection",
+   "look": "a face in a mirror, a window at night, a phone screen",
+   "meaning": "a divided self, a secret",
+   "source": [
+    "convention"
+   ]
+  },
+  {
+   "id": "rain_water",
+   "look": "rain on a window, a shared umbrella, standing in rain",
+   "meaning": "a turning point, a confession, grief",
+   "source": [
+    "convention"
+   ]
+  },
+  {
+   "id": "feet_direction",
+   "look": "shoes stopping, turning back, walking away",
+   "meaning": "a decision; arrivals and departures",
+   "source": [
+    "convention"
+   ]
+  },
+  {
+   "id": "contained_hand",
+   "look": "slow push-in on a hand that tightens under the table",
+   "meaning": "anger held behind a calm face",
+   "source": [
+    "convention"
+   ]
+  },
+  {
+   "id": "back_hug_wrist_grab",
+   "look": "a wrist grabbed to stop someone leaving",
+   "meaning": "the unsaid plea",
+   "source": [
+    "convention"
+   ]
+  }
+ ],
+ "acting": [
+  "Give the eyes a task aimed at the partner (checking, avoiding, measuring, catching a lie); dead eyes are the main AI tell.",
+  "The reaction starts before the partner's line ends; a hard question earns a short pause before the answer.",
+  "Write an objective (make him confess), never a state (be angry).",
+  "Small and contained: the tighter the shot, the less movement; only the eyes and one change of expression on a close-up.",
+  "Give hands a task (business); the strongest accent is the moment it stops.",
+  "Distance is drama: closing or breaking distance is a beat.",
+  "The powerful stay still and quiet; the weak fidget. Everyone freezes at the threat.",
+  "States have inertia: no instant recovery after a strong event.",
+  "Group reactions arrive in a staggered wave, never in sync."
+ ],
+ "bad_acting": [
+  {
+   "id": "mugging",
+   "fix": "drop the face from the task; give the objective and a hand task"
+  },
+  {
+   "id": "waiting_for_cue",
+   "fix": "the listener reacts mid-line"
+  },
+  {
+   "id": "one_color",
+   "fix": "mark 2-4 beats with a new tactic each"
+  },
+  {
+   "id": "illustrating_gesture",
+   "fix": "the gesture precedes, contradicts or is absent"
+  },
+  {
+   "id": "free_emotion",
+   "fix": "build restraint before the break; emotion needs a trigger"
+  },
+  {
+   "id": "close_up_overload",
+   "fix": "on a close-up only the eyes and the thought"
+  },
+  {
+   "id": "dead_pause",
+   "fix": "fill with assessment or a task, or cut"
+  }
+ ],
+ "director_styles": [
+  {
+   "id": "lee_chang_dong",
+   "look": "handheld at arm's length, medium and medium close-up, natural grey-blue light, real practicals",
+   "rhythm": "long takes; the painful moment happens in one shot without a cut",
+   "use": "everyday grief and attrition; no music cue telling the viewer to cry",
+   "source": [
+    "shanyin"
+   ]
+  },
+  {
+   "id": "bong_joon_ho",
+   "look": "precisely staged moves, vertical space (stairs, slopes) as class, frames split by windows and walls",
+   "rhythm": "the cut speed changes with the genre inside one scene",
+   "use": "social tension, a comedy that turns into a threat",
+   "source": [
+    "shanyin"
+   ]
+  },
+  {
+   "id": "park_chan_wook",
+   "look": "painterly symmetry for formality, tilted or obstructed frames for desire, curtains and frosted glass",
+   "rhythm": "long gazes, then a burst of fast cuts",
+   "use": "dark romance, suspense, revealed perspective",
+   "source": [
+    "shanyin"
+   ]
+  }
+ ],
+ "durations": {
+  "note": "Shanyin short-film references (551 shots, 9 films): average 4.2 s, median 3 s; Higgsfield: one dialogue line 3-7 s, wordless reaction 5-10 s. Vertical micro-drama is about twice as fast: see dramaboard_rhythm.json.",
+  "by_purpose_sec": {
+   "escalation": [
+    2.5,
+    3.5
+   ],
+   "establishing": [
+    4,
+    5
+   ],
+   "emotion": [
+    4,
+    5
+   ],
+   "turn": [
+    5,
+    7
+   ],
+   "final_image": [
+    6,
+    10
+   ]
+  },
+  "source": [
+   "shanyin",
+   "higgsfield"
+  ]
+ },
+ "storyboard_columns": [
+  "shot number",
+  "timecode",
+  "camera angle",
+  "shot size",
+  "visible content",
+  "location",
+  "sound (dialogue, effects, music)",
+  "notes (move, effects)",
+  "narrative purpose (its role in the action-reaction unit)"
+ ],
+ "planner_rules_note": "Rendered in this order into the CINEMA GRAMMAR planner block; the DramaBoard rhythm lines come after the first two rules; the hard cap drops rules from the end.",
+ "planner_rules": [
+  {
+   "id": "unit",
+   "text": "UNIT: plan beats as action -> reaction; ~70% plain pairs. At the beats that matter: reaction first (the shock, then its cause), sound-only action (off-screen voice, picture on the listener), reaction chain (one blow, several faces), withheld reaction (cut away on the heaviest line; once or twice)."
+  },
+  {
+   "id": "camera",
+   "text": "CAMERA: ONE move per shot, picked by the focal emotion: static (default), slow push-in (realization; contained anger, e.g. on a hand tightening), slow pull-out (isolation), tracking (an entrance or walk), handheld (panic, rage; rare). Name speed and end framing; never stack moves."
+  },
+  {
+   "id": "scale",
+   "text": "SCALE: medium and bust shots are the default; a full-face close-up is a deliberate emphasis for the turn. Cut one scale step at a time, closer as tension rises; a wide-to-close-up jump only for a shock. Never three cuts with the same size AND move."
+  },
+  {
+   "id": "coverage",
+   "text": "COVERAGE: over-the-shoulder shot/reverse at MCU; two-shot hold for intimacy; side by side in profile for avoidance; back of head for a lie."
+  },
+  {
+   "id": "inserts",
+   "text": "INSERTS: body-part inserts are robust and cinematic: feet entering and stopping, legs on an arrival, a hand gripping a strap, a back walking away; use them for entrances, exits and joins."
+  },
+  {
+   "id": "editing",
+   "text": "EDITING: cut on action or on a look (the next shot shows what is seen); keep the 180-degree side and screen direction; hold only while a reaction still develops."
+  },
+  {
+   "id": "angle",
+   "text": "ANGLE: eye level by default; low = dominance, high = smallness, Dutch tilt = instability (rare)."
+  },
+  {
+   "id": "kdrama_framing",
+   "text": "K-DRAMA FRAMING: frame-within-frame (door, window; camera outside the room) for isolation, tighter = more trapped; a pole or shadow line between two people = distrust; two boxed in one pane = alliance; a reflection for a divided self; rain for a turning point."
+  },
+  {
+   "id": "acting",
+   "text": "ACTING: eyes have a task (checking, avoiding, measuring); reactions start mid-line; the tighter the shot, the less movement; no mugging, no emotion without a trigger."
+  },
+  {
+   "id": "light",
+   "text": "LIGHT: one motivated source per scene (window, practical lamp, neon, overcast), same direction in every shot; soft for tenderness, hard side or top light for threat."
+  }
+ ]
+}
