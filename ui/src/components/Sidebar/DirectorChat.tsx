@@ -2470,6 +2470,10 @@ function DirectorAdvancedAccordion() {
   const setImgGrain = useStore(s => s.setDirectorImageFilmGrainIntensity)
   const imgGrainSat = useStore(s => s.directorImageFilmGrainSaturation)
   const setImgGrainSat = useStore(s => s.setDirectorImageFilmGrainSaturation)
+  const imgRefine = useStore(s => s.directorImageRefine)
+  const setImgRefine = useStore(s => s.setDirectorImageRefine)
+  const imgRefineStrength = useStore(s => s.directorImageRefineStrength)
+  const setImgRefineStrength = useStore(s => s.setDirectorImageRefineStrength)
 
   // Video post-processing
   const vidUpsampling = useStore(s => s.directorVideoSpatialUpsampling)
@@ -2646,6 +2650,35 @@ function DirectorAdvancedAccordion() {
                   <input
                     type="range" min={0} max={1} step={0.01} value={imgGrainSat}
                     onChange={e => setImgGrainSat(parseFloat(e.target.value))}
+                    className="w-full"
+                  />
+                </div>
+              )}
+            </div>
+
+            <div>
+              <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={imgRefine}
+                  onChange={e => setImgRefine(e.target.checked)}
+                  className="accent-accent-blue w-3 h-3"
+                />
+                <span className="text-[11px] text-text-secondary">Texture refine</span>
+              </label>
+              <p className="text-[10px] text-text-muted mt-0.5">
+                After you approve the storyboard, Qwen Image 2.1 (base) re-renders each start image at low
+                strength for skin, hair and fabric detail. The composition stays. Adds roughly a dozen base-model steps per shot.
+              </p>
+              {imgRefine && (
+                <div className="mt-1.5">
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-[10px] text-text-muted">Refine strength</label>
+                    <span className="text-[10px] text-text-muted tabular-nums">{imgRefineStrength.toFixed(2)}</span>
+                  </div>
+                  <input
+                    type="range" min={0.2} max={0.5} step={0.01} value={imgRefineStrength}
+                    onChange={e => setImgRefineStrength(parseFloat(e.target.value))}
                     className="w-full"
                   />
                 </div>

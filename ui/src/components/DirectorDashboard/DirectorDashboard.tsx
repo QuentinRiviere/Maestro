@@ -537,7 +537,7 @@ function ClipCard({ clip, pipeline, busy = false, onTag, onRerunImage, onRerunVi
 
 
 const STAGE_LABELS: Record<string, string> = {
-  cast: 'cast', image: 'shot images', video: 'video', rerun_image: 'image reruns',
+  cast: 'cast', image: 'shot images', image_refine: 'texture refine', video: 'video', rerun_image: 'image reruns',
   rerun_video: 'takes & reruns', overhead: 'boot, loading, idle',
 }
 

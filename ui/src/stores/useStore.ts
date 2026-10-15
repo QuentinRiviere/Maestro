@@ -1916,6 +1916,11 @@ interface AppState {
   setDirectorImageFilmGrainIntensity: (v: number) => void
   directorImageFilmGrainSaturation: number
   setDirectorImageFilmGrainSaturation: (v: number) => void
+  // Texture refine: a low-strength base-model re-render of each approved start image
+  directorImageRefine: boolean
+  setDirectorImageRefine: (v: boolean) => void
+  directorImageRefineStrength: number
+  setDirectorImageRefineStrength: (v: number) => void
   directorVideoSpatialUpsampling: string
   setDirectorVideoSpatialUpsampling: (v: string) => void
   directorVideoFilmGrainIntensity: number
@@ -2607,6 +2612,8 @@ async function _buildDirectorRestorePatch(
     directorImageSpatialUpsampling: String(ui.directorImageSpatialUpsampling ?? params.image_spatial_upsampling ?? ''),
     directorImageFilmGrainIntensity: Number(ui.directorImageFilmGrainIntensity ?? params.image_film_grain_intensity ?? 0),
     directorImageFilmGrainSaturation: Number(ui.directorImageFilmGrainSaturation ?? params.image_film_grain_saturation ?? 0.5),
+    directorImageRefine: Boolean(ui.directorImageRefine ?? params.director_image_refine === 'on'),
+    directorImageRefineStrength: Number(ui.directorImageRefineStrength ?? params.director_image_refine_strength ?? 0.35),
     directorVideoSpatialUpsampling: String(ui.directorVideoSpatialUpsampling ?? params.video_spatial_upsampling ?? ''),
     directorVideoFilmGrainIntensity: Number(ui.directorVideoFilmGrainIntensity ?? params.video_film_grain_intensity ?? 0),
     directorVideoFilmGrainSaturation: Number(ui.directorVideoFilmGrainSaturation ?? params.video_film_grain_saturation ?? 0.5),
@@ -6361,6 +6368,10 @@ export const useStore = create<AppState>((set, get) => ({
   setDirectorImageFilmGrainIntensity: (v) => set({ directorImageFilmGrainIntensity: v }),
   directorImageFilmGrainSaturation: 0.5,
   setDirectorImageFilmGrainSaturation: (v) => set({ directorImageFilmGrainSaturation: v }),
+  directorImageRefine: false,
+  setDirectorImageRefine: (v) => set({ directorImageRefine: v }),
+  directorImageRefineStrength: 0.35,
+  setDirectorImageRefineStrength: (v) => set({ directorImageRefineStrength: v }),
   directorVideoSpatialUpsampling: '',
   setDirectorVideoSpatialUpsampling: (v) => set({ directorVideoSpatialUpsampling: v }),
   directorVideoFilmGrainIntensity: 0,
@@ -13832,6 +13843,7 @@ export const useStore = create<AppState>((set, get) => ({
             selectedModelPerMode, savedParamsPerMode, savedLoraPerMode,
             directorSpeakerMappings, directorImageSpatialUpsampling,
             directorImageFilmGrainIntensity, directorImageFilmGrainSaturation,
+            directorImageRefine, directorImageRefineStrength,
             directorVideoSpatialUpsampling, directorVideoFilmGrainIntensity,
             directorVideoFilmGrainSaturation, directorVideoSelfRefiner,
             shortFilmPath, shortFilmCharacters, shortFilmTargetDuration,
@@ -14179,6 +14191,8 @@ export const useStore = create<AppState>((set, get) => ({
       image_spatial_upsampling: directorImageSpatialUpsampling,
       image_film_grain_intensity: directorImageFilmGrainIntensity,
       image_film_grain_saturation: directorImageFilmGrainSaturation,
+      director_image_refine: directorImageRefine ? 'on' : 'off',
+      director_image_refine_strength: directorImageRefineStrength,
 
       // Video gen settings
       video_model: selectedVideoModel,
@@ -14276,6 +14290,8 @@ export const useStore = create<AppState>((set, get) => ({
         directorImageSpatialUpsampling: state.directorImageSpatialUpsampling,
         directorImageFilmGrainIntensity: state.directorImageFilmGrainIntensity,
         directorImageFilmGrainSaturation: state.directorImageFilmGrainSaturation,
+        directorImageRefine: state.directorImageRefine,
+        directorImageRefineStrength: state.directorImageRefineStrength,
         directorVideoSpatialUpsampling: state.directorVideoSpatialUpsampling,
         directorVideoFilmGrainIntensity: state.directorVideoFilmGrainIntensity,
         directorVideoFilmGrainSaturation: state.directorVideoFilmGrainSaturation,
