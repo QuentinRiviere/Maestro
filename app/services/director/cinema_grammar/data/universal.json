@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "note": "Universal layer: always rendered, whatever the format and genre. No genre-specific numbers here. Lower priority renders first; the renderer interleaves these rules with the format and genre lines and the hard cap drops the highest numbers first.",
+  "rules": [
+    {"id": "unit", "priority": 10, "text": "UNIT: plan beats as action -> reaction (~70% plain pairs); at the beats that matter vary it: reaction first (the shock, then its cause), sound-only action (picture on the listener), reaction chain (one blow, several faces), withheld reaction (once or twice)."},
+    {"id": "camera", "priority": 20, "text": "CAMERA: ONE move per shot, picked by the focal emotion and named with speed and end framing (\"slow push-in to a close-up\"); static by default; never stack moves."},
+    {"id": "continuity", "priority": 60, "text": "CONTINUITY: keep the 180-degree side and screen direction; answer a look with what is seen; cut on action or on a look; keep light direction, wardrobe, props and positions within a scene."},
+    {"id": "scale", "priority": 75, "text": "SCALE: change size one step at a time, closer as tension rises; a wide-to-close-up jump only for a shock; never three cuts with the same size AND move."},
+    {"id": "ai_video", "priority": 80, "text": "AI VIDEO: one clear, simple action per shot that finishes within its length; no fast choreography, crowds in contact, readable text or fine finger work; body-part inserts (feet stopping, a hand on a strap, a back walking away) render reliably."},
+    {"id": "acting", "priority": 66, "text": "ACTING: eyes have a task (checking, avoiding, measuring); reactions start mid-line; the tighter the shot, the less movement."},
+    {"id": "angle", "priority": 140, "text": "ANGLE: eye level by default; low = dominance, high = smallness, Dutch tilt = instability (rare)."}
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "id": "kdrama",
+  "label": "K-drama",
+  "tag": "K-DRAMA",
+  "summary": "Korean drama episode: held looks and silences, slow push-ins on realisations, restrained acting, framing motifs.",
+  "skill_pattern": "k[_-]?drama",
+  "source": "Maestro guideline from K-drama conventions (see README); not measured on a corpus.",
+  "rhythm": {
+    "median_sec": 4.0,
+    "asl_sec": 4.5,
+    "asl_band_sec": [3.5, 5.5],
+    "silent_sec": [3.0, 6.0],
+    "line_sec": [3.0, 5.0],
+    "static_share": 0.8,
+    "note": "hold a reaction until the look lands, then a beat of silence; fast cutting only for a shock"
+  },
+  "shot_mix_bias": {"medium": 1.1, "medium_close_up": 1.0, "close_up": 0.85, "medium_wide": 1.1, "wide": 1.3},
+  "coverage": true,
+  "camera": "mostly static; slow push-in on a realisation or contained anger; slow pull-out for isolation; gentle tracking on a walk; handheld only for panic",
+  "look": "soft motivated light, one source per scene; cool blue nights, warm amber interiors",
+  "acting": "restrained: emotion held behind the eyes; a look or a swallowed line instead of a gesture; tears well rather than fall; stillness before the reaction",
+  "motifs": [
+    "frame-within-frame (door, window) for isolation, tighter = more trapped",
+    "a pole or shadow line between two people = distrust",
+    "a reflection for a divided self; rain for a turning point",
+    "hand inserts (a hand tightening, an almost-touch, a wrist grabbed)"
+  ],
+  "do": [],
+  "dont": [
+    "no runs of sub-2-second cuts outside a shock; no mugging"
+  ]
+}

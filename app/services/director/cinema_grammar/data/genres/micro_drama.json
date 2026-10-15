@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "id": "micro_drama",
+  "label": "micro-drama",
+  "tag": "MICRO-DRAMA",
+  "summary": "Fast-cut vertical micro-drama: hooks, sharp reactions, cliffhanger endings.",
+  "skill_pattern": "micro[_-]?drama|short[_-]?drama|reelshort",
+  "source": "Rhythm measured on DramaBoard (2,825 vertical micro-drama episodes, aggregates in dramaboard_rhythm.json).",
+  "rhythm_source": "dramaboard",
+  "rhythm": {"note": "cut as soon as a reaction reads; keep the pace up between hooks"},
+  "shot_mix_bias": {},
+  "coverage": true,
+  "camera": "static almost always; a follow on entrances; a quick push-in on a reveal",
+  "look": "bright, high-key and clean; saturated wardrobe that separates rival characters",
+  "acting": "heightened and readable at phone size: clear expressions, sharp reactions (a gasp, a glare), never mugging",
+  "motifs": [
+    "a hook in the first 3 seconds (a slap, a reveal, a line that poses the question)",
+    "a reveal close-up on an object (a ring, a contract, a key)",
+    "end on an unresolved beat (cliffhanger), cut on the reaction"
+  ],
+  "do": [
+    "one beat per shot; cut on the reaction as soon as it reads"
+  ],
+  "dont": [
+    "no slow establishing sequences; establish in one wide at most",
+    "no readable phone screens or documents (text renders badly)"
+  ]
+}

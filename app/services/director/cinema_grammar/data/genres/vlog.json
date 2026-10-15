@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "id": "vlog",
+  "label": "vlog",
+  "tag": "VLOG",
+  "summary": "Personal vlog: handheld, direct address to camera, jump cuts, POV inserts, natural light.",
+  "skill_pattern": "vlog",
+  "source": "Maestro guideline from vlog conventions; not measured on a corpus.",
+  "rhythm": {
+    "median_sec": 2.5,
+    "asl_sec": 3.0,
+    "asl_band_sec": [2.0, 4.5],
+    "silent_sec": [1.5, 3.0],
+    "line_sec": [2.5, 5.0],
+    "static_share": 0.3,
+    "note": "trim the pauses out of a talk with jump cuts; B-roll and POV inserts stay short"
+  },
+  "shot_mix_bias": {"medium_close_up": 1.6, "close_up": 1.0, "medium": 1.0, "medium_wide": 0.7, "wide": 0.8},
+  "coverage": false,
+  "camera": "handheld at arm's length for direct address (selfie framing, slight sway); walk-and-talk tracking; POV inserts; no shot/reverse",
+  "look": "natural available light: daylight from a window, golden hour outside, practical lamps at night; no stylised grade",
+  "acting": "natural and casual; looks into the lens when speaking, away when thinking; small genuine reactions",
+  "motifs": [
+    "jump cuts inside one talk (same framing, small change of pose)",
+    "POV inserts of hands doing the thing (coffee, keys, a map)",
+    "short B-roll of the place to open a segment"
+  ],
+  "do": [
+    "the speaker addresses the lens; the audience is the other character"
+  ],
+  "dont": [
+    "no studio lighting, crane moves or cinematic shot/reverse",
+    "no readable signs or screens (text renders badly)"
+  ]
+}

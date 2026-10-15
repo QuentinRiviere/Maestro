@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "id": "anime_mini_series",
+  "label": "animated mini-series",
+  "tag": "ANIME",
+  "summary": "Anime-style mini-series: limited animation, held poses, strong angles, stylised compositions.",
+  "skill_pattern": "anime|animat",
+  "source": "Maestro guideline from limited-animation conventions; not measured on a corpus.",
+  "rhythm": {
+    "median_sec": 3.0,
+    "asl_sec": 3.5,
+    "asl_band_sec": [2.5, 5.0],
+    "silent_sec": [2.5, 5.0],
+    "line_sec": [2.5, 4.5],
+    "static_share": 0.85,
+    "note": "held poses carry the time; impact comes from the cut, not from motion"
+  },
+  "shot_mix_bias": {"wide": 1.4, "medium_wide": 1.0, "medium": 0.9, "medium_close_up": 0.9, "close_up": 1.2},
+  "coverage": true,
+  "camera": "held compositions with small secondary motion (hair, cloth, blinks, drifting light); slow pans across a still composition; a quick push-in for impact; no handheld",
+  "look": "stylised and graphic: clean line art, cel shading, strong rim light, saturated sky gradients, light shafts; one colour script per scene",
+  "acting": "expressive but posed: clear key poses held for the beat, eyes and mouth carry the emotion; no continuous full-body acting",
+  "motifs": [
+    "low-angle hero shot against the sky; silhouette at a decision",
+    "extreme close-up on the eyes for a resolve",
+    "wind in hair and cloth for a held beat; strong diagonals and split compositions for conflict"
+  ],
+  "do": [
+    "stronger angles than live action (low, high, overhead) and bold negative space",
+    "establish each place with a wide background plate"
+  ],
+  "dont": [
+    "no smear frames, impact frames or speed lines: AI video morphs them; get impact from a cut, a held pose and a stronger angle",
+    "no long full-body choreography or fast fights in one shot"
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "note": "Format layer: chosen from the Director aspect ratio (portrait or square -> vertical_short, landscape -> horizontal) unless director_format_profile names one. Shot mix in percent over the five main sizes; the genre layer biases it and analysed style references replace it. Dialogue coverage (listener share under a line, silent reaction after a line) is drama-general and comes from the DramaBoard aggregates for every format, unless the genre turns coverage off.",
+  "default": "horizontal",
+  "profiles": {
+    "vertical_short": {
+      "label": "9:16 vertical short",
+      "shot_mix_source": "dramaboard",
+      "rule": "FORMAT (9:16 vertical): frame for a phone: one or two large, centred faces, depth stacked foreground to background; wides are rare, only to establish a place or an isolation, then cut in."
+    },
+    "horizontal": {
+      "label": "16:9 horizontal",
+      "shot_mix": {"medium": 24, "medium_wide": 24, "medium_close_up": 20, "close_up": 16, "wide": 16},
+      "shot_mix_label": "16:9 guideline",
+      "rule": "FORMAT (16:9 horizontal): use the width: two-shots and over-the-shoulder pairs hold both faces; wides establish and re-establish geography; characters on thirds, looking into the frame."
+    }
+  }
+}

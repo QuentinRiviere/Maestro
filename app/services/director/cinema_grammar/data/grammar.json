@@ -705,47 +705,5 @@
   "notes (move, effects)",
   "narrative purpose (its role in the action-reaction unit)"
  ],
- "planner_rules_note": "Rendered in this order into the CINEMA GRAMMAR planner block; the DramaBoard rhythm lines come after the first two rules; the hard cap drops rules from the end.",
- "planner_rules": [
-  {
-   "id": "unit",
-   "text": "UNIT: plan beats as action -> reaction; ~70% plain pairs. At the beats that matter: reaction first (the shock, then its cause), sound-only action (off-screen voice, picture on the listener), reaction chain (one blow, several faces), withheld reaction (cut away on the heaviest line; once or twice)."
-  },
-  {
-   "id": "camera",
-   "text": "CAMERA: ONE move per shot, picked by the focal emotion: static (default), slow push-in (realization; contained anger, e.g. on a hand tightening), slow pull-out (isolation), tracking (an entrance or walk), handheld (panic, rage; rare). Name speed and end framing; never stack moves."
-  },
-  {
-   "id": "scale",
-   "text": "SCALE: medium and bust shots are the default; a full-face close-up is a deliberate emphasis for the turn. Cut one scale step at a time, closer as tension rises; a wide-to-close-up jump only for a shock. Never three cuts with the same size AND move."
-  },
-  {
-   "id": "coverage",
-   "text": "COVERAGE: over-the-shoulder shot/reverse at MCU; two-shot hold for intimacy; side by side in profile for avoidance; back of head for a lie."
-  },
-  {
-   "id": "inserts",
-   "text": "INSERTS: body-part inserts are robust and cinematic: feet entering and stopping, legs on an arrival, a hand gripping a strap, a back walking away; use them for entrances, exits and joins."
-  },
-  {
-   "id": "editing",
-   "text": "EDITING: cut on action or on a look (the next shot shows what is seen); keep the 180-degree side and screen direction; hold only while a reaction still develops."
-  },
-  {
-   "id": "angle",
-   "text": "ANGLE: eye level by default; low = dominance, high = smallness, Dutch tilt = instability (rare)."
-  },
-  {
-   "id": "kdrama_framing",
-   "text": "K-DRAMA FRAMING: frame-within-frame (door, window; camera outside the room) for isolation, tighter = more trapped; a pole or shadow line between two people = distrust; two boxed in one pane = alliance; a reflection for a divided self; rain for a turning point."
-  },
-  {
-   "id": "acting",
-   "text": "ACTING: eyes have a task (checking, avoiding, measuring); reactions start mid-line; the tighter the shot, the less movement; no mugging, no emotion without a trigger."
-  },
-  {
-   "id": "light",
-   "text": "LIGHT: one motivated source per scene (window, practical lamp, neon, overcast), same direction in every shot; soft for tenderness, hard side or top light for threat."
-  }
- ]
+ "note": "Knowledge base. The planner block is rendered from universal.json, formats.json and genres/*.json, which distil this file into short instructions."
 }

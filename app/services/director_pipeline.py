@@ -7459,23 +7459,50 @@ def _apply_bible(pid: str, params: dict) -> str:
     return bibles.world_block(bible, props=params.get("bible_props"))
 
 
-def _apply_style_references(pid: str, params: dict) -> str:
+def _selected_style_references(params: dict) -> tuple[str, str, list[dict]]:
+    """(choice, bible id, references) of ``director_style_reference`` for this run."""
+    from services.director import bibles
+    from services.director.style_reference import CHOICE_AUTO, select_references
+
+    choice = str(params.get("director_style_reference") or CHOICE_AUTO).strip() or CHOICE_AUTO
+    bible_id = str(params.get("bible_id") or "").strip()
+    bible = bibles.get_bible(bible_id) if bible_id else None
+    return choice, bible_id, select_references(bible, choice)
+
+
+def _style_reference_calibration(bible_id: str, references: list[dict]) -> dict:
+    """The references' measured rhythm, shot mix and motion share, averaged ({} without numbers)."""
+    from services.director.cinema_grammar import calibrate
+    from services.director.style_reference import load_shots, reference_measures
+
+    measures = []
+    for reference in references:
+        stats = reference.get("stats") or {}
+        # Analyses older than the motion and sound splits read them from their shot breakdown.
+        shots = load_shots(bible_id, reference) if bible_id and not (
+            stats.get("motion_mix") and stats.get("audio_lengths")) else None
+        measures.append(reference_measures(reference, shots))
+    return calibrate(measures)
+
+
+def _apply_style_references(pid: str, params: dict, skill_type: str = "") -> str:
     """The staging grammar of the bible's reference videos, as a planner block ("" without one).
 
     ``director_style_reference`` picks them: "auto" (default) every enabled,
     analysed reference of the bible, "off" none, else one reference id. The
-    choice and the references used are recorded in the params snapshot.
+    choice and the references used are recorded in the params snapshot. When
+    the CINEMA GRAMMAR block is on it carries the references' measured numbers
+    (rhythm, shot mix), so this block keeps only their rules and patterns.
     """
-    from services.director import bibles
-    from services.director.style_reference import CHOICE_AUTO, planner_block, select_references
+    from services.director.cinema_grammar import cinema_grammar_mode
+    from services.director.style_reference import planner_block
 
-    choice = str(params.get("director_style_reference") or CHOICE_AUTO).strip() or CHOICE_AUTO
+    choice, bible_id, references = _selected_style_references(params)
     params["director_style_reference"] = choice
-    bible_id = str(params.get("bible_id") or "").strip()
-    bible = bibles.get_bible(bible_id) if bible_id else None
-    references = select_references(bible, choice)
+    numbers_in_cinema = bool(references) and cinema_grammar_mode(params, skill_type) == "on" and bool(
+        _style_reference_calibration(bible_id, references))
     brief = "\n".join(str(params.get(key) or "") for key in ("scene_description", "story", "concept"))
-    block = planner_block(references, brief=brief)
+    block = planner_block(references, brief=brief, numbers=not numbers_in_cinema)
     params["_director_style_references"] = [
         {"id": r["id"], "label": r.get("label"), "scene_tags": r.get("scene_tags") or [],
          "target_asl_sec": ((r.get("grammar") or {}).get("rhythm") or {}).get("target_asl_sec")}
@@ -7483,18 +7510,26 @@ def _apply_style_references(pid: str, params: dict) -> str:
     ] if block else []
     if block:
         print(f"[Pipeline {pid}] Style references: {', '.join(r.get('label') or r['id'] for r in references)} "
-              f"({len(block)} chars)")
+              f"({len(block)} chars{', numbers in the cinema grammar' if numbers_in_cinema else ''})")
     return block
 
 
 def _apply_cinema_grammar(pid: str, params: dict, skill_type: str, planner_kwargs: dict | None = None) -> str:
     """The CINEMA GRAMMAR planner block ("" when off).
 
-    ``director_cinema_grammar`` is "on" or "off"; without it, on for K-drama
-    custom skills (e.g. ``custom:k_drama_mini``). The choice and the block size
-    are recorded in the params snapshot.
+    ``director_cinema_grammar`` is "on" or "off"; without it, on when a genre
+    profile applies (``director_genre_profile`` set, or a custom skill naming a
+    genre such as ``custom:k_drama_mini``). Layers: the universal grammar, the
+    format (``director_format_profile``, else from ``director_aspect_ratio``)
+    and the genre (``director_genre_profile``, "auto" = from the skill, else
+    neutral). The run's analysed style references calibrate the numbers. The
+    choices, their sources and the block size are recorded in the params
+    snapshot (``_director_cinema_grammar``).
     """
-    from services.director.cinema_grammar import cinema_grammar_mode, planner_block
+    from services.director.cinema_grammar import (
+        AUTO, FORMAT_PARAM, GENRE_PARAM, cinema_grammar_mode, planner_block, rhythm_targets, select_format,
+        select_genre,
+    )
     from services.director.planners.custom import SEQUENCE_SHOT_RANGE, model_shot_bounds
 
     mode = cinema_grammar_mode(params, skill_type)
@@ -7502,6 +7537,10 @@ def _apply_cinema_grammar(pid: str, params: dict, skill_type: str, planner_kwarg
     if mode != "on":
         params["_director_cinema_grammar"] = {}
         return ""
+    format_id, format_source = select_format(params)
+    genre_id, genre_source = select_genre(params, skill_type)
+    for key in (FORMAT_PARAM, GENRE_PARAM):
+        params[key] = str(params.get(key) or AUTO).strip().lower() or AUTO
     kwargs = planner_kwargs or {}
     shot_range = SEQUENCE_SHOT_RANGE if kwargs.get("sequence_shots") else model_shot_bounds(kwargs)
     target = params.get("target_duration") or kwargs.get("target_duration")
@@ -7509,10 +7548,28 @@ def _apply_cinema_grammar(pid: str, params: dict, skill_type: str, planner_kwarg
         target = float(target) if target else None
     except (TypeError, ValueError):
         target = None
-    block = planner_block(target_duration=target, shot_range=shot_range)
-    params["_director_cinema_grammar"] = {"chars": len(block), "target_duration": target,
-                                          "shot_range": list(shot_range) if shot_range else None}
-    print(f"[Pipeline {pid}] Cinema grammar on ({len(block)} chars)")
+    calibration: dict = {}
+    try:
+        _, bible_id, references = _selected_style_references(params)
+        calibration = _style_reference_calibration(bible_id, references) if references else {}
+    except Exception as error:  # noqa: BLE001 - calibration is optional
+        print(f"[Pipeline {pid}] Cinema grammar calibration skipped: {error}")
+    block = planner_block(target_duration=target, shot_range=shot_range, format_id=format_id, genre_id=genre_id,
+                          calibration=calibration)
+    targets = rhythm_targets(target, shot_range, genre_id=genre_id, calibration=calibration)
+    params["_director_cinema_grammar"] = {
+        "chars": len(block), "target_duration": target,
+        "shot_range": list(shot_range) if shot_range else None,
+        "format": format_id, "format_source": format_source,
+        "genre": genre_id, "genre_source": genre_source,
+        "calibration": "references" if calibration else "genre_default",
+        "calibration_references": calibration.get("references", []),
+        "rhythm": {key: targets.get(key) for key in (
+            "median_sec", "asl_sec", "asl_band_sec", "silent_sec", "line_sec", "static_share", "cuts_per_minute",
+            "shots_min", "shots_max", "sources") if targets.get(key) is not None},
+    }
+    print(f"[Pipeline {pid}] Cinema grammar on: {genre_id} ({genre_source}), {format_id} ({format_source}), "
+          f"numbers from {'references' if calibration else 'genre defaults'} ({len(block)} chars)")
     return block
 
 
@@ -8345,13 +8402,13 @@ def _run_planning_v2(pid: str, params: dict, pipeline_type: str):
         planner_kwargs["polish_block"] = "\n\n".join(filter(None, [planner_kwargs.get("polish_block", ""), bible_block]))
     # Its reference videos bring a staging grammar (rhythm, coverage, rules).
     try:
-        style_block = _apply_style_references(pid, params)
+        style_block = _apply_style_references(pid, params, skill_type)
     except Exception as error:  # noqa: BLE001 - guidance only, never fail planning
         print(f"[Pipeline {pid}] Style references skipped: {error}")
         style_block = ""
     if style_block:
         planner_kwargs["polish_block"] = "\n\n".join(filter(None, [planner_kwargs.get("polish_block", ""), style_block]))
-    # Film grammar and micro-drama rhythm (on by default for K-drama skills).
+    # Layered film grammar: universal, format, genre; references calibrate its numbers.
     try:
         grammar_block = _apply_cinema_grammar(pid, params, skill_type, planner_kwargs)
     except Exception as error:  # noqa: BLE001 - guidance only, never fail planning

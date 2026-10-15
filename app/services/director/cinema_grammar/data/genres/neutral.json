@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "id": "neutral",
+  "label": "neutral",
+  "tag": "STYLE",
+  "summary": "Default when no genre is chosen: classical continuity drama pacing.",
+  "skill_pattern": null,
+  "source": "Maestro guideline; not measured on a corpus.",
+  "rhythm": {
+    "median_sec": 3.0,
+    "asl_sec": 3.5,
+    "asl_band_sec": [2.5, 5.0],
+    "silent_sec": [2.0, 4.0],
+    "line_sec": [2.5, 5.0],
+    "static_share": 0.7,
+    "note": "cut when the information of a shot is delivered; hold longer on emotion"
+  },
+  "shot_mix_bias": {},
+  "coverage": true,
+  "camera": "static by default; slow push-in for emphasis; tracking to follow movement",
+  "look": "one motivated light source per scene, same direction in every shot; soft for tenderness, hard side or top light for threat",
+  "acting": "natural, specific and motivated; play an objective, never a state",
+  "motifs": [],
+  "do": [],
+  "dont": []
+}
