@@ -291,6 +291,24 @@ class SplitVideoTests(unittest.TestCase):
                 counts.append(int(probe.stdout.strip()))
             self.assertEqual(counts, [29, 43])
 
+    def test_scene_detection_finds_hard_cuts(self):
+        from services.director.h3_sequences import detect_scene_cuts
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source = os.path.join(tmp, "cuts.mp4")
+            subprocess.run(
+                ["ffmpeg", "-v", "error", "-y",
+                 "-f", "lavfi", "-i", "testsrc=size=160x120:rate=24:duration=2",
+                 "-f", "lavfi", "-i", "smptebars=size=160x120:rate=24:duration=1.5",
+                 "-f", "lavfi", "-i", "mandelbrot=size=160x120:rate=24",
+                 "-filter_complex", "[2]trim=duration=1,setpts=PTS-STARTPTS[m];[0][1][m]concat=n=3:v=1:a=0",
+                 "-c:v", "libx264", "-pix_fmt", "yuv420p", source],
+                check=True, capture_output=True,
+            )
+            self.assertEqual(detect_scene_cuts(source), [2.0, 3.5])
+            with self.assertRaises(RuntimeError):
+                detect_scene_cuts(os.path.join(tmp, "missing.mp4"))
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -329,3 +347,141 @@ class SequenceLengthTests(unittest.TestCase):
                 patch.object(pipeline, "h3_sequences_enabled", return_value=True):
             plans, planned = pipeline.prepare_director_timeline(params, [{}, {}], clips)
         self.assertEqual(len(planned), 2)
+
+
+class CutSnappingTests(unittest.TestCase):
+    """Planned cuts snap to the cuts H3 actually made (measured runs, 24 fps)."""
+
+    FPS = 24.0
+
+    def snap(self, planned_sec, detected_sec, total_sec=12.0, **extra):
+        from services.director.h3_sequences import snap_sequence_cuts
+
+        cuts, ignored = snap_sequence_cuts(
+            [round(t * self.FPS) for t in planned_sec], detected_sec,
+            fps=self.FPS, total_frames=round(total_sec * self.FPS), **extra,
+        )
+        return [round(c / self.FPS, 2) for c in cuts], ignored
+
+    def test_drift_snaps_to_the_detected_cuts(self):
+        cuts, ignored = self.snap([4.0, 7.0, 10.5], [3.9, 6.19, 9.52])
+        self.assertEqual(cuts, [3.92, 6.21, 9.5])
+        self.assertEqual(ignored, [])
+
+    def test_extra_detected_cuts_are_ignored(self):
+        cuts, ignored = self.snap([4.5, 7.5, 10.0], [2.1, 2.4, 5.6, 7.85, 10.56])
+        self.assertEqual(cuts, [5.58, 7.83, 10.54])
+        self.assertEqual(ignored, [2.1, 2.4])
+        cuts, ignored = self.snap([3.5, 6.5, 8.5], [3.4, 4.65, 6.56, 8.94, 10.06])
+        self.assertEqual(cuts, [3.42, 6.54, 8.96])
+        self.assertEqual(ignored, [4.65, 10.06])
+
+    def test_missing_cut_keeps_its_planned_time(self):
+        cuts, ignored = self.snap([3.0, 6.0], [2.9])
+        self.assertEqual(cuts, [2.92, 6.0])
+        cuts, _ = self.snap([3.0, 6.0], [])
+        self.assertEqual(cuts, [3.0, 6.0])
+
+    def test_cut_beyond_the_tolerance_is_not_used(self):
+        cuts, ignored = self.snap([3.0], [4.5])
+        self.assertEqual((cuts, ignored), ([3.0], [4.5]))
+        cuts, _ = self.snap([3.0], [4.5], tolerance_sec=2.0)
+        self.assertEqual(cuts, [4.5])
+
+    def test_each_shot_keeps_the_minimum_length(self):
+        # Snapping both cuts would leave a 0.25 s middle shot: only one snaps.
+        cuts, ignored = self.snap([4.0, 5.0], [4.4, 4.65])
+        self.assertGreaterEqual(cuts[1] - cuts[0], 0.5)
+        self.assertEqual(len(ignored), 1)
+        # A detected cut too close to the end of the render is not used.
+        cuts, _ = self.snap([3.0], [3.0], total_sec=3.2)
+        self.assertEqual(cuts, [3.0])
+        cuts, ignored = self.snap([2.5], [2.9], total_sec=3.2)
+        self.assertEqual((cuts, ignored), ([2.5], [2.9]))
+
+    def test_cuts_stay_strictly_increasing(self):
+        # Each planned cut's nearest detected cut is the other's: no crossing.
+        cuts, _ = self.snap([4.0, 5.0], [5.1, 3.9])
+        self.assertEqual(cuts, [3.92, 5.08])
+        cuts, _ = self.snap([4.0, 4.8], [5.2])
+        self.assertEqual(sorted(cuts), cuts)
+        self.assertEqual(len(set(cuts)), len(cuts))
+
+    def test_ranges_follow_snapped_cuts_and_keep_the_last_shot_length(self):
+        from services.director.h3_sequences import sequence_frame_ranges
+
+        plans = [_plan("a"), _plan("a"), _plan("a")]
+        annotate_h3_sequences(plans, [[0, 1, 2]], [72, 72, 72], fps=24, **LATTICE)
+        records = [plan[SEQUENCE_KEY] for plan in plans]
+        ranges, ignored = sequence_frame_ranges(records, None)
+        self.assertEqual((ranges, ignored), ([(0, 72), (72, 144), (144, 216)], []))
+        ranges, ignored = sequence_frame_ranges(records, [2.9, 5.5, 8.0])
+        self.assertEqual(ranges, [(0, 70), (70, 132), (132, 204)])
+        self.assertEqual(ignored, [8.0])
+        # A late last cut is clamped to the rendered length (226 frames).
+        ranges, _ = sequence_frame_ranges(records, [3.0, 7.0])
+        self.assertEqual(ranges[-1], (168, 226))
+
+
+class SnappedSplitTests(unittest.TestCase):
+    def _plans(self):
+        plans = [_plan("a"), _plan("a"), _plan("a")]
+        annotate_h3_sequences(plans, [[0, 1, 2]], [96, 72, 72], fps=24, **LATTICE)
+        return plans
+
+    def _split(self, plans, detector):
+        from unittest.mock import patch
+
+        calls = []
+
+        def fake_split(source, ranges, fps, outputs):
+            calls.append(list(ranges))
+            return outputs
+
+        with tempfile.TemporaryDirectory() as tmp:
+            open(os.path.join(tmp, "seq.mp4"), "wb").close()
+            with patch.object(dp, "detect_scene_cuts", detector), \
+                    patch.object(dp, "split_sequence_video", fake_split):
+                names = dp._split_h3_sequence_file("seq.mp4", plans, tmp)
+        return names, calls
+
+    def test_split_uses_snapped_frames_and_records_actual_ranges(self):
+        plans = self._plans()
+        names, calls = self._split(plans, lambda source: [1.2, 3.9, 6.6])
+        self.assertEqual(names, ["seq_shot1.mp4", "seq_shot2.mp4", "seq_shot3.mp4"])
+        self.assertEqual(calls, [[(0, 94), (94, 158), (158, 230)]])
+        records = [plan[SEQUENCE_KEY] for plan in plans]
+        self.assertEqual([r["actual_start_frame"] for r in records], [0, 94, 158])
+        self.assertEqual([r["actual_frames"] for r in records], [94, 64, 72])
+        self.assertEqual([r["start_frame"] for r in records], [0, 96, 168])
+        self.assertEqual(records[1]["detected_cuts"], [1.2, 3.9, 6.6])
+        self.assertEqual(records[0]["cuts_source"], "scene_detect")
+
+    def test_failed_detection_splits_at_planned_frames(self):
+        def broken(source):
+            raise RuntimeError("no ffmpeg")
+
+        plans = self._plans()
+        _, calls = self._split(plans, broken)
+        self.assertEqual(calls, [[(0, 96), (96, 168), (168, 240)]])
+        records = [plan[SEQUENCE_KEY] for plan in plans]
+        self.assertEqual([r["actual_frames"] for r in records], [96, 72, 72])
+        self.assertEqual(records[0]["cuts_source"], "planned")
+        self.assertIsNone(records[0]["detected_cuts"])
+
+    def test_timeline_uses_actual_lengths(self):
+        plans = self._plans() + [_plan("b", _director_duration_sec=5.0)]
+        self._split(plans[:3], lambda source: [3.9, 6.6])
+        planned = [
+            {"start": 0.0, "end": 4.0, "duration_sec": 4.0},
+            {"start": 4.0, "end": 7.0, "duration_sec": 3.0},
+            {"start": 7.0, "end": 10.0, "duration_sec": 3.0},
+            {"start": 10.0, "end": 15.0, "duration_sec": 5.0},
+        ]
+        self.assertTrue(dp._apply_h3_sequence_actual_lengths(plans, planned))
+        self.assertEqual([round(p["duration_sec"], 3) for p in planned], [3.917, 2.667, 3.0, 5.0])
+        self.assertEqual([round(p["start"], 3) for p in planned], [0.0, 3.917, 6.583, 9.583])
+        self.assertEqual(round(planned[-1]["end"], 3), 14.583)
+        self.assertEqual(planned[1]["duration_frames"], 64)
+        self.assertEqual(plans[1]["_director_duration_sec"], 64 / 24)
+        self.assertFalse(dp._apply_h3_sequence_actual_lengths(plans, planned))

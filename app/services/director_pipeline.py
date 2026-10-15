@@ -58,9 +58,11 @@ from services.director.h3_sequences import (
     SEQUENCE_KEY,
     annotate_h3_sequences,
     compile_h3_sequence_prompt,
+    detect_scene_cuts,
     h3_sequences_enabled,
     plan_h3_sequences,
     saved_sequence_members,
+    sequence_frame_ranges,
     sequence_total_frames,
     sequence_units,
     split_sequence_video,
@@ -3710,7 +3712,7 @@ def _rerun_h3_sequence_video(
     render_file = output_files[-1] if output_files else ""
     if not render_file:
         raise RuntimeError("Video generation completed without a recorded output.")
-    names = _split_h3_sequence_file(render_file, member_plans, clip_out_dir)
+    names = _split_h3_sequence_file(render_file, member_plans, clip_out_dir, pid=pid)
 
     def _update(s):
         for index, plan, name in zip(members, member_plans, names):
@@ -3731,6 +3733,8 @@ def _rerun_h3_sequence_video(
                     saved[key] = plan.get(key)
             if name not in s.get("output_files", []):
                 s.setdefault("output_files", []).append(name)
+        # The new render cuts at new places: the timeline follows the real cuts.
+        _apply_h3_sequence_actual_lengths(s["clips"], [clip.get("planned_clip") for clip in s["clips"]])
     _update_saved_pipeline(out_dir, pid, _update)
 
     others = [index + 1 for index in members if index != clip_index]
@@ -8240,21 +8244,84 @@ def _collapse_h3_sequence_params(
     gen_params["sliding_window_size"] = max(gen_params["per_clip_frames"])
 
 
-def _split_h3_sequence_file(filename: str, member_plans: list[dict], out_dir: str) -> list[str]:
-    """Split one sequence render into one file per member shot."""
+def _split_h3_sequence_file(filename: str, member_plans: list[dict], out_dir: str, *, pid: str = "") -> list[str]:
+    """Split one sequence render into one file per member shot.
+
+    H3 drifts off the asked cut times, so the planned cuts snap to the cuts
+    scene detection finds in the render (planned frames when detection
+    fails). Each record keeps the member's actual frame range.
+    """
     source = os.path.join(out_dir, os.path.basename(str(filename)))
     stem = os.path.splitext(os.path.basename(str(filename)))[0]
     records = [plan[SEQUENCE_KEY] for plan in member_plans]
     names = [f"{stem}_shot{record['index'] + 1}.mp4" for record in records]
-    split_sequence_video(
-        source,
-        [(record["start_frame"], record["start_frame"] + record["frames"]) for record in records],
-        float(records[0]["fps"]),
-        [os.path.join(out_dir, name) for name in names],
-    )
-    for record in records:
+    label = f"[Pipeline {pid}] H3 sequence {records[0].get('id', '')}"
+    detected: Optional[list[float]] = None
+    if os.path.isfile(source):
+        try:
+            detected = detect_scene_cuts(source)
+        except Exception as error:  # noqa: BLE001 - the planned cuts still split it
+            print(f"{label}: scene detection failed, splitting at planned cuts: {error}")
+    ranges, ignored = sequence_frame_ranges(records, detected)
+    fps = float(records[0]["fps"])
+    if detected is not None:
+        planned = [record["start_frame"] / fps for record in records[1:]]
+        actual = [start / fps for start, _ in ranges[1:]]
+        print(
+            f"{label}: planned cuts {[round(t, 2) for t in planned]}s, detected "
+            f"{[round(t, 2) for t in detected]}s, split at {[round(t, 2) for t in actual]}s"
+        )
+        if ignored:
+            print(f"{label}: ignored extra cut(s) at {[round(t, 2) for t in ignored]}s")
+    split_sequence_video(source, ranges, fps, [os.path.join(out_dir, name) for name in names])
+    for record, (start, end) in zip(records, ranges):
         record["render_file"] = os.path.basename(str(filename))
+        record["actual_start_frame"] = int(start)
+        record["actual_frames"] = int(end - start)
+        record["actual_offset_sec"] = round(start / fps, 3)
+        record["actual_duration_sec"] = round((end - start) / fps, 3)
+        record["detected_cuts"] = [round(t, 3) for t in detected] if detected is not None else None
+        record["cuts_source"] = "scene_detect" if detected is not None else "planned"
     return names
+
+
+def _apply_h3_sequence_actual_lengths(clips: list, planned_clips: list) -> bool:
+    """Give split sequence members their actual length on the timeline.
+
+    ``clips`` are clip plans (or saved clips) and ``planned_clips`` the
+    matching timeline entries. A member whose record has ``actual_frames``
+    gets that length as its duration, then every timeline entry is laid out
+    again end to end. Returns whether anything changed.
+    """
+    changed = False
+    for index, clip in enumerate(clips):
+        record = clip.get(SEQUENCE_KEY) if isinstance(clip, dict) else None
+        if not isinstance(record, dict) or not record.get("actual_frames"):
+            continue
+        frames = int(record["actual_frames"])
+        duration = frames / float(record["fps"])
+        if clip.get("_director_duration_sec") != duration:
+            clip["_director_duration_sec"] = duration
+            clip["_director_generation_frames"] = frames
+            changed = True
+        planned = planned_clips[index] if index < len(planned_clips) else None
+        if isinstance(planned, dict) and planned.get("duration_sec") != duration:
+            planned.update({"duration_sec": duration, "duration_frames": frames})
+            changed = True
+    if not changed:
+        return False
+    cursor = 0.0
+    for planned in planned_clips:
+        if not isinstance(planned, dict):
+            continue
+        try:
+            duration = float(planned.get("duration_sec") or 0)
+        except (TypeError, ValueError):
+            duration = 0.0
+        planned["start"] = cursor
+        planned["end"] = cursor + duration
+        cursor += duration
+    return True
 
 
 def _split_h3_sequence_outputs(
@@ -8281,7 +8348,7 @@ def _split_h3_sequence_outputs(
             shot_files[unit[0]] = filename
             continue
         try:
-            names = _split_h3_sequence_file(filename, [clip_plans[i] for i in unit], out_dir)
+            names = _split_h3_sequence_file(filename, [clip_plans[i] for i in unit], out_dir, pid=pid)
         except Exception as error:  # noqa: BLE001 - keep the other shots
             print(f"[Pipeline {pid}] H3 sequence split failed for shots {unit[0] + 1}-{unit[-1] + 1}: {error}")
             continue
@@ -10027,9 +10094,18 @@ def _run_video_generation(pid: str, params: dict, clip_plans: list[dict],
             error.output_files = _split_h3_sequence_outputs(
                 error.output_files, units, clip_plans, out_dir, pid=pid,
             )
+            _record_h3_sequence_actual_lengths(pid, params, clip_plans, planned_clips)
         raise
     if units:
         output_files = _split_h3_sequence_outputs(
             output_files, units, clip_plans, out_dir, pid=pid,
         )
+        _record_h3_sequence_actual_lengths(pid, params, clip_plans, planned_clips)
     return output_files
+
+
+def _record_h3_sequence_actual_lengths(pid: str, params: dict, clip_plans: list, planned_clips: list) -> None:
+    """Put the split members' actual lengths on the run's timeline."""
+    if _apply_h3_sequence_actual_lengths(clip_plans, planned_clips):
+        params["planned_clips"] = planned_clips
+        _update_pipeline(pid, _planned_clips=planned_clips, clip_plans=clip_plans)
