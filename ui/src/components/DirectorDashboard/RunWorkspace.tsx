@@ -206,6 +206,7 @@ export function RunWorkspace({ pipeline, view, busy, details }: {
           <Suspense fallback={<div className="py-16 flex items-center justify-center text-text-muted text-xs"><Loader2 size={14} className="animate-spin mr-2" />Loading canvas…</div>}>
             <CanvasView
               runId={pid}
+              aspect={aspect}
               shots={shots}
               scenes={scenes}
               characters={characters}

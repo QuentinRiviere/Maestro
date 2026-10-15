@@ -12,11 +12,22 @@
  * to a thin strip while edges skip over it. Collapse keys live in one set so
  * the canvas can keep them across live re-layouts.
  */
-import { formatSeconds, type RenderUnit, type RunShot, type SceneGroup, type StageStatus } from './directorRun.ts'
+import {
+  formatSeconds, shotTimestamps, type RenderUnit, type RunShot, type SceneGroup, type StageStatus,
+} from './directorRun.ts'
 
 export type DagNodeKind =
   | 'column' | 'frame' | 'brief' | 'character' | 'location' | 'scene' | 'planning'
-  | 'prompt' | 'image' | 'render' | 'clip' | 'final' | 'cost' | 'summary'
+  | 'prompt' | 'image' | 'render' | 'clip' | 'final' | 'cost' | 'summary' | 'storyboard'
+
+/** One start frame of the storyboard grid. */
+export interface StoryboardCell {
+  shot: number
+  media: string | null
+  /** Start of the shot in the cut, in seconds. */
+  startSec: number
+  status: StageStatus
+}
 
 export interface DagNode {
   id: string
@@ -43,6 +54,10 @@ export interface DagNode {
   collapsed?: boolean
   /** Start frames shown as a strip on a collapsed scene summary. */
   thumbs?: string[]
+  /** Storyboard grid cells, in shot order. */
+  cells?: StoryboardCell[]
+  /** Storyboard grid column count. */
+  gridColumns?: number
 }
 
 export interface DagEdge {
@@ -70,6 +85,39 @@ export interface DagInput {
   costUsd: number | null
   /** Collapsed sections: scene keys, and `stageKey(...)` for stage columns. */
   collapsed?: ReadonlySet<string>
+  /** CSS aspect ratio of the frames ("9 / 16"); sizes the storyboard grid. */
+  aspect?: string
+  /** Measured clip lengths by shot index, when known; planned durations otherwise. */
+  clipDurations?: ReadonlyArray<number | null | undefined>
+}
+
+/** Collapse key of the storyboard node. */
+export const STORYBOARD_KEY = 'storyboard'
+export const STORYBOARD_WIDTH = 360
+const STORYBOARD_HEADER = 30
+const STORYBOARD_BORDER = 2
+
+/** Parse a "W / H" or "W:H" aspect ratio; 9:16 when unreadable. */
+export function parseAspect(aspect: string | null | undefined): { w: number; h: number } {
+  const match = String(aspect || '').match(/^\s*(\d+(?:\.\d+)?)\s*[/:]\s*(\d+(?:\.\d+)?)\s*$/)
+  const w = match ? Number(match[1]) : 9
+  const h = match ? Number(match[2]) : 16
+  return w > 0 && h > 0 ? { w, h } : { w: 9, h: 16 }
+}
+
+/**
+ * Storyboard grid geometry for a fixed node width: 6 columns of portrait
+ * frames, 5 of square-ish ones, 3 of landscape ones; zero gap.
+ */
+export function storyboardGrid(aspect: string | null | undefined, count: number, collapsed = false) {
+  const { w, h } = parseAspect(aspect)
+  const ratio = w / h
+  const columns = ratio < 0.8 ? 6 : ratio <= 1.25 ? 5 : 3
+  const cellWidth = (STORYBOARD_WIDTH - 2 * STORYBOARD_BORDER) / columns
+  const cellHeight = cellWidth * h / w
+  const rows = Math.ceil(Math.max(0, count) / columns)
+  const body = collapsed ? 0 : Math.ceil(rows * cellHeight)
+  return { columns, cellWidth, cellHeight, rows, height: 2 * STORYBOARD_BORDER + STORYBOARD_HEADER + body }
 }
 
 export const DAG_COLUMNS = [
@@ -364,10 +412,29 @@ export function buildDirectorDag(input: DagInput): { nodes: DagNode[]; edges: Da
   for (const shot of input.shots) {
     link(folded.has(shot.index) ? sceneSource(shot.index) : `clip-${shot.index}`, 'final')
   }
+  const costY = finalY + finalHeight + NODE_GAP * 2
+  const costHeight = 56
   add({
-    id: 'cost', kind: 'cost', x: xs[6], y: finalY + finalHeight + NODE_GAP * 2, width: COL_WIDTH, height: 56,
+    id: 'cost', kind: 'cost', x: xs[6], y: costY, width: COL_WIDTH, height: costHeight,
     status: input.costUsd != null ? 'done' : 'pending', label: 'Cost',
     detail: input.costUsd != null ? `$${input.costUsd.toFixed(2)}` : 'not priced yet',
+  })
+
+  // Storyboard: every start frame of the cut as one dense grid, under the
+  // final edit it previews.
+  const starts = shotTimestamps(input.shots, input.clipDurations)
+  const boardCollapsed = collapsed.has(STORYBOARD_KEY)
+  const grid = storyboardGrid(input.aspect, input.shots.length, boardCollapsed)
+  const withImage = input.shots.filter(s => !!s.startImage).length
+  add({
+    id: 'storyboard', kind: 'storyboard', x: xs[6], y: costY + costHeight + NODE_GAP * 2,
+    width: STORYBOARD_WIDTH, height: grid.height,
+    status: aggregate(input.shots.map(s => s.imageStatus)),
+    label: 'Storyboard', detail: `${withImage}/${input.shots.length} frames`,
+    gridColumns: grid.columns, toggleKey: STORYBOARD_KEY, collapsed: boardCollapsed,
+    cells: input.shots.map((shot, i) => ({
+      shot: shot.index, media: shot.startImage, startSec: starts[i], status: shot.imageStatus,
+    })),
   })
   return { nodes, edges }
 }

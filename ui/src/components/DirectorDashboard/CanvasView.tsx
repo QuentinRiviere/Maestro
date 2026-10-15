@@ -6,13 +6,13 @@ import {
 import '@xyflow/react/dist/style.css'
 import {
   BookOpen, ChevronDown, ChevronLeft, ChevronRight, ChevronsDownUp, ChevronsUpDown, Clapperboard, DollarSign,
-  FileText, Film, Layers, MapPin, User,
+  FileText, Film, Layers, LayoutGrid, MapPin, User,
 } from 'lucide-react'
 import { getFileUrl } from '../../api/client'
 import type { DagNode } from '../../lib/directorDag'
 import { buildDirectorDag, type CastRef } from '../../lib/directorDag'
 import { loadCollapsed, saveCollapsed } from '../../lib/directorCanvasPrefs'
-import { renderUnits, type RunShot, type SceneGroup } from '../../lib/directorRun'
+import { formatTimecode, renderUnits, type RunShot, type SceneGroup } from '../../lib/directorRun'
 import { StatusDot } from './runUi'
 import { STATUS_BORDER, STATUS_LABEL } from './runStyles'
 
@@ -20,6 +20,8 @@ type FlowData = {
   node: DagNode
   onOpen?: (node: DagNode) => void
   onToggle?: (key: string) => void
+  /** CSS aspect ratio of the run's frames. */
+  aspect: string
 }
 type FlowNode = Node<FlowData>
 
@@ -120,12 +122,73 @@ const SummaryNode = memo(function SummaryNode({ data }: NodeProps<FlowNode>) {
       </div>
       <div className="flex-1 min-w-0 flex gap-1 py-1.5 pr-1.5 overflow-hidden">
         {(node.thumbs || []).map((media, i) => (
-          <div key={`${media}-${i}`} className="h-full aspect-[9/16] shrink-0 rounded-sm overflow-hidden bg-media-canvas border border-border">
+          <div key={`${media}-${i}`} className="h-full shrink-0 rounded-sm overflow-hidden bg-media-canvas border border-border" style={{ aspectRatio: data.aspect }}>
             <Thumb media={media} video={false} />
           </div>
         ))}
       </div>
       <Handle type="source" position={Position.Right} style={hidden} isConnectable={false} />
+    </div>
+  )
+})
+
+/**
+ * The whole cut as a dense grid of start frames: no gap, each cell tagged
+ * with its shot number and start time. Clicking a cell opens that shot.
+ */
+const StoryboardNode = memo(function StoryboardNode({ data }: NodeProps<FlowNode>) {
+  const node = data.node
+  const cells = node.cells || []
+  return (
+    <div className={`h-full w-full rounded-lg border-2 ${STATUS_BORDER[node.status]} bg-bg-secondary overflow-hidden flex flex-col`}>
+      <div className="h-[30px] shrink-0 px-2 flex items-center gap-1.5 min-w-0">
+        {node.toggleKey && (
+          <ToggleButton
+            toggleKey={node.toggleKey}
+            collapsed={!!node.collapsed}
+            label="storyboard"
+            onToggle={data.onToggle}
+            className="w-5 h-5"
+          />
+        )}
+        <LayoutGrid size={11} className="text-text-muted shrink-0" />
+        <span className="text-[11px] font-semibold text-text-primary">{node.label}</span>
+        {node.detail && <span className="text-[10px] text-text-muted truncate">{node.detail}</span>}
+        <span className="ml-auto"><StatusDot status={node.status} /></span>
+      </div>
+      {!node.collapsed && (
+        <div
+          className="nodrag grid gap-0 bg-media-canvas"
+          style={{ gridTemplateColumns: `repeat(${node.gridColumns || 6}, minmax(0, 1fr))` }}
+        >
+          {cells.map(cell => {
+            const label = `#${cell.shot + 1}`
+            const time = formatTimecode(cell.startSec)
+            return (
+              <button
+                key={cell.shot}
+                type="button"
+                className="nodrag relative block w-full overflow-hidden bg-bg-tertiary cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-blue focus-visible:-outline-offset-2 hover:brightness-110"
+                style={{ aspectRatio: data.aspect }}
+                title={`Shot ${cell.shot + 1} at ${time} (${STATUS_LABEL[cell.status]})`}
+                aria-label={`Open shot ${cell.shot + 1}, starts at ${time}`}
+                onClick={event => {
+                  event.stopPropagation()
+                  data.onOpen?.({ ...node, shot: cell.shot })
+                }}
+              >
+                {cell.media
+                  ? <img src={mediaUrl(cell.media)} alt="" loading="lazy" className="absolute inset-0 w-full h-full object-cover" />
+                  : cell.status === 'running' && <span className="absolute inset-0 animate-pulse bg-accent-blue/10" />}
+                <span className="absolute left-0 right-0 bottom-0 px-1 py-0.5 flex justify-between gap-1 bg-gradient-to-t from-black/70 to-transparent text-[9px] leading-none font-mono text-white [text-shadow:0_1px_1px_rgba(0,0,0,0.8)]">
+                  <span>{label}</span>
+                  <span>{time}</span>
+                </span>
+              </button>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 })
@@ -189,10 +252,12 @@ function ColumnNode({ data }: NodeProps<FlowNode>) {
   )
 }
 
-const nodeTypes = { stage: StageNode, frame: FrameNode, column: ColumnNode, summary: SummaryNode }
+const nodeTypes = {
+  stage: StageNode, frame: FrameNode, column: ColumnNode, summary: SummaryNode, storyboard: StoryboardNode,
+}
 
 function flowType(kind: DagNode['kind']): keyof typeof nodeTypes {
-  if (kind === 'frame' || kind === 'column' || kind === 'summary') return kind
+  if (kind === 'frame' || kind === 'column' || kind === 'summary' || kind === 'storyboard') return kind
   return 'stage'
 }
 
@@ -238,6 +303,8 @@ function useCollapsedSections(runId: string) {
 
 export interface CanvasViewProps {
   runId: string
+  /** CSS aspect ratio of the run's frames ("9 / 16"). */
+  aspect: string
   shots: RunShot[]
   scenes: SceneGroup[]
   characters: CastRef[]
@@ -252,13 +319,13 @@ export interface CanvasViewProps {
 
 /** Left-to-right flow of the run, from inputs to the final edit. */
 export default function CanvasView(props: CanvasViewProps) {
-  const { runId, shots, scenes, characters, locations, brief, finalFile, runStatus, phase, costUsd, onOpenShot } = props
+  const { runId, aspect, shots, scenes, characters, locations, brief, finalFile, runStatus, phase, costUsd, onOpenShot } = props
   const [collapsed, updateCollapsed] = useCollapsedSections(runId)
 
   const graph = useMemo(() => buildDirectorDag({
     shots, scenes, units: renderUnits(shots), characters, locations, brief, finalFile, runStatus, phase, costUsd,
-    collapsed,
-  }), [shots, scenes, characters, locations, brief, finalFile, runStatus, phase, costUsd, collapsed])
+    collapsed, aspect,
+  }), [shots, scenes, characters, locations, brief, finalFile, runStatus, phase, costUsd, collapsed, aspect])
 
   const onToggle = useCallback((key: string) => updateCollapsed(keys => {
     const next = new Set(keys)
@@ -285,7 +352,7 @@ export default function CanvasView(props: CanvasViewProps) {
       id: node.id,
       type: flowType(node.kind),
       position: { x: node.x, y: node.y },
-      data: { node, onOpen: structural ? undefined : onOpen, onToggle },
+      data: { node, onOpen: structural ? undefined : onOpen, onToggle, aspect },
       style: { width: node.width, height: node.height },
       width: node.width,
       height: node.height,
@@ -295,7 +362,7 @@ export default function CanvasView(props: CanvasViewProps) {
       selectable: !structural,
       focusable: !structural,
     }
-  }), [graph, onOpen, onToggle])
+  }), [graph, onOpen, onToggle, aspect])
 
   const edges: Edge[] = useMemo(() => graph.edges.map(edge => ({
     id: edge.id,

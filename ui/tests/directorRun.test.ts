@@ -4,7 +4,8 @@ import {
   buildRunShots, dialogueLines, finalEditFile, formatTimecode, groupScenes, renderUnits, shortAction, shotTimestamps,
 } from '../src/lib/directorRun.ts'
 import {
-  buildDirectorDag, COL_WIDTH, COLLAPSED_COL_WIDTH, columnX, stageKey, SUMMARY_ROW_HEIGHT,
+  buildDirectorDag, COL_WIDTH, COLLAPSED_COL_WIDTH, columnX, stageKey, STORYBOARD_KEY, STORYBOARD_WIDTH,
+  storyboardGrid, SUMMARY_ROW_HEIGHT,
 } from '../src/lib/directorDag.ts'
 import { loadCollapsed, saveCollapsed } from '../src/lib/directorCanvasPrefs.ts'
 import { formatDirectorHash, parseDirectorHash } from '../src/lib/directorRoute.ts'
@@ -270,6 +271,44 @@ test('a sequence split across a collapsed scene keeps only its visible rows', ()
   assert.equal(render.height, clip1.height)
   assert.ok(edges.some(e => e.source === 'render-seq_01' && e.target === 'clip-1'))
   assert.ok(!edges.some(e => e.target === 'clip-0'))
+})
+
+test('the storyboard node lists every start frame with its cut timestamp', () => {
+  const { shots, dag } = threeSceneRun()
+  const open = dag()
+  const board = open.nodes.find(n => n.id === 'storyboard')!
+  assert.equal(board.kind, 'storyboard')
+  assert.equal(board.width, STORYBOARD_WIDTH)
+  assert.equal(board.x, columnX(6))
+  const cost = open.nodes.find(n => n.id === 'cost')!
+  assert.ok(board.y >= cost.y + cost.height)
+  assert.equal(board.gridColumns, 6)
+  assert.equal(board.toggleKey, STORYBOARD_KEY)
+  assert.equal(board.detail, '3/4 frames')
+  // Shots 0 and 1 last 2 s and 3 s (planned); shot 2 has no duration.
+  assert.deepEqual(board.cells!.map(c => [c.shot, c.media, c.startSec]), [
+    [0, 'a.png', 0], [1, 'b.png', 2], [2, 'c.png', 5], [3, null, 5],
+  ])
+  assert.equal(board.height, storyboardGrid('9 / 16', shots.length).height)
+  // No edges are drawn to the storyboard; it previews the cut.
+  assert.ok(!open.edges.some(e => e.source === 'storyboard' || e.target === 'storyboard'))
+  // Collapsing it keeps only the header; it is still there.
+  const closed = dag(new Set([STORYBOARD_KEY])).nodes.find(n => n.id === 'storyboard')!
+  assert.equal(closed.collapsed, true)
+  assert.ok(closed.height < board.height)
+})
+
+test('storyboardGrid picks columns from the aspect ratio at a fixed width', () => {
+  const portrait = storyboardGrid('9 / 16', 13)
+  assert.equal(portrait.columns, 6)
+  assert.equal(portrait.rows, 3)
+  assert.ok(Math.abs(portrait.cellHeight - portrait.cellWidth * 16 / 9) < 1e-9)
+  assert.equal(portrait.cellWidth * portrait.columns, STORYBOARD_WIDTH - 4)
+  assert.equal(storyboardGrid('1:1', 1).columns, 5)
+  assert.equal(storyboardGrid('16 / 9', 1).columns, 3)
+  assert.equal(storyboardGrid('bogus', 1).columns, 6)
+  assert.equal(storyboardGrid('16 / 9', 0).rows, 0)
+  assert.equal(storyboardGrid('9 / 16', 13, true).height, storyboardGrid('9 / 16', 0).height)
 })
 
 test('canvas collapse prefs round-trip through storage and survive broken storage', () => {
