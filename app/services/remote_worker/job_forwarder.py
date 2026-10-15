@@ -69,6 +69,9 @@ class RemoteJobResult:
     r2_objects: dict[str, str] = field(default_factory=dict)
     # What the pod billed around this job (see ``_billing``), for cost reports.
     billing: dict[str, Any] = field(default_factory=dict)
+    # The worker's generation provenance (model, runtime, GPU, timing), when
+    # it reports one; the controller adds the pod's offer and price.
+    provenance: dict[str, Any] = field(default_factory=dict)
 
 
 # The dstack proxy answers these when it briefly cannot reach the worker; the
@@ -291,6 +294,8 @@ class RemoteJobForwarder:
             result = self._fetch_outputs(
                 client, store, remote_id, remote, job_id=job_id or remote_id, out_dir=out_dir, update=update,
                 live_files=live_files,
+                # Internal outputs (deferred publication) never get a gallery sidecar.
+                gallery_sidecars=not params.get("_defer_output_publication"),
             )
             result.billing = _billing(manager, status, waited=work_started - waiting_since,
                                       worked=time.monotonic() - work_started)
@@ -497,7 +502,8 @@ class RemoteJobForwarder:
         return revision
 
     def _fetch_outputs(self, client, store, remote_id, remote, *, job_id, out_dir, update,
-                       live_files: Mapping[str, str] | None = None) -> RemoteJobResult:
+                       live_files: Mapping[str, str] | None = None,
+                       gallery_sidecars: bool = True) -> RemoteJobResult:
         os.makedirs(out_dir, exist_ok=True)
         objects: dict[str, str] = {}
         if store is not None:
@@ -525,9 +531,12 @@ class RemoteJobForwarder:
             local_name = (live_files or {}).get(name) or _unique_local_name(out_dir, name)
             fetch(name, os.path.join(out_dir, local_name))
             renamed[name] = local_name
-            sidecar = f"{os.path.splitext(name)[0]}.json"
-            if sidecar in (remote.get("sidecars") or []):
-                fetch(sidecar, os.path.join(out_dir, f"{os.path.splitext(local_name)[0]}.json"))
+            # ``.json``: WanGP's settings export; ``.meta.json``: Maestro's
+            # gallery sidecar (generation time, provenance).
+            for suffix in (".json", ".meta.json") if gallery_sidecars else (".json",):
+                sidecar = f"{os.path.splitext(name)[0]}{suffix}"
+                if sidecar in (remote.get("sidecars") or []):
+                    fetch(sidecar, os.path.join(out_dir, f"{os.path.splitext(local_name)[0]}{suffix}"))
         output_files = [renamed[n] for n in remote.get("output_files") or [] if n in renamed]
         clip_files = {
             str(k): renamed[v] for k, v in (remote.get("clip_output_files") or {}).items() if v in renamed
@@ -538,7 +547,13 @@ class RemoteJobForwarder:
             clip_output_files=clip_files,
             join_output_file=renamed.get(join) if join else None,
             r2_objects={renamed[n]: k for n, k in objects.items() if n in renamed},
+            provenance=dict(remote.get("provenance") or {}) if isinstance(remote.get("provenance"), Mapping) else {},
         )
+
+
+# Pod offer fields of ``RemoteWorkerManager.status()`` (from dstack).
+_OFFER_FIELDS = ("gpu_name", "gpu_count", "gpu_memory_gb", "gpu_backend", "gpu_region",
+                 "instance_type", "spot")
 
 
 def _billing(manager: Any, ready: Mapping[str, Any], *, waited: float, worked: float) -> dict[str, Any]:
@@ -560,6 +575,9 @@ def _billing(manager: Any, ready: Mapping[str, Any], *, waited: float, worked: f
         "cost_end": ended.get("cost"),
         "wait_seconds": round(waited, 1),
         "work_seconds": round(worked, 1),
+        # The offer the pod runs on, for the job's provenance.
+        **{key: ended.get(key) or ready.get(key) for key in _OFFER_FIELDS
+           if ended.get(key) is not None or ready.get(key) is not None},
     }
 
 

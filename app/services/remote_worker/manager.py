@@ -70,6 +70,37 @@ BOOT_LOG_POLL_SECONDS = 3.0
 SLOW_HOSTS_TO_EXCLUDE_REGION = 2
 
 
+def offer_details(provisioning: Mapping[str, Any] | None) -> dict[str, Any]:
+    """GPU, backend and instance of a dstack ``job_provisioning_data``.
+
+    Only the fields dstack reported; used for the jobs' provenance.
+    """
+    provisioning = provisioning if isinstance(provisioning, Mapping) else {}
+    instance = provisioning.get("instance_type")
+    instance = instance if isinstance(instance, Mapping) else {}
+    resources = instance.get("resources")
+    resources = resources if isinstance(resources, Mapping) else {}
+    gpus = [gpu for gpu in resources.get("gpus") or [] if isinstance(gpu, Mapping)]
+    details: dict[str, Any] = {}
+    if provisioning.get("backend"):
+        details["gpu_backend"] = str(provisioning["backend"])
+    if instance.get("name"):
+        details["instance_type"] = str(instance["name"])
+    if resources.get("spot") is not None:
+        details["spot"] = bool(resources["spot"])
+    if gpus:
+        if gpus[0].get("name"):
+            details["gpu_name"] = str(gpus[0]["name"])
+        details["gpu_count"] = len(gpus)
+        try:
+            memory_mib = float(gpus[0].get("memory_mib") or 0)
+        except (TypeError, ValueError):
+            memory_mib = 0.0
+        if memory_mib > 0:
+            details["gpu_memory_gb"] = round(memory_mib / 1024, 1)
+    return details
+
+
 class RemoteWorkerManager:
     def __init__(
         self,
@@ -267,6 +298,7 @@ class RemoteWorkerManager:
             "price_per_hour": provisioning.get("price"),
             "gpu_region": provisioning.get("region"),
             "job_submission_id": submission.get("id"),
+            **offer_details(provisioning),
         }
         if run_status in _FINISHED_RUN:
             self._mark_not_ready()
