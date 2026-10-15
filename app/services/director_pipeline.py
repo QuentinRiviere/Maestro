@@ -59,7 +59,10 @@ from services.director.h3_sequences import (
     annotate_h3_sequences,
     compile_h3_sequence_prompt,
     detect_scene_cuts,
+    h3_per_shot_story,
     h3_sequences_enabled,
+    per_shot_keep_ranges,
+    per_shot_render_frames,
     plan_h3_sequences,
     saved_sequence_members,
     sequence_frame_ranges,
@@ -587,6 +590,14 @@ def prepare_director_timeline(params: dict, clip_plans: list, planned_clips: lis
     step = int(model_def.get("frames_steps") or 1)
     maximum = ltx_max if ltx_max is not None else _director_effective_max_frames(params, model_def)
     maximum = minimum + max(0, (maximum - minimum) // step) * step
+    if h3_per_shot_story(params, model_def) and len(clip_plans) == len(planned_clips) and all(
+        round(float(c.get("duration_sec") or (c.get("end", 0) - c.get("start", 0))) * fps) <= maximum
+        for c in planned_clips
+    ):
+        # Per-shot H3 story: every shot keeps its own prompt and start image.
+        # Merging a short shot into its neighbour would drop its prompt; the
+        # video stage renders it at the minimum and the edit trims it back.
+        return clip_plans, planned_clips
     already_native = len(clip_plans) == len(planned_clips)
     for clip in planned_clips:
         duration = float(clip.get("duration_sec") or (clip.get("end", 0) - clip.get("start", 0)))
@@ -9795,12 +9806,36 @@ def _run_video_generation(pid: str, params: dict, clip_plans: list[dict],
                     "model limit. Open & Edit the project and generate a new revision "
                     "to split the shots while preserving the full soundtrack."
                 )
-            per_clip_frames = normalize_h3_clip_frame_schedule(
-                requested_h3_schedule,
-                minimum_frames=bounded_minimum,
-                maximum_frames=bounded_maximum,
-                frame_step=bounded_step,
-            )
+            per_shot_story = h3_per_shot_story(params, model_def)
+            if per_shot_story:
+                # No source media to stay in sync with: each shot rounds up on
+                # its own, so a short shot raised to the minimum does not
+                # shorten the next one.
+                per_clip_frames = per_shot_render_frames(
+                    requested_h3_schedule,
+                    min_frames=bounded_minimum,
+                    max_frames=bounded_maximum,
+                    frame_step=bounded_step,
+                )
+            else:
+                per_clip_frames = normalize_h3_clip_frame_schedule(
+                    requested_h3_schedule,
+                    minimum_frames=bounded_minimum,
+                    maximum_frames=bounded_maximum,
+                    frame_step=bounded_step,
+                )
+            if per_shot_story and len(planned_shot_frames) == len(per_clip_frames):
+                trimmed = per_shot_keep_ranges(
+                    clip_plans, planned_shot_frames, per_clip_frames,
+                    min_frames=bounded_minimum, fps=fps,
+                )
+                if trimmed:
+                    print(
+                        f"[Pipeline {pid}] Per-shot H3: shot(s) "
+                        + ", ".join(str(i + 1) for i in trimmed)
+                        + f" render at the {bounded_minimum}-frame minimum and are "
+                        "trimmed to their planned length."
+                    )
             h3_timing_repaired = per_clip_frames != requested_h3_schedule
             if h3_timing_repaired:
                 print(

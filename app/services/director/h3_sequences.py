@@ -73,6 +73,51 @@ def h3_sequences_enabled(params: Mapping[str, Any], model_def: Mapping[str, Any]
     return str(params.get("director_skill") or "").startswith("custom:")
 
 
+def h3_per_shot_story(params: Mapping[str, Any], model_def: Mapping[str, Any] | None) -> bool:
+    """A run sequences could film that renders every shot on its own instead.
+
+    Each shot is its own generation, anchored on its start image (and, for
+    bounded start/end, the next same-scene shot's image as end). A shot
+    planned shorter than the H3 minimum renders at the minimum and the edit
+    trims it back (see :func:`per_shot_render_frames`).
+    """
+    return (not h3_sequences_enabled(params, model_def)
+            and h3_sequences_enabled({**params, "director_h3_sequences": "on"}, model_def))
+
+
+def per_shot_render_frames(
+    planned_frames: Sequence[int], *, min_frames: int, max_frames: int, frame_step: int,
+) -> list[int]:
+    """Each shot's render length: the nearest native H3 length, at least the minimum.
+
+    Shots are rounded one by one (no carried residual, unlike a media-driven
+    schedule): a short shot raised to the minimum must not shorten the next.
+    """
+    step = max(1, int(frame_step or 1))
+    minimum = int(min_frames)
+    maximum = minimum + max(0, (int(max_frames) - minimum) // step) * step
+    valid = range(minimum, maximum + 1, step)
+    return [min(valid, key=lambda candidate: (abs(candidate - max(1, int(frames))), candidate))
+            for frames in planned_frames]
+
+
+def per_shot_keep_ranges(
+    plans: Sequence[MutableMapping[str, Any]], planned_frames: Sequence[int], rendered_frames: Sequence[int],
+    *, min_frames: int, fps: float,
+) -> list[int]:
+    """Trim shots planned shorter than the H3 minimum back to their planned length.
+
+    Sets ``_director_keep_sec`` to ``[0, planned]`` on such a shot (unless it
+    already has its own keep range) and returns the indexes it set.
+    """
+    trimmed = []
+    for index, (plan, planned, rendered) in enumerate(zip(plans, planned_frames, rendered_frames)):
+        if planned < int(min_frames) and planned < rendered and not plan.get("_director_keep_sec"):
+            plan["_director_keep_sec"] = [0.0, round(planned / float(fps), 3)]
+            trimmed.append(index)
+    return trimmed
+
+
 def sequence_total_frames(member_frames: Sequence[int], *, min_frames: int, frame_step: int) -> int:
     """The first native H3 length that holds every member's full length."""
     total = sum(int(frames) for frames in member_frames)

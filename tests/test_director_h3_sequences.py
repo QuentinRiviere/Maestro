@@ -382,6 +382,63 @@ class SequenceLengthTests(unittest.TestCase):
         self.assertEqual(len(planned), 2)
 
 
+class PerShotTests(unittest.TestCase):
+    """director_h3_sequences "off": every shot is its own generation, anchored on its start image."""
+
+    PARAMS = {"video_model": "minimax_h3", "pipeline_type": "short_film_story", "director_skill": "custom:k",
+              "director_h3_sequences": "off"}
+
+    def test_off_is_a_per_shot_story_run(self):
+        from services.director.h3_sequences import h3_per_shot_story
+
+        self.assertTrue(h3_per_shot_story(self.PARAMS, H3_DEF))
+        self.assertFalse(h3_per_shot_story({**self.PARAMS, "director_h3_sequences": "on"}, H3_DEF))
+        # Driving audio keeps its own timeline (the schedule carries the rounding).
+        self.assertFalse(h3_per_shot_story({**self.PARAMS, "audio_path": "song.wav"}, H3_DEF))
+        self.assertFalse(h3_per_shot_story({**self.PARAMS, "video_model": "ltx2_22B"}, H3_DEF))
+
+    def test_short_shots_render_at_the_minimum_without_shortening_the_next(self):
+        from models.minimax_h3.minimax_h3_handler import normalize_h3_clip_frame_schedule
+        from services.director.h3_sequences import per_shot_render_frames
+
+        planned = [48, 141, 136, 400]
+        frames = per_shot_render_frames(planned, min_frames=124, max_frames=345, frame_step=17)
+        self.assertEqual(frames, [124, 141, 141, 345])
+        # The media schedule would carry the short shot's extra frames into the next one.
+        carried = normalize_h3_clip_frame_schedule(planned[:2], minimum_frames=124, maximum_frames=345,
+                                                   frame_step=17)
+        self.assertLess(carried[1], 141)
+
+    def test_short_shots_are_trimmed_back_to_their_planned_length(self):
+        from services.director.h3_sequences import per_shot_keep_ranges
+
+        plans = [{}, {}, {"_director_keep_sec": [0.5, 1.5]}, {}]
+        trimmed = per_shot_keep_ranges(plans, [48, 141, 60, 130], [124, 141, 124, 141], min_frames=124, fps=24)
+        self.assertEqual(trimmed, [0])
+        self.assertEqual(plans[0]["_director_keep_sec"], [0.0, 2.0])
+        self.assertNotIn("_director_keep_sec", plans[1])
+        self.assertEqual(plans[2]["_director_keep_sec"], [0.5, 1.5])  # the planner's own range wins
+        self.assertNotIn("_director_keep_sec", plans[3])  # not below the minimum: rendered as is
+
+    def test_the_timeline_keeps_short_shots_and_their_prompts(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        clips = [{"start": 0, "end": 2, "duration_sec": 2}, {"start": 2, "end": 7.5, "duration_sec": 5.5}]
+        plans = [{"video_prompt": "a"}, {"video_prompt": "b"}]
+        model_def = {"fps": 24, "frames_minimum": 124, "frames_maximum": 345, "frames_steps": 17}
+        with patch.object(dp, "_wgp", SimpleNamespace(get_model_def=lambda name: model_def)), \
+                patch.object(dp, "video_strategy", return_value=BOUNDED_START_END), \
+                patch("services.director.h3_sequences.video_strategy", return_value=BOUNDED_START_END):
+            kept, planned = dp.prepare_director_timeline(self.PARAMS, plans, clips)
+            # Without the per-shot path the short shot is merged and its prompt dropped.
+            merged, _ = dp.prepare_director_timeline({**self.PARAMS, "pipeline_type": "short_film_audio"},
+                                                     plans, clips)
+        self.assertEqual([p["video_prompt"] for p in kept], ["a", "b"])
+        self.assertEqual(len(planned), 2)
+        self.assertEqual(len(merged), 1)
+
+
 class CutSnappingTests(unittest.TestCase):
     """Planned cuts snap to the cuts H3 actually made (measured runs, 24 fps)."""
 

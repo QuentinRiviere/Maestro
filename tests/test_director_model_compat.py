@@ -1822,6 +1822,45 @@ class TestDirectorH3GenerationContract(unittest.TestCase):
         self.assertEqual(plans[1]["_director_generation_frames"], 141)
         self.assertEqual(captured["input_video_strength"], 1.0)
 
+    def test_per_shot_h3_renders_a_short_shot_at_the_minimum_and_trims_it(self):
+        # director_h3_sequences "off": every shot is its own generation from its
+        # start image, a 2 s shot renders 124 frames and the edit keeps 2 s.
+        model_type = "minimax_h3"
+        model_def = {
+            "name": "H3 FL2VA", "architecture": "minimax_h3", "fps": 24,
+            "frames_minimum": 124, "frames_maximum": 345, "frames_steps": 17, "latent_size": 17,
+            "image_prompt_types_allowed": "TSE", "returns_audio": True,
+            "director_video_strategy": "bounded_start_end", "director_audio_input_mode": "none",
+            "director_trim_end_frames": False,
+        }
+        self._install_registry(model_type, model_def)
+        plans = [{"video_prompt": "a short reaction", "_director_continuity_group": "kitchen"},
+                 {"video_prompt": "the reply", "_director_continuity_group": "kitchen"}]
+        clips = [{"start": 0.0, "end": 2.0, "duration_sec": 2.0, "duration_frames": 48},
+                 {"start": 2.0, "end": 8.0, "duration_sec": 6.0, "duration_frames": 144}]
+        start_images = [self._file("shot1.png"), self._file("shot2.png")]
+        captured = {}
+
+        def submit(params, **kwargs):
+            captured.update(params)
+            return ["joined.mp4"]
+
+        with patch.object(pipeline, "_submit_and_wait", side_effect=submit):
+            pipeline._run_video_generation(
+                "h3-per-shot",
+                {"video_model": model_type, "pipeline_type": "short_film_story", "seamless": False,
+                 "director_skill": "custom:noir", "director_h3_sequences": "off", "video_params": {},
+                 "_director_shot_image_policy": "prompt_only"},
+                plans, clips, [os.path.basename(p) for p in start_images], out_dir=self.temp_dir.name,
+            )
+
+        # One render per shot; the short shot does not shorten the next one.
+        self.assertEqual(captured["per_clip_frames"], [124, 141])
+        self.assertEqual(len(captured["prompt"].split("\n---CLIP_BOUNDARY---\n")), 2)
+        self.assertEqual(plans[0]["_director_keep_sec"], [0.0, 2.0])
+        self.assertNotIn("_director_keep_sec", plans[1])
+        self.assertNotIn("_director_sequence", plans[0])
+
     def test_fl2va_seamless_uses_one_explicit_prompt_per_native_window(self):
         model_type = "minimax_h3"
         model_def = {
