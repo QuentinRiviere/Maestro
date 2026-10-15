@@ -366,6 +366,42 @@ def _normalize_director_media_strengths(
     return True
 
 
+# ``director_h3_turbo_preset`` shorthands for the Turbo presets of turbo_presets.json.
+_DIRECTOR_H3_TURBO_ALIASES = {
+    "pdd": "alibaba-pai-fl2va-pdd-8step",
+    "fl2va_pdd": "alibaba-pai-fl2va-pdd-8step",
+    "ref2va_pdd": "alibaba-pai-ref2va-pdd-8step",
+}
+_DIRECTOR_H3_TURBO_OFF = {"", "off", "none", "default", "auto", "false", "0"}
+
+
+def director_h3_turbo_preset_id(params: dict, video_model: str, model_def: Optional[dict]) -> str:
+    """The Turbo preset the Director param ``director_h3_turbo_preset`` asks for ("" for none).
+
+    Lets a live-action run use base H3 (e.g. ``minimax_h3``) in Turbo mode
+    with Alibaba PAI's "FL2VA Acc 8-step PDD" preset instead of the fused
+    Turbo checkpoint, whose baked style LoRA (Mystic) suits animation. The
+    fused checkpoint already carries its accelerator and ignores the param.
+    """
+    raw = params.get("director_h3_turbo_preset")
+    value = str(raw if raw is not None else "").strip()
+    if raw is False or value.lower() in _DIRECTOR_H3_TURBO_OFF:
+        return ""
+    model_def = model_def or {}
+    architecture = str(model_def.get("architecture") or model_def.get("base_model_type") or video_model or "")
+    if not (architecture.lower().startswith("minimax_h3")
+            or str(video_model or "").lower().startswith("minimax_h3")):
+        return ""
+    if model_def.get("minimax_h3_fused_turbo"):
+        print(f"[Pipeline] director_h3_turbo_preset ignored: {video_model} already fuses its Turbo")
+        return ""
+    preset_id = _DIRECTOR_H3_TURBO_ALIASES.get(value.lower(), value)
+    from models.minimax_h3.turbo import minimax_h3_turbo_preset
+
+    # Unknown ids fail here, at submission, not in the first video job.
+    return str(minimax_h3_turbo_preset(preset_id)["id"])
+
+
 def _create_director_video_execution_profile(
     params: dict,
     *,
@@ -390,6 +426,12 @@ def _create_director_video_execution_profile(
         video_params.setdefault("minimax_h3_turbo_mode", True)
         if not video_params.get("minimax_h3_turbo_preset"):
             video_params["minimax_h3_turbo_preset"] = default_turbo
+    director_turbo = director_h3_turbo_preset_id(params, video_model, model_def)
+    if director_turbo:
+        # Every H3 job of the run (shots, sequence units, reruns) reads the
+        # saved video_params, so the preset holds for the whole project.
+        video_params["minimax_h3_turbo_mode"] = True
+        video_params["minimax_h3_turbo_preset"] = director_turbo
     profile_inputs = {
         **video_params,
         "activated_loras": video_loras.get("activated_loras", []) or [],

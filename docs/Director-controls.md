@@ -95,6 +95,30 @@ the writing contract and optional-content setting. Reviewed per-shot edits remai
 authoritative. Prompt review is still useful: successful preparation does not
 guarantee perfect movement, lip synchronization or visual continuity.
 
+## H3 Director parameters
+
+These Director request parameters are saved with the project and apply to
+every H3 video job of the run, including H3 sequence units, Dashboard reruns
+and repairs.
+
+- `director_h3_sequences`: `auto` (default; on for custom story skills),
+  `on` or `off`. When on, two or three consecutive shots of one scene render
+  as one H3 generation joined by timed cuts
+  (`[Shot 2] At 00:05.167, the camera cuts to a medium close-up of Ross.`) and
+  are split back per shot. When off, every shot renders as its own generation
+  from its start image (and, with a bounded strategy, the next shot of the same
+  scene as end image). A shot shorter than the H3 minimum renders at the
+  minimum and is trimmed back to its planned length.
+- `director_h3_turbo_preset`: empty or `off` (default) keeps the model's own
+  settings. A preset id from `app/models/minimax_h3/turbo_presets.json` (or the
+  shorthand `pdd` for `alibaba-pai-fl2va-pdd-8step`) turns on H3 Turbo mode
+  with that preset and its step count (8 for the Alibaba PAI FL2VA Acc 8-step
+  PDD preset). Use it with base H3 First / Last (`minimax_h3`) for live-action
+  projects: the fused Turbo checkpoint (`minimax_h3_fused_turbo`) bakes in the
+  "Mystic" animation style LoRA, and ignores this parameter because its
+  accelerator is already fused. An unknown preset id is rejected when the run
+  is submitted. Hand-detail shots never drop below the preset's steps.
+
 ## LoRA strengths
 
 Activated Video and Image LoRAs each show a strength slider and numeric input.
