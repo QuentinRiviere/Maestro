@@ -27386,8 +27386,16 @@ def _run_generation(job_id: str, *, finalize: bool = True, _slot_owned: bool = F
                 # Use clip boundary separator if present (Director v2 with sliding window support),
                 # otherwise fall back to newline split (Studio mode / legacy Director)
                 CLIP_SEPARATOR = "\n---CLIP_BOUNDARY---\n"
+                declared_clips = next(
+                    (len(value) for value in (raw_params.get("per_clip_frames"), raw_params.get("per_clip_prompt_modes"))
+                     if isinstance(value, list) and value),
+                    None,
+                )
                 if CLIP_SEPARATOR in prompt_text:
                     prompt_lines = [p.strip() for p in prompt_text.split(CLIP_SEPARATOR) if p.strip()]
+                elif declared_clips == 1:
+                    # A single declared clip keeps its multi-line prompt (H3 compiled prompts).
+                    prompt_lines = [prompt_text.strip()] if prompt_text.strip() else []
                 else:
                     prompt_lines = [l.strip() for l in prompt_text.split("\n") if l.strip()]
                 image_starts = raw_params.get("image_start", [])
