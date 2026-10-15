@@ -46,6 +46,7 @@ from shared.utils.audio_video import save_image_metadata, read_image_metadata, e
 from shared.utils.audio_metadata import save_audio_metadata, read_audio_metadata, extract_creation_datetime_from_metadata, resolve_audio_creation_datetime
 from shared.utils.video_metadata import save_video_metadata
 from shared.match_archi import match_nvidia_architecture
+from shared import precision_overrides as precision_overrides_lib
 from shared.attention import (
     get_attention_modes,
     get_override_attention_modes,
@@ -2952,9 +2953,15 @@ def get_runtime_model_def(model_type):
     resolver = getattr(handler, "resolve_runtime_model_def", None)
     if resolver is None:
         return model_def
-    return resolver(dict(model_def), {
-        "transformer_quantization": transformer_quantization,
-    })
+    # Job-level precision overrides (see shared/precision_overrides.py) are
+    # active only while a job resolves or loads its model.
+    job_overrides = precision_overrides_lib.current()
+    runtime_context = {
+        "transformer_quantization": job_overrides.get("transformer_quantization") or transformer_quantization,
+    }
+    if job_overrides.get("video_vae_precision"):
+        runtime_context["video_vae_precision"] = job_overrides["video_vae_precision"]
+    return resolver(dict(model_def), runtime_context)
 
 
 
@@ -3808,6 +3815,11 @@ def get_compatible_local_model_filename(
     exact = get_local_model_filename(model_filename, extra_paths=extra_paths)
     if exact is not None:
         return exact
+    if file_type == 0 and precision_overrides_lib.current().get("transformer_quantization"):
+        # A job that asked for a specific transformer format must get that
+        # exact file: an alias (H3 Pruned's legacy FP8 <-> INT8 migration
+        # pair) would silently load the other format.
+        return None
 
     model_def = get_model_def(model_type) or {}
     if file_type == 0:
@@ -4449,13 +4461,18 @@ def setup_prompt_enhancer(pipe, kwargs):
 
 
 def load_models(model_type, override_profile = -1, output_type="video", preview_mode=None, preview_gen=None, **model_kwargs):
-    global transformer_type, loaded_profile
+    global transformer_type, loaded_profile, loaded_precision_overrides, loaded_model_files
+    # Per-job precision overrides are active only when a job loads through
+    # load_models_for_job; any other load uses the configured formats.
+    loaded_precision_overrides, loaded_model_files = precision_overrides_lib.current(), None
+    # Global setting unless the job being loaded overrides it.
+    job_transformer_quantization = precision_overrides_lib.effective_transformer_quantization(transformer_quantization)
     base_model_type = get_base_model_type(model_type)
     model_def = get_runtime_model_def(model_type)
     save_quantized = args.save_quantized and model_def != None
-    model_filename = get_model_filename(model_type=model_type, quantization= "" if save_quantized else transformer_quantization, dtype_policy = transformer_dtype_policy) 
+    model_filename = get_model_filename(model_type=model_type, quantization= "" if save_quantized else job_transformer_quantization, dtype_policy = transformer_dtype_policy) 
     if "URLs2" in model_def:
-        model_filename2 = get_model_filename(model_type=model_type, quantization= "" if save_quantized else transformer_quantization, dtype_policy = transformer_dtype_policy, submodel_no=2) # !!!!
+        model_filename2 = get_model_filename(model_type=model_type, quantization= "" if save_quantized else job_transformer_quantization, dtype_policy = transformer_dtype_policy, submodel_no=2) # !!!!
     else:
         model_filename2 = None
     modules = get_model_recursive_prop(model_type, "modules",  return_list= True)
@@ -4466,7 +4483,7 @@ def load_models(model_type, override_profile = -1, output_type="video", preview_
     if save_quantized and len(modules) > 0:
         print(f"Unable to create a finetune quantized model as some modules are declared in the finetune definition. If your finetune includes already the module weights you can remove the 'modules' entry and try again. If not you will need also to change temporarly the model 'architecture' to an architecture that wont require the modules part ({modules}) to quantize and then add back the original 'modules' and 'architecture' entries.")
         save_quantized = False
-    quantizeTransformer = not save_quantized and model_def !=None and transformer_quantization in ("int8", "fp8") and model_def.get("auto_quantize", False) and not "quanto" in model_filename
+    quantizeTransformer = not save_quantized and model_def !=None and job_transformer_quantization in ("int8", "fp8") and model_def.get("auto_quantize", False) and not "quanto" in model_filename
     if quantizeTransformer and len(modules) > 0:
         print(f"Autoquantize is not yet supported if some modules are declared")
         quantizeTransformer = False
@@ -4515,15 +4532,15 @@ def load_models(model_type, override_profile = -1, output_type="video", preview_
         if isinstance(module_type,dict):
             URLs1 = module_type.get("URLs", None)
             if URLs1 is None: raise Exception(f"No URLs defined for Module {module_type}")
-            model_file_list.append(get_model_filename(model_type, transformer_quantization, transformer_dtype, URLs = URLs1))
+            model_file_list.append(get_model_filename(model_type, job_transformer_quantization, transformer_dtype, URLs = URLs1))
             URLs2 = module_type.get("URLs2", None)
             if URLs2 is None: raise Exception(f"No URL2s defined for Module {module_type}")
-            model_file_list.append(get_model_filename(model_type, transformer_quantization, transformer_dtype, URLs = URLs2))
+            model_file_list.append(get_model_filename(model_type, job_transformer_quantization, transformer_dtype, URLs = URLs2))
             model_type_list += [model_type] * 2
             source_type_list += [1] * 2
             model_submodel_no_list += [1,2]
         else:
-            model_file_list.append(get_model_filename(model_type, transformer_quantization, transformer_dtype, module_type= module_type))
+            model_file_list.append(get_model_filename(model_type, job_transformer_quantization, transformer_dtype, module_type= module_type))
             model_type_list.append(model_type)
             source_type_list.append(True)
             model_submodel_no_list.append(0) 
@@ -4751,7 +4768,77 @@ def load_models(model_type, override_profile = -1, output_type="video", preview_
         torch.set_default_device(args.gpu)
     transformer_type = model_type
     loaded_profile = profile
-    return wan_model, offloadobj 
+    return wan_model, offloadobj
+
+
+# Per-job precision overrides the resident model was loaded with, and the
+# transformer / video VAE / text encoder files they resolved to. A job whose
+# overrides resolve to other files reloads the model (see generate_video).
+loaded_precision_overrides = {}
+loaded_model_files = None
+
+
+def resolve_job_model_files(model_type, text_encoder_variant=None):
+    """Transformer, video VAE and text encoder files for the active overrides.
+
+    Call inside ``precision_overrides_lib.scope(...)`` to resolve a job's
+    overrides; outside it this resolves the global configuration.
+    """
+    model_def = get_runtime_model_def(model_type) or {}
+    quantization = precision_overrides_lib.effective_transformer_quantization(transformer_quantization)
+    transformer = get_model_filename(
+        model_type=model_type,
+        quantization="" if args.save_quantized else quantization,
+        dtype_policy=transformer_dtype_policy,
+    )
+    video_vae = model_def.get("minimax_h3_video_vae_filename") or ""
+    variants = model_def.get("minimax_h3_text_encoder_variants") or {}
+    if variants:
+        variant = (
+            precision_overrides_lib.current().get("text_encoder")
+            or text_encoder_variant
+            or model_def.get("minimax_h3_text_encoder_default", "")
+        )
+        text_encoder = precision_overrides_lib.text_encoder_variant_filename(model_def, variant)
+    else:
+        text_encoder_URLs = get_model_recursive_prop(model_type, "text_encoder_URLs", return_list=True)
+        text_encoder = ""
+        if text_encoder_URLs:
+            te_quant = model_def.get("text_encoder_quantization", None) or text_encoder_quantization
+            text_encoder = get_model_filename(
+                model_type=model_type, quantization=te_quant,
+                dtype_policy=transformer_dtype_policy, URLs=text_encoder_URLs,
+            )
+    return {
+        "transformer": os.path.basename(transformer or ""),
+        "video_vae": os.path.basename(video_vae),
+        "text_encoder": os.path.basename(text_encoder or ""),
+    }
+
+
+def load_models_for_job(model_type, override_profile = -1, output_type="video", preview_mode=None, preview_gen=None, precision_overrides=None, **model_kwargs):
+    """``load_models`` with a job's validated ``precision_overrides`` applied.
+
+    Without overrides this is exactly the configured load. With them, the
+    transformer quantization, H3 video VAE and H3 text encoder of this load
+    follow the job instead of the server configuration.
+    """
+    global loaded_model_files
+    overrides = dict(precision_overrides or {})
+    if overrides.get("text_encoder"):
+        model_kwargs["minimax_h3_text_encoder"] = overrides["text_encoder"]
+    with precision_overrides_lib.scope(overrides):
+        result = load_models(
+            model_type, override_profile, output_type=output_type,
+            preview_mode=preview_mode, preview_gen=preview_gen, **model_kwargs,
+        )
+        try:
+            loaded_model_files = resolve_job_model_files(
+                model_type, model_kwargs.get("minimax_h3_text_encoder"),
+            )
+        except Exception as error:
+            print(f"[Model Files] Could not record the loaded files of {model_type}: {error}")
+    return result
 
 if not "P" in preload_model_policy:
     wan_model, offloadobj, transformer = None, None, None
@@ -7876,6 +7963,12 @@ def generate_video(
     # Internal image preparation can request a lossless intermediate without
     # changing the user's global gallery format.
     image_output_codec=None,
+    # Per-job precision overrides (shared/precision_overrides.py). Empty
+    # keeps the configured transformer quantization, H3 video VAE and H3
+    # text encoder; a value that resolves to other files reloads the model.
+    override_transformer_quantization="",
+    override_video_vae_precision="",
+    override_text_encoder="",
 ):
 
 
@@ -7983,9 +8076,25 @@ def generate_video(
             time.sleep(1)
     vae_upsampling = model_def.get("vae_upsampler", None)
     model_kwargs = {}
+    job_precision_overrides = precision_overrides_lib.normalize(
+        model_def,
+        transformer_quantization=override_transformer_quantization,
+        video_vae_precision=override_video_vae_precision,
+        text_encoder=override_text_encoder,
+    )
+    _job_quantization = job_precision_overrides.get("transformer_quantization")
+    if _job_quantization and not model_def.get("auto_quantize", False):
+        with precision_overrides_lib.scope(job_precision_overrides):
+            _job_transformer = get_model_filename(model_type, _job_quantization, transformer_dtype_policy)
+        if not precision_overrides_lib.transformer_file_matches(_job_transformer, _job_quantization):
+            raise ValueError(
+                f"Model '{model_type}' has no {_job_quantization} transformer checkpoint "
+                f"(the closest is '{os.path.basename(_job_transformer or '')}')."
+            )
     if str(model_def.get("architecture") or "").startswith("minimax_h3"):
         requested_h3_text_encoder = str(
-            minimax_h3_text_encoder
+            job_precision_overrides.get("text_encoder")
+            or minimax_h3_text_encoder
             or model_def.get("minimax_h3_text_encoder_default", "nvfp4_awq")
         )
         model_kwargs["minimax_h3_text_encoder"] = requested_h3_text_encoder
@@ -8058,6 +8167,28 @@ def generate_video(
             requested_preview_key is not None and getattr(offloadobj, "tiny_vae", None) is None
         ):
             reload_needed = True
+    # One line per job naming the files it runs with; a job whose precision
+    # overrides resolve to other files than the resident model reloads it.
+    try:
+        with precision_overrides_lib.scope(job_precision_overrides):
+            job_model_files = resolve_job_model_files(
+                model_type, model_kwargs.get("minimax_h3_text_encoder"),
+            )
+        print(precision_overrides_lib.describe_files(model_type, job_model_files, job_precision_overrides))
+    except Exception as model_files_error:
+        job_model_files = None
+        print(f"[Model Files] {model_type}: could not resolve the job's files: {model_files_error}")
+    if (
+        wan_model is not None
+        and model_type == transformer_type
+        and (job_precision_overrides or loaded_precision_overrides)
+        and job_model_files != loaded_model_files
+    ):
+        print(
+            "[Model Files] Precision changed "
+            f"{loaded_model_files or 'unknown'} -> {job_model_files}; reloading the model."
+        )
+        reload_needed = True
     if model_type != transformer_type or reload_needed or profile != loaded_profile:
         release_model()
         # Pre-flight: detect first-use download so the UI can show
@@ -8074,30 +8205,32 @@ def generate_video(
         try:
             _model_def = get_model_def(model_type)
             _save_quantized = args.save_quantized and _model_def is not None
-            _primary_filename = get_model_filename(
-                model_type=model_type,
-                quantization="" if _save_quantized else transformer_quantization,
-                dtype_policy=transformer_dtype_policy,
-            )
-            if _primary_filename and len(_primary_filename) > 0:
-                _local = get_compatible_local_model_filename(
-                    _primary_filename,
-                    model_type,
-                    file_type=0,
+            with precision_overrides_lib.scope(job_precision_overrides):
+                _primary_filename = get_model_filename(
+                    model_type=model_type,
+                    quantization="" if _save_quantized else precision_overrides_lib.effective_transformer_quantization(transformer_quantization),
+                    dtype_policy=transformer_dtype_policy,
                 )
-                _needs_download = (_local is None)
+                if _primary_filename and len(_primary_filename) > 0:
+                    _local = get_compatible_local_model_filename(
+                        _primary_filename,
+                        model_type,
+                        file_type=0,
+                    )
+                    _needs_download = (_local is None)
         except Exception:
             pass  # never let a UX-only check block generation
         if _needs_download:
             send_cmd("status", f"Downloading model {_model_label} (first use, may take several minutes)...")
         else:
             send_cmd("status", f"Loading model {_model_label}...")
-        wan_model, offloadobj = load_models(
+        wan_model, offloadobj = load_models_for_job(
             model_type,
             override_profile,
             output_type=output_type,
             preview_mode=generation_preview_mode,
             preview_gen=gen,
+            precision_overrides=job_precision_overrides,
             **model_kwargs,
         )
         send_cmd("status", "Model loaded")

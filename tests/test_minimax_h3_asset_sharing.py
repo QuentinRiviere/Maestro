@@ -42,6 +42,10 @@ def _load_wgp_resolver(model_def: dict, locator):
         "os": os,
         "fl": locator,
         "get_model_def": lambda _model_type: model_def,
+        "precision_overrides_lib": _load_module(
+            _ROOT / "app" / "shared" / "precision_overrides.py",
+            "precision_overrides_under_test",
+        ),
     }
     module = ast.Module(body=selected, type_ignores=[])
     exec(compile(ast.fix_missing_locations(module), str(_WGP_PATH), "exec"), namespace)
@@ -325,10 +329,10 @@ class TestMiniMaxH3AssetSharing(unittest.TestCase):
         )
         self.assertIn(
             "_local = get_compatible_local_model_filename(\n"
-            "                    _primary_filename,\n"
-            "                    model_type,\n"
-            "                    file_type=0,\n"
-            "                )",
+            "                        _primary_filename,\n"
+            "                        model_type,\n"
+            "                        file_type=0,\n"
+            "                    )",
             source,
         )
 

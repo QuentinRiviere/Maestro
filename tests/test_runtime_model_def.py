@@ -4,6 +4,7 @@ from contextlib import redirect_stdout
 import io
 import os
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 import unittest
 
@@ -11,6 +12,11 @@ from PIL import Image
 
 
 ENGINE = Path(__file__).resolve().parents[1] / "app" / "wgp.py"
+APP = ENGINE.parent
+if str(APP) not in sys.path:
+    sys.path.insert(0, str(APP))
+
+from shared import precision_overrides  # noqa: E402
 TREE = ast.parse(ENGINE.read_text(encoding="utf-8"))
 
 
@@ -37,6 +43,7 @@ class RuntimeModelDefinitionTests(unittest.TestCase):
             "get_base_model_type": lambda _: "test",
             "model_types_handlers": {"test": SimpleNamespace(resolve_runtime_model_def=resolve)},
             "transformer_quantization": "int8",
+            "precision_overrides_lib": precision_overrides,
         }
         execute([function("get_runtime_model_def")], namespace)
         self.assertEqual(namespace["get_runtime_model_def"]("test"), {"vae": "int8"})
