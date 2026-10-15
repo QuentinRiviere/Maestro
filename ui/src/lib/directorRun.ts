@@ -395,3 +395,32 @@ export function formatSeconds(sec: number | null | undefined): string {
   if (minutes < 60) return `${minutes}m ${String(seconds).padStart(2, '0')}s`
   return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, '0')}m`
 }
+
+/**
+ * Start time of every shot in the cut, cumulative from shot durations.
+ *
+ * `actual[i]`, when it is a positive number, is the measured length of shot
+ * i's rendered clip and wins over the planned duration. A shot with neither
+ * counts for zero seconds, so the shots after it keep their order.
+ */
+export function shotTimestamps(
+  shots: ReadonlyArray<Pick<RunShot, 'durationSec'>>,
+  actual?: ReadonlyArray<number | null | undefined>,
+): number[] {
+  const starts: number[] = []
+  let cursor = 0
+  shots.forEach((shot, i) => {
+    starts.push(cursor)
+    const measured = actual?.[i]
+    const planned = shot.durationSec
+    if (typeof measured === 'number' && Number.isFinite(measured) && measured > 0) cursor += measured
+    else if (typeof planned === 'number' && Number.isFinite(planned) && planned > 0) cursor += planned
+  })
+  return starts
+}
+
+/** "MM:SS" timecode; minutes keep counting past the hour. */
+export function formatTimecode(sec: number): string {
+  const total = Number.isFinite(sec) && sec > 0 ? Math.floor(sec + 1e-6) : 0
+  return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`
+}

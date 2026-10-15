@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  buildRunShots, dialogueLines, finalEditFile, groupScenes, renderUnits, shortAction,
+  buildRunShots, dialogueLines, finalEditFile, formatTimecode, groupScenes, renderUnits, shortAction, shotTimestamps,
 } from '../src/lib/directorRun.ts'
 import { buildDirectorDag, columnX } from '../src/lib/directorDag.ts'
 import { formatDirectorHash, parseDirectorHash } from '../src/lib/directorRoute.ts'
@@ -187,6 +187,23 @@ test('buildDirectorDag shows a planning node before the storyboard exists', () =
   })
   assert.equal(nodes.find(n => n.id === 'planning')!.status, 'running')
   assert.ok(edges.some(e => e.source === 'character-0' && e.target === 'planning' && e.animated))
+})
+
+test('shotTimestamps accumulates planned durations and prefers measured clip lengths', () => {
+  const shots = [{ durationSec: 3.2 }, { durationSec: null }, { durationSec: 5 }, { durationSec: 61 }, { durationSec: 2 }]
+  assert.deepEqual(shotTimestamps(shots), [0, 3.2, 3.2, 8.2, 69.2])
+  // A measured length replaces the plan; bogus measurements fall back to it.
+  assert.deepEqual(shotTimestamps(shots, [4, 1.5, Number.NaN, -1]), [0, 4, 5.5, 10.5, 71.5])
+  assert.deepEqual(shotTimestamps([]), [])
+})
+
+test('formatTimecode renders MM:SS', () => {
+  assert.equal(formatTimecode(0), '00:00')
+  assert.equal(formatTimecode(3.2), '00:03')
+  assert.equal(formatTimecode(69.99), '01:09')
+  assert.equal(formatTimecode(3725), '62:05')
+  assert.equal(formatTimecode(Number.NaN), '00:00')
+  assert.equal(formatTimecode(-4), '00:00')
 })
 
 test('director hash routes round-trip', () => {
