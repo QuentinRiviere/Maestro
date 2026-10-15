@@ -29,6 +29,7 @@ Detects your GPU, VRAM, and RAM on first launch and picks the right profile, qua
 - **Live download status** during model setup ("Downloading transcription model (first use downloads ~300MB)..." instead of a vague spinner).
 - **Cancel model downloads:** use **Cancel** beside an active download in **Settings → Performance → Enabled Models**, the model browser, or the download banner. Download actions are separate from the enable checkbox. **Cancelling** stays visible until the transfer stops; completed files stay installed and the download can be retried. Hugging Face may retain incomplete cache data for a resumable retry. [Download controls and API](docs/Download-controls.md).
 - **Generation previews:** Settings → Performance → Generation Preview defaults to looping Live Video in Studio's generating card, with Fast Frames, Clearer Frames and Off also available. Saved choices are preserved. Previews add work and show approximate motion in the current window. Click the video to pause/resume playback. [Preview controls and API](docs/Generation-preview.md).
+- **Generation provenance:** gallery cards, queue tiles and Director shots show which model, quantization, attention, LoRAs, Turbo preset, upscaler and GPU produced each output, with render time, a phase breakdown and, on the remote worker, the pod's price and estimated cost. [What is recorded](docs/Generation-provenance.md).
 
 ### 🎨 Studio Mode — full manual control
 Direct access to every model and every knob:
