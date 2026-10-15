@@ -16,6 +16,7 @@ from services.dialogue_timing import (
     DIALOGUE_MAX_WORDS_PER_SECOND,
     h3_dialogue_schedule,
 )
+from services.director.cinema_grammar.vocabulary import canonical_camera_text
 from services.h3_prompt_budget import (
     H3_ENHANCED_TEXT_TOKEN_TARGET as _H3_DIRECTOR_TEXT_TOKEN_BUDGET,
     fit_h3_base_prompt,
@@ -1498,7 +1499,8 @@ def _compact_h3_visual_body(
             cast.append(compact_subject)
 
     action = _h3_labeled_value(text, "Action")
-    camera = _h3_labeled_value(text, "Camera")
+    # Named moves in the closed vocabulary; vague motion becomes a static camera.
+    camera = canonical_camera_text(_h3_labeled_value(text, "Camera"))
     lighting = _h3_labeled_value(text, "Lighting")
     mood = _h3_labeled_value(text, "Mood")
     final = _h3_labeled_value(text, "Final beat")
