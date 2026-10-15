@@ -4420,8 +4420,14 @@ export const useStore = create<AppState>((set, get) => ({
         _directorPipelineReconnectAttempted = true
         const active = pipelines.find(item => DIRECTOR_PIPELINE_ACTIVE.has(item.status))
         if (active && !get().pipelineId) {
-          // Reopen the Director chat when the page was reloaded from it.
-          void get().reattachDirectorPipeline(active.id, _lastSidebarMode() === 'director')
+          // Reopen the Director chat when the page was reloaded from it, but
+          // never over a Director page deep link (#/director/...) the reload
+          // is restoring.
+          const onDirectorPage = window.location.hash.startsWith('#/director')
+          void get().reattachDirectorPipeline(
+            active.id,
+            _lastSidebarMode() === 'director' && !onDirectorPage,
+          )
         }
       }
 
