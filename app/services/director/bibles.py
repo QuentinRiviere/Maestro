@@ -51,6 +51,11 @@ DEFAULT_VARIANT = "default"
 # Angles of a character's look, edited from its approved image: together they
 # make the turnaround sheet a project uses as the character's reference.
 VIEWS = {"face_front": "Face", "face_three_quarter": "Face 3/4", "face_profile": "Profile", "back": "Back"}
+# Angles of a place: the same empty room seen from its opposite wall, for shots
+# whose camera looks back at what the place's main image has behind its camera.
+LOCATION_VIEWS = {"reverse": "Reverse"}
+ALL_VIEWS = {**VIEWS, **LOCATION_VIEWS}
+KIND_VIEWS = {"character": VIEWS, "location": LOCATION_VIEWS}
 IMAGE_STATES = ("queued", "rendering", "candidate", "approved", "failed")
 IN_PROGRESS = ("queued", "rendering")
 # Render slots owned by this process. A slot still queued or rendering that
@@ -114,9 +119,9 @@ def _images(raw: Any, folder: Path) -> list[dict]:
             "status": status,
             "error": error,
             "created_at": str(item.get("created_at") or _now()),
-            "view": item.get("view") if item.get("view") in VIEWS else "",
+            "view": item.get("view") if item.get("view") in ALL_VIEWS else "",
         })
-    for view in ("", *VIEWS):
+    for view in ("", *ALL_VIEWS):
         approved = [i for i, image in enumerate(images) if image["status"] == "approved" and image["view"] == view]
         for index in approved[:-1]:
             images[index]["status"] = "candidate"
@@ -434,7 +439,7 @@ def start_render(bible_id: str, element_id: str, variant_id: str, view: str = ""
     def change(bible: dict) -> str:
         kind, element = find_element(bible, element_id)
         variant = find_variant(element, variant_id)
-        if view and (view not in VIEWS or kind != "character"):
+        if view and view not in KIND_VIEWS.get(kind, {}):
             raise BibleError("Unknown angle")
         slot = secrets.token_hex(4)
         _LIVE_SLOTS.add(slot)
@@ -494,7 +499,7 @@ def active_renders() -> list[dict]:
                 for variant in element["variants"]:
                     for image in variant["images"]:
                         if image["status"] in IN_PROGRESS:
-                            look = variant["label"] + (f" · {VIEWS[image['view']]}" if image.get("view") else "")
+                            look = variant["label"] + (f" · {ALL_VIEWS[image['view']]}" if image.get("view") else "")
                             renders.append({
                                 "bible_id": bible["id"], "bible_name": bible["name"], "kind": element["kind"],
                                 "element": element["name"], "look": look, "slot": image["id"],
@@ -603,11 +608,11 @@ def reference_paths(bible: dict, element: dict, variant: dict, chain_from: list[
     return paths
 
 
-def approved_views(variant: dict) -> dict[str, str]:
-    """The approved image of each angle of a look, in ``VIEWS`` order."""
+def approved_views(variant: dict, views: dict[str, str] = VIEWS) -> dict[str, str]:
+    """The approved image of each angle of a look, in ``views`` order (a character's angles by default)."""
     found = {i["view"]: i["file"] for i in variant.get("images") or []
              if i.get("view") and i["status"] == "approved" and i["file"]}
-    return {view: found[view] for view in VIEWS if view in found}
+    return {view: found[view] for view in views if view in found}
 
 
 def compose_turnaround(folder: Path, main: str, views: dict[str, str], target: str) -> bool:
@@ -748,9 +753,10 @@ def project_cast(bible: dict, out_dir: str, *, characters: Any = None, locations
             image = approved_image(element, look["id"])
             # A character's look with approved angles goes to the project as one turnaround sheet.
             variant = next((v for v in element["variants"] if v["id"] == look["id"]), None)
-            views = approved_views(variant) if kind == "character" and variant and _has_approved(variant) else {}
+            views = (approved_views(variant, KIND_VIEWS[kind])
+                     if kind in KIND_VIEWS and variant and _has_approved(variant) else {})
             entry["image"] = None
-            if image and (folder / image).is_file() and views:
+            if kind == "character" and image and (folder / image).is_file() and views:
                 stem = hashlib.sha1("|".join([image, *views.values()]).encode()).hexdigest()[:10]
                 copied = f"bible_{bible['id']}_sheet_{stem}.png"
                 target = os.path.join(out_dir, copied)
@@ -767,7 +773,7 @@ def project_cast(bible: dict, out_dir: str, *, characters: Any = None, locations
                 else:
                     entry["image"] = copied
             if views:
-                # Each approved angle, for shots that see the person from that side.
+                # Each approved angle, for shots that see the person (or the place) from that side.
                 entry["views"] = {}
                 for view, name in views.items():
                     if not (folder / name).is_file():

@@ -346,8 +346,13 @@ function Images({ bible, element, variant, view = '', onBible }: {
 const VIEW_LABELS: Record<string, string> = {
   face_front: 'Face', face_three_quarter: 'Face 3/4', face_profile: 'Profile', back: 'Back',
 }
+/** A place's angle: the same empty room from the opposite wall, for shots that look back. */
+const LOCATION_VIEW_LABELS: Record<string, string> = { reverse: 'Reverse' }
 
-/** The angles of a character's look, edited from its approved image; approved ones make its turnaround sheet. */
+/**
+ * The angles of a look, edited from its approved image: a character's approved ones make its turnaround
+ * sheet, a place's reverse view is the set of shots whose camera faces the opposite wall.
+ */
 function Angles({ bible, element, variant, readsImages, imageModel, onBible }: {
   bible: DirectorBible
   element: BibleElement
@@ -358,6 +363,9 @@ function Angles({ bible, element, variant, readsImages, imageModel, onBible }: {
 }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const place = element.kind === 'location'
+  const labels = place ? LOCATION_VIEW_LABELS : VIEW_LABELS
+  const total = Object.keys(labels).length
   const hasMain = variant.images.some(i => !i.view && i.status === 'approved')
   const angles = variant.images.filter(i => i.view)
   const running = angles.some(i => i.status === 'queued' || i.status === 'rendering')
@@ -374,15 +382,18 @@ function Angles({ bible, element, variant, readsImages, imageModel, onBible }: {
       <div className="flex items-center gap-2">
         <span className={label + ' !mb-0'}>Angles</span>
         <span className="text-[9px] text-text-muted">
-          {approved.size ? `${approved.size}/4 in the turnaround sheet projects use` : 'face, 3/4, profile and back, for a turnaround sheet'}
+          {place
+            ? (approved.size ? 'used by shots that look at the opposite wall' : 'the same empty place from the opposite wall, for reverse shots')
+            : approved.size ? `${approved.size}/${total} in the turnaround sheet projects use` : 'face, 3/4, profile and back, for a turnaround sheet'}
         </span>
         <button disabled={busy || running || !hasMain || !readsImages} onClick={() => void render()}
-          title={!hasMain ? 'Approve an image of this look first' : !readsImages ? `${imageModel} cannot read an image` : `Render the 4 angles with ${imageModel}`}
+          title={!hasMain ? 'Approve an image of this look first' : !readsImages ? `${imageModel} cannot read an image`
+            : place ? `Render the reverse view with ${imageModel}` : `Render the ${total} angles with ${imageModel}`}
           className="ml-auto flex items-center gap-1 rounded border border-border px-2 py-0.5 text-[10px] text-text-secondary hover:text-text-primary disabled:opacity-40">
           {busy || running ? <Loader2 size={10} className="animate-spin" /> : <Sparkles size={10} />} {angles.length ? 'Re-render angles' : 'Render angles'}
         </button>
       </div>
-      {Object.entries(VIEW_LABELS).map(([view, name]) => angles.some(i => i.view === view) && (
+      {Object.entries(labels).map(([view, name]) => angles.some(i => i.view === view) && (
         <div key={view} className="flex items-start gap-1.5">
           <span className="w-12 shrink-0 pt-1 text-[9px] text-text-muted">{name}</span>
           <Images bible={bible} element={element} variant={variant} view={view} onBible={onBible} />
@@ -441,7 +452,7 @@ function ElementCard({ bible, element, saved, onChange, onRemove, onBible }: {
               title: `Regenerate every look of ${element.name}?`, confirmLabel: 'Regenerate all',
               message: <>A new candidate for each of its {element.variants.length} look{element.variants.length > 1 ? 's' : ''},
                 rendered with <b>{imageModel}</b>. Approved images stay the references until you approve a new one.
-                {element.kind === 'character' && ' Angles are not re-rendered: use Re-render angles once a new look is approved.'}
+                {element.kind !== 'prop' && ' Angles are not re-rendered: use Re-render angles once a new look is approved.'}
                 {!readsImages && <span className="mt-2 block text-amber-300">{imageModel} {TEXT_ONLY_NOTE} Only the Default look will render.</span>}</>,
               run: () => act(() => generateBibleAssets(bible.id, imageModel, true, element.id)),
             })}
@@ -495,7 +506,7 @@ function ElementCard({ bible, element, saved, onChange, onRemove, onBible }: {
             onChange={e => onChange({ ...element, variants: element.variants.map(v => v.id === variant.id ? { ...v, description: e.target.value } : v) })} />
         )}
         {variant && saved && <Images bible={bible} element={element} variant={variant} onBible={onBible} />}
-        {variant && saved && element.kind === 'character' && (
+        {variant && saved && (element.kind === 'character' || element.kind === 'location') && (
           <Angles bible={bible} element={element} variant={variant} readsImages={readsImages} imageModel={imageModel} onBible={onBible} />
         )}
 

@@ -22,7 +22,7 @@ export interface BibleImage {
   status: 'queued' | 'rendering' | 'candidate' | 'approved' | 'failed'
   error: string
   created_at: string
-  /** An angle of the look (face_front, face_three_quarter, face_profile, back); empty for the look's own image. */
+  /** An angle of the look (a character: face_front, face_three_quarter, face_profile, back; a place: reverse); empty for the look's own image. */
   view?: string
 }
 
@@ -127,7 +127,7 @@ export function renderBibleImage(bibleId: string, elementId: string, variantId: 
   return bibleCall(`${variantUrl(bibleId, elementId, variantId)}/render`, jsonBody(body), 'Could not start the render')
 }
 
-/** Render the four angles (``views``: some of them) of a character's look, edited from its approved image, in the background. */
+/** Render the angles (``views``: some of them) of a look, edited from its approved image, in the background: a character's four, a place's reverse. */
 export function renderBibleViews(bibleId: string, elementId: string, variantId: string, imageModel: string,
   views?: string[]): Promise<DirectorBible> {
   return bibleCall(`${variantUrl(bibleId, elementId, variantId)}/views`, jsonBody({ image_model: imageModel, views }),

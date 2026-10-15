@@ -233,6 +233,30 @@ def view_prompt(view: str, element: dict, variant: dict, style: str = "", *, ref
     )
 
 
+_LOCATION_VIEW_SHOTS = {
+    "reverse": "the camera now stands against the wall that {label} 1 looks at and looks back toward where the "
+               "camera of {label} 1 stood: the walls, windows, doors and furniture that were behind that camera "
+               "fill the frame, and the wall {label} 1 shows is now behind the camera, out of frame",
+}
+
+
+def location_view_prompt(view: str, element: dict, variant: dict, style: str = "", *, ref_label: str = "") -> str:
+    """One angle of a place's look, edited from its approved image (reference 1): the same empty room."""
+    label = ref_label or "reference image"
+    change = variant.get("description") or ""
+    description = element.get("description", "") + (f" State: {change}" if change else "")
+    return (
+        f"The exact place of {label} 1, empty, seen from the opposite side of the same room: "
+        f"{_LOCATION_VIEW_SHOTS[view].format(label=label)}. Keep the same architecture, floor, wall and ceiling "
+        "materials, colours, period and light: the same time of day and the same light sources, their direction "
+        f"now seen from the other side. The furniture of {label} 1 keeps its size, style and place in the room, "
+        "now seen from its other side. Nobody in the place, every seat unoccupied, no text overlay. "
+        f"Location: {description}"
+        + (f" Layout: {element['notes']}." if element.get("notes") else "")
+        + realism_clause("location", style)
+    )
+
+
 def bible_image_prompt(kind: str, element: dict, variant: dict, style: str = "", *,
                        ref_label: str = "", from_default: bool = False, chained: int = 0) -> str:
     """The prompt of one bible image: the element's sheet, plate or prop shot, in one of its looks.

@@ -7235,14 +7235,16 @@ def _render_bible_slot(bible_id: str, element_id: str, variant_id: str, slot: st
         medium = casting.asset_medium(bible.get("style"), (bible.get("world") or {}).get("look", ""))
         ref_label = "Picture" if image_ref_profile(image_model)["label"] == "Picture" else "reference image"
         if view:
-            # An angle is an edit of the look's approved image: same person, turned.
+            # An angle is an edit of the look's approved image: same person turned, or same room reversed.
             if budget == 0:
                 raise bibles.BibleError(_text_only_look_error(image_model))
             source = bibles.image_path(bible_id, bibles.approved_image(element, variant["id"]) or "")
             if source is None:
                 raise bibles.BibleError("Approve an image of this look before rendering its angles")
             refs = [str(source)]
-            prompt = casting.view_prompt(view, element, variant, medium, ref_label=ref_label)
+            prompt = (casting.view_prompt(view, element, variant, medium, ref_label=ref_label)
+                      if kind == "character"
+                      else casting.location_view_prompt(view, element, variant, medium, ref_label=ref_label))
         else:
             refs = [str(path) for path in bibles.reference_paths(bible, element, variant, chain_from, base_image)]
             # A text-only model never sees references: its prompt must not name any.
@@ -7275,7 +7277,8 @@ def _render_bible_slot(bible_id: str, element_id: str, variant_id: str, slot: st
             "guidance_scale": image_params.get("guidance_scale", 1),
             "video_prompt_type": prompt_type,
             "remove_background_images_ref": 0,
-            "resolution": (casting.VIEW_RESOLUTIONS[view] if view
+            # A place's reverse view keeps the plate's frame.
+            "resolution": (casting.VIEW_RESOLUTIONS[view] if view in casting.VIEW_RESOLUTIONS
                            else casting.SHEET_RESOLUTION if kind == "character"
                            else image_params.get("resolution", "1280x720")),
             "seed": -1,
@@ -7379,12 +7382,15 @@ def _run_bible_renders(renders: list[Callable[[], None]], parallel: int) -> None
 
 def render_bible_views(bible_id: str, element_id: str, variant_id: str, *, image_model: str = "",
                        image_params: Optional[dict] = None, views: Optional[list] = None) -> dict:
-    """Render every angle of a character's look (face, three-quarter, profile, back), in the background.
+    """Render every angle of a look, in the background.
 
+    A character's angles are face, three-quarter, profile and back; a
+    place's is its reverse (the same empty room from the opposite wall).
     ``views`` limits the renders to some of the angles (a new candidate of one angle).
 
     Each angle is edited from the look's approved image, so the model must
-    read images. Approved angles make the turnaround sheet a project uses.
+    read images. A character's approved angles make the turnaround sheet a
+    project uses; a place's reverse view is the set of shots that look back.
     """
     from services.director import bibles
 
@@ -7394,13 +7400,14 @@ def render_bible_views(bible_id: str, element_id: str, variant_id: str, *, image
     kind, element = bibles.find_element(bible, element_id)
     variant = bibles.find_variant(element, variant_id)
     image_model = image_model or "flux2_klein_9b"
-    if kind != "character":
-        raise bibles.BibleError("Angles are for characters")
+    kind_views = bibles.KIND_VIEWS.get(kind)
+    if not kind_views:
+        raise bibles.BibleError("Angles are for characters and places")
     if image_model_reference_limit(image_model) == 0:
         raise bibles.BibleError(_text_only_look_error(image_model))
     if not any(i["status"] == "approved" and not i.get("view") for i in variant["images"]):
         raise bibles.BibleError("Approve an image of this look before rendering its angles")
-    chosen = [view for view in bibles.VIEWS if not views or view in views]
+    chosen = [view for view in kind_views if not views or view in views]
     if not chosen:
         raise bibles.BibleError("Unknown angle")
     jobs = []
