@@ -32005,23 +32005,41 @@ def _run_cache_warm(model_types: list[str]) -> int:
         print("[CacheWarm] R2 is not configured on this pod", flush=True)
         return 2
 
+    from shared import precision_overrides as precision_overrides_lib
+
     failures = 0
     for model_type in model_types:
-        if not wgp.get_model_def(model_type):
+        # ``model@tq-bf16+vae-fp16`` warms the files a job with those
+        # precision overrides loads, under that variant's own manifest.
+        try:
+            base_type, raw_overrides = precision_overrides_lib.parse_cache_key(model_type)
+        except ValueError as exc:
+            emit(model_type, "failed", error=str(exc))
+            failures += 1
+            continue
+        model_def = wgp.get_model_def(base_type)
+        if not model_def:
             emit(model_type, "failed", error="Unknown model")
             failures += 1
             continue
-        if cache.has_hashes(model_type):
+        try:
+            overrides = precision_overrides_lib.normalize(model_def, **raw_overrides)
+        except ValueError as exc:
+            emit(model_type, "failed", error=str(exc))
+            failures += 1
+            continue
+        key = precision_overrides_lib.cache_key(base_type, overrides)
+        if cache.has_hashes(key):
             emit(model_type, "cached", message="Already in the R2 cache")
             continue
-        if cache.read_manifest(model_type)[0]:
+        if cache.read_manifest(key)[0]:
             # Older manifest without hashes: pull it on this trusted host and
             # vouch for each file, so untrusted pods can verify what they load.
             emit(model_type, "downloading", message="Adding integrity hashes")
             started = time.time()
             try:
-                cache.hydrate(model_type)
-                rehashed = cache.rehash(model_type)
+                cache.hydrate(key)
+                rehashed = cache.rehash(key)
             except Exception as exc:
                 emit(model_type, "failed", error=str(exc)[:300])
                 failures += 1
@@ -32031,7 +32049,8 @@ def _run_cache_warm(model_types: list[str]) -> int:
         emit(model_type, "downloading")
         started = time.time()
         try:
-            published = _download_model_files_cached(model_type, background_publish=False)
+            published = _download_model_files_cached(base_type, background_publish=False,
+                                                      precision_overrides=overrides)
         except Exception as exc:
             emit(model_type, "failed", error=str(exc)[:300])
             failures += 1

@@ -52,7 +52,8 @@ FLEET_IDLE_SECONDS = 60
 # Progress lines the worker prints (see launch.py ``--cache-warm``).
 LOG_MARKER = "[CacheWarm]"
 
-_MODEL_TYPE = re.compile(r"^[A-Za-z0-9._-]{1,120}$")
+# A model type, optionally with precision overrides (``minimax_h3@tq-bf16+vae-fp16``).
+_MODEL_TYPE = re.compile(r"^[A-Za-z0-9._-]{1,120}(@[A-Za-z0-9._+-]{1,120})?$")
 _FINISHED = {"terminated", "failed", "done"}
 
 

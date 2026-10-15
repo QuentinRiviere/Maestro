@@ -174,6 +174,25 @@ def cache_key(model_type: str, overrides: Mapping[str, Any] | None) -> str:
     return f"{model_type}@{'+'.join(parts)}"
 
 
+def parse_cache_key(key: str) -> tuple[str, dict]:
+    """Inverse of ``cache_key``: the model type and its raw override values.
+
+    The values are unvalidated; pass them to ``normalize`` before use.
+    Raises ``ValueError`` on an unknown tag or a malformed part.
+    """
+    model_type, _, suffix = str(key or "").partition("@")
+    overrides: dict[str, str] = {}
+    if not suffix:
+        return model_type, overrides
+    tags = {tag: name for name, tag in _KEY_TAGS.items()}
+    for part in suffix.split("+"):
+        tag, _, value = part.partition("-")
+        if tag not in tags or not value:
+            raise ValueError(f"Invalid model variant part {part!r} in {key!r}.")
+        overrides[tags[tag]] = value
+    return model_type, overrides
+
+
 def describe_files(model_type: str, files: Mapping[str, Any], overrides: Mapping[str, Any] | None) -> str:
     """One log line naming the files a job resolves to."""
     def name(key: str) -> str:

@@ -120,6 +120,20 @@ class NormalizeTests(unittest.TestCase):
         self.assertEqual(po.current(), {})
 
 
+class CacheKeyTests(unittest.TestCase):
+    def test_parse_inverts_cache_key(self):
+        overrides = {"transformer_quantization": "bf16", "video_vae_precision": "fp16", "text_encoder": "gguf_q2_k"}
+        key = po.cache_key("minimax_h3", overrides)
+        self.assertEqual(po.parse_cache_key(key), ("minimax_h3", overrides))
+        self.assertEqual(po.parse_cache_key("minimax_h3"), ("minimax_h3", {}))
+
+    def test_parse_rejects_unknown_tags(self):
+        with self.assertRaises(ValueError):
+            po.parse_cache_key("minimax_h3@xx-bf16")
+        with self.assertRaises(ValueError):
+            po.parse_cache_key("minimax_h3@tq-")
+
+
 class TransformerSelectionTests(unittest.TestCase):
     def test_pruned_h3_variants_select_distinct_files(self):
         definition = _h3_def()

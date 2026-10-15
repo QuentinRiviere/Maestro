@@ -174,3 +174,10 @@ def test_warm_pod_reads_its_own_r2_secret_names():
     assert not (set(worker) & set(warm)) - {"MAESTRO_R2_ACCOUNT_ID", "MAESTRO_REGISTRY_TOKEN"}
     assert warm[SECRET_R2_ACCESS_KEY_ID + cache_warmer.SECRET_SUFFIX] == "warm-id"
     assert "secrets.%s }}" % SECRET_R2_ACCESS_KEY_ID in json.dumps(build_run_spec(settings))
+
+
+def test_model_variants_are_valid_warm_targets():
+    assert cache_warmer.valid_model_types(["minimax_h3@tq-bf16+vae-fp16", "minimax_h3"]) == [
+        "minimax_h3@tq-bf16+vae-fp16", "minimax_h3"]
+    with pytest.raises(cache_warmer.CacheWarmerError):
+        cache_warmer.valid_model_types(["minimax_h3@tq bf16"])
