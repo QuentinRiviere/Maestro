@@ -128,6 +128,7 @@ _CANCELLED_ARTIFACT_FIELDS = {
     "output_files",
     "clip_images",
     "_clip_keyframes",
+    "_clip_unrefined_images",
     "_clip_video_files",
     "_clip_timings",
 }
@@ -1437,6 +1438,11 @@ def _save_pipeline_state_locked(pid: str) -> bool:
             "window_prompts_pre_polish": pre_polish[i].get("window_prompts", []) if i < len(pre_polish) else None,
             "keyframe_prompts_pre_polish": pre_polish[i].get("keyframe_prompts", []) if i < len(pre_polish) else None,
             "start_image_filename": clip_images[i] if i < len(clip_images) else None,
+            # Set once the texture refine replaced this start image.
+            "start_image_unrefined_filename": (
+                (p.get("_clip_unrefined_images") or [])[i]
+                if i < len(p.get("_clip_unrefined_images") or []) else None
+            ) or None,
             "keyframe_filenames": (p.get("_clip_keyframes", []) or [])[i] if i < len(p.get("_clip_keyframes", [])) else [],
             "video_filename": clip_videos[i] if i < len(clip_videos) else None,
             "video_stale": False,
@@ -2193,6 +2199,8 @@ def _delete_pipeline_locked(out_dir: str, pid: str) -> dict:
         for clip in state.get("clips", []) or []:
             if clip.get("start_image_filename"):
                 names.add(clip["start_image_filename"])
+            if clip.get("start_image_unrefined_filename"):
+                names.add(clip["start_image_unrefined_filename"])
             for kf in clip.get("keyframe_filenames") or []:
                 if kf:
                     names.add(kf)
@@ -2521,6 +2529,8 @@ def _rerun_clip_image_impl(out_dir: str, pid: str, clip_index: int, prompt_overr
     # Update the saved pipeline state
     def _update(s):
         s["clips"][clip_index]["start_image_filename"] = new_filename
+        # The new image has not been through the texture refine.
+        s["clips"][clip_index].pop("start_image_unrefined_filename", None)
         # A video generated from the previous start image is still useful
         # history, but it no longer represents this clip's current inputs.
         # Keep its filename for playback/ownership and mark it for regeneration.
@@ -6350,6 +6360,7 @@ def _resume_pipeline_reserved(pid: str, out_dir: str) -> tuple[bool, str]:
     } for c in saved_clips]
     planned_clips = [c.get("planned_clip") for c in saved_clips]
     clip_images = [c.get("start_image_filename") for c in saved_clips]
+    clip_unrefined_images = [c.get("start_image_unrefined_filename") or "" for c in saved_clips]
     clip_keyframes = [c.get("keyframe_filenames", []) or [] for c in saved_clips]
 
     workspace = data.get("workspace") if data.get("workspace") not in ("default", None) else None
@@ -6364,6 +6375,7 @@ def _resume_pipeline_reserved(pid: str, out_dir: str) -> tuple[bool, str]:
         "clip_plans": clip_plans,
         "_planned_clips": planned_clips,
         "clip_images": clip_images,
+        "_clip_unrefined_images": clip_unrefined_images,
         "_clip_keyframes": clip_keyframes,
         "_clip_video_files": [
             c.get("video_filename") for c in saved_clips
@@ -6941,6 +6953,14 @@ def _run_pipeline(pid: str, resume: bool = False):
             _require_video_start_images(
                 clip_images, len(clip_plans), pipeline_out_dir,
             )
+
+        # Texture refine: once per approved start image, never on images the
+        # review rejected or reran, and before any video uses them.
+        if requires_shot_images and not _prepared_imgs_ok:
+            _run_image_refine(pid, params, clip_plans, clip_images,
+                              out_dir=pipeline_out_dir, workspace=pipeline_workspace)
+            if _pipelines[pid]["status"] == "cancelled":
+                return
 
         # ── Phase 3: Generate Video ─────────────────────────────────────
         _update_pipeline(pid, phase="generating_video",
@@ -9294,6 +9314,70 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
     })
 
     return clip_images, clip_keyframes
+
+
+def _refine_identity_refs(params: dict, clip_plans: list[dict], out_dir: str) -> Callable[[int], list[str]]:
+    """The character sheets each shot's start image was drawn with (no props, no sets)."""
+    character_refs = [
+        image_stage_ref(params, path) for path in params.get("character_ref_paths", []) or []
+    ]
+    character_refs = [path for path in character_refs if path and os.path.isfile(path)]
+    character_needles, _ = cast_ref_needles(params, out_dir)
+    scene_locks = director_scene_locks(clip_plans)
+
+    def refs_for(index: int) -> list[str]:
+        if not character_refs or index >= len(clip_plans):
+            return []
+        plan = clip_plans[index] or {}
+        shot_plan = scene_locked_plan(plan, scene_locks[index])
+        subjects = shot_subject_refs(plan, str(plan.get("image_prompt") or ""),
+                                     character_needles, [], character_refs)
+        return shot_identity_refs(params, shot_plan, subjects)
+
+    return refs_for
+
+
+def _run_image_refine(pid: str, params: dict, clip_plans: list[dict], clip_images: list[str],
+                      out_dir: str, workspace: Optional[str] = None) -> None:
+    """Re-render each approved start image once with the base model for texture (see image_refine).
+
+    Updates ``clip_images`` in place. A shot whose refine fails keeps its image.
+    """
+    from services.director import image_refine
+
+    settings = image_refine.refine_settings(params)
+    if not settings.enabled or not clip_images:
+        return
+    unrefined = list(_pipelines.get(pid, {}).get("_clip_unrefined_images") or [])
+    print(f"[Pipeline {pid}] Texture refine: {settings.model}, strength {settings.strength:g}, "
+          f"{settings.steps} steps (~{settings.effective_steps} denoised)")
+    # A known phase that keeps the browser on the video step after the review.
+    _update_pipeline(pid, phase="preparing_video")
+
+    def progress(current: int, total: int, message: str) -> None:
+        _update_pipeline(pid, progress={"current": current, "total": total, "message": message,
+                                        "step": 0, "total_steps": 0})
+
+    def shot_done(images: list, originals: list) -> None:
+        _update_pipeline(pid, clip_images=list(images), _clip_unrefined_images=list(originals))
+        _save_pipeline_state(pid)
+
+    def submit(job: dict) -> list:
+        return _submit_and_wait(job, timeout_s=900, workspace=workspace, out_dir=out_dir)
+
+    image_refine.run_refine_stage(
+        pid=pid,
+        clip_images=clip_images,
+        clip_plans=clip_plans,
+        out_dir=out_dir,
+        settings=settings,
+        unrefined=unrefined,
+        identity_refs_for=_refine_identity_refs(params, clip_plans, out_dir),
+        submit=submit,
+        is_cancelled=lambda: _pipelines.get(pid, {}).get("status") == "cancelled",
+        on_progress=progress,
+        on_shot_done=shot_done,
+    )
 
 
 # ── Video Generation Phase ──────────────────────────────────────────────
