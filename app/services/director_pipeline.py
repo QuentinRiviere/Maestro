@@ -1477,6 +1477,9 @@ def _save_pipeline_state_locked(pid: str) -> bool:
             "_director_continuity_strategy": plan.get("_director_continuity_strategy"),
             "_director_scene_type": plan.get("_director_scene_type"),
             "_director_camera_framing": plan.get("_director_camera_framing"),
+            "_director_camera_angle": plan.get("_director_camera_angle"),
+            "_director_camera_movement": plan.get("_director_camera_movement"),
+            "_director_camera_movement_intensity": plan.get("_director_camera_movement_intensity"),
             "_director_location": plan.get("_director_location"),
             "_director_keep_sec": plan.get("_director_keep_sec"),
             "_director_hand_detail": plan.get("_director_hand_detail"),
@@ -1501,6 +1504,11 @@ def _save_pipeline_state_locked(pid: str) -> bool:
                 if i < len(p.get("_clip_unrefined_images") or []) else None
             ) or None,
             "keyframe_filenames": (p.get("_clip_keyframes", []) or [])[i] if i < len(p.get("_clip_keyframes", [])) else [],
+            # The shot's blockout guide images and camera (director_blockout_guide; None when off).
+            "blockout_guide": (
+                (p.get("_clip_blockout_guides") or [])[i]
+                if i < len(p.get("_clip_blockout_guides") or []) else None
+            ),
             "video_filename": (
                 clip_videos[i] if i < len(clip_videos) and clip_videos[i]
                 else live_videos[i] if i < len(live_videos) else None
@@ -6558,6 +6566,9 @@ def _resume_pipeline_reserved(pid: str, out_dir: str) -> tuple[bool, str]:
         "_director_continuity_strategy": c.get("_director_continuity_strategy"),
         "_director_scene_type": c.get("_director_scene_type"),
         "_director_camera_framing": c.get("_director_camera_framing"),
+        "_director_camera_angle": c.get("_director_camera_angle"),
+        "_director_camera_movement": c.get("_director_camera_movement"),
+        "_director_camera_movement_intensity": c.get("_director_camera_movement_intensity"),
         "_director_location": c.get("_director_location"),
         "_director_keep_sec": c.get("_director_keep_sec"),
         "_director_hand_detail": c.get("_director_hand_detail"),
@@ -8632,6 +8643,16 @@ def _run_planning_v2(pid: str, params: dict, pipeline_type: str):
             "_director_camera_framing": str(
                 getattr(getattr(shot, "camera_plan", None), "framing", "") or ""
             ),
+            # Camera angle and move words, for the blockout camera and its driving moves.
+            "_director_camera_angle": str(
+                getattr(getattr(shot, "camera_plan", None), "angle", "") or ""
+            ),
+            "_director_camera_movement": str(
+                getattr(getattr(shot, "camera_plan", None), "movement", "") or ""
+            ),
+            "_director_camera_movement_intensity": str(
+                getattr(getattr(shot, "camera_plan", None), "movement_intensity", "") or ""
+            ),
             "_director_location": str(metadata.get("location") or ""),
             "_director_opening_blocking": getattr(
                 shot, "spatial_setup", ""
@@ -9104,6 +9125,25 @@ def _render_shot_layout(pid: str, index: int, blocking_map: dict, out_dir: str) 
         return ""
 
 
+def director_blockout_guide(pid: str, index: int, plan: dict, params: dict, out_dir: str, resolution: Any,
+                            slots: dict) -> Optional[dict]:
+    """Render the shot's blockout guide (see blockout.guide); None when off, not a scene shot, or on error."""
+    from services.director.blockout.guide import render_shot_guide
+
+    group = str(plan.get("_director_continuity_group") or "")
+    name = re.sub(r"[^A-Za-z0-9_-]+", "_", str(pid)) + f"_shot{index + 1:02d}"
+    try:
+        record = render_shot_guide(plan, params, out_dir=out_dir, name=name, resolution=resolution,
+                                   slots=slots.get(group) if group else None)
+    except Exception as error:  # noqa: BLE001 - the shot is generated without its guide
+        print(f"[Pipeline {pid}] Shot {index + 1}: blockout guide failed: {error}")
+        return None
+    if record:
+        print(f"[Pipeline {pid}] Shot {index + 1}: blockout {record['mode']} guide {record['image']} "
+              f"({record['layout_source']} layout, {record['render_ms']:.0f} ms)")
+    return record
+
+
 def blocking_framing_line(blocking_map: dict, framing: str = "") -> str:
     """The shot's layout in words: framing, who is in frame once each, and their eyelines.
 
@@ -9315,6 +9355,7 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
         supplemental_refs: Optional[list[str]] = None,
         layout_ref: str = "",
         canvas: bool = True,
+        control_guide: str = "",
     ) -> str:
         """Generate a single image using source_ref + optional extra refs.
 
@@ -9322,6 +9363,9 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
         other references are trimmed to leave it a slot, and the prompt says
         what it is for. ``canvas=False`` keeps the editor from editing
         reference 1 in place (see director_shot_prompt_type).
+        ``control_guide`` is the shot's blockout guide, sent as the raw
+        control image (only when director_blockout_guide is on and the
+        model takes one; the prompt already names it reference 1).
         """
         nonlocal image_count
         _pre_strip = prompt
@@ -9368,6 +9412,10 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
         if film_grain_intensity > 0:
             gen_params["film_grain_intensity"] = film_grain_intensity
             gen_params["film_grain_saturation"] = film_grain_saturation
+        if control_guide:
+            from services.director.blockout.guide import apply_control
+
+            gen_params = apply_control(gen_params, control_guide)
 
         output_files = _submit_and_wait(gen_params, timeout_s=600, workspace=workspace, out_dir=out_dir)
         if not output_files or not output_files[0]:
@@ -9473,6 +9521,14 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
     character_needles, prop_needles = cast_ref_needles(params, out_dir)
     # One floor plan per scene: people keep their places, the camera its side of the line.
     scene_locks = director_scene_locks(clip_plans)
+    # Blockout guide (director_blockout_guide, off by default): a depth or
+    # semantic render of each scene shot's set, people and camera.
+    from services.director.blockout import guide as blockout_guide
+
+    blockout_mode = blockout_guide.guide_mode(params)
+    blockout_slots = blockout_guide.scene_character_slots(clip_plans) if blockout_mode != "off" else {}
+    blockout_control = blockout_mode != "off" and blockout_guide.control_supported(image_model)
+    blockout_records: list[Optional[dict]] = list(_pipelines.get(pid, {}).get("_clip_blockout_guides") or [])
 
     for i, plan in enumerate(clip_plans):
         if _pipelines[pid]["status"] == "cancelled":
@@ -9513,6 +9569,16 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
         for note in (scene_locks[i] or {}).get("notes") or []:
             print(f"[Pipeline {pid}] Shot {i+1}: scene layout: {note}")
         layout_ref, prompt = director_shot_layout(pid, i, shot_plan, prompt, image_model, out_dir)
+        guide_path = ""
+        blockout_record = None
+        if blockout_mode != "off":
+            blockout_record = director_blockout_guide(pid, i, shot_plan, params, out_dir, resolution,
+                                                      blockout_slots)
+            blockout_records += [None] * (i + 1 - len(blockout_records))
+            blockout_records[i] = blockout_record
+            _update_pipeline(pid, _clip_blockout_guides=copy.deepcopy(blockout_records))
+            if blockout_record and blockout_control:
+                guide_path = os.path.join(out_dir, blockout_record["image"])
 
         img_t0 = time.time()
         try:
@@ -9543,9 +9609,12 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
                     print(f"[Pipeline {pid}] Shot {i+1}: same scene as {os.path.basename(scene_master)}"
                           + ("" if scene_master in request["supplemental"] + [request["source"]]
                              else " (set described in text, master not sent)"))
-                start_img = _gen_image(request["prompt"], request["source"],
+                shot_prompt = blockout_guide.guide_prompt(request["prompt"], blockout_record,
+                                                          control=bool(guide_path))
+                start_img = _gen_image(shot_prompt, request["source"],
                                        supplemental_refs=request["supplemental"],
-                                       layout_ref=layout_ref, canvas=request["canvas"])
+                                       layout_ref=layout_ref, canvas=request["canvas"],
+                                       control_guide=guide_path)
             clip_images.append(start_img)
             if group and start_img and group not in scene_masters:
                 scene_masters[group] = os.path.join(out_dir, start_img)
