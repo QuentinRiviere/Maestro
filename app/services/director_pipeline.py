@@ -1496,6 +1496,19 @@ def _normalize_interrupted_repair(state: dict, pid: str) -> bool:
     return True
 
 
+def _saved_run_duration(data: dict) -> Optional[float]:
+    """Wall-clock seconds of a saved run, for the Director runs list."""
+    try:
+        created = float(data.get("created_at") or 0)
+        completed = float(data.get("completed_at") or 0)
+        if created and completed >= created:
+            return round(completed - created, 1)
+        total = data.get("total_time_sec")
+        return round(float(total), 1) if total is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 def list_pipeline_states(out_dir: str) -> list[dict]:
     """Scan directory for saved pipeline state files. Returns summary list."""
     results = []
@@ -1547,6 +1560,8 @@ def list_pipeline_states(out_dir: str) -> list[dict]:
                         "scene_description": (data.get("scene_description", "") or "")[:100],
                         "workspace": os.path.basename(scan_dir) if scan_dir != out_dir else "default",
                         "repair_status": (data.get("repair") or {}).get("status"),
+                        "completed_at": data.get("completed_at"),
+                        "duration_sec": _saved_run_duration(data),
                         "_filepath": filepath,
                     })
                 except Exception:
