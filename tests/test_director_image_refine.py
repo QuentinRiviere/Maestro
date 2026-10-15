@@ -119,7 +119,7 @@ class RefineJobTests(unittest.TestCase):
         self.assertEqual(os.path.basename(path), "p1_refine_mask_40x24.png")
         with Image.open(path) as mask:
             self.assertEqual(mask.size, (40, 24))
-            self.assertEqual(mask.getextrema(), (255, 255))
+            self.assertEqual(mask.convert("L").getextrema(), (255, 255))
         self.assertEqual(image_refine.full_frame_mask(directory, 40, 24, pid="p1"), path)
 
 

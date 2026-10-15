@@ -114,7 +114,8 @@ def full_frame_mask(out_dir: str, width: int, height: int, pid: str = "director"
     if not os.path.isfile(path):
         os.makedirs(out_dir, exist_ok=True)
         partial = f"{path}.{os.getpid()}.part.png"
-        Image.new("L", (int(width), int(height)), 255).save(partial)
+        # RGB like the masks Studio's image inpaint and outpaint send.
+        Image.new("RGB", (int(width), int(height)), (255, 255, 255)).save(partial)
         os.replace(partial, path)
     return path
 
