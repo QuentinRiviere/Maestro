@@ -280,6 +280,36 @@ class PlannerTests(unittest.TestCase):
         self.assertIn("Reaction shots are at most about one third of the shots", prompt)
         self.assertNotIn("micro-expression", prompt)
 
+    def test_hand_and_prop_rules_are_in_the_prompt(self):
+        spec = {**self.spec, "workflow": "story"}
+        planner = FakePlanner(spec, [{"scene_goal": "a"}])
+        planner.plan(scene_description="x")
+        prompt = planner.prompts[-1]["system_prompt"]
+        self.assertIn("Body-part inserts of gross motion are strong coverage", prompt)
+        self.assertIn("legs entering the frame on\n  an arrival", prompt)
+        self.assertIn("at most ONE simple, decisive hand action per shot", prompt)
+        self.assertIn("no pouring or liquid in motion, no object passed from hand to hand", prompt)
+        self.assertIn("every object the action uses is already visible at the first frame", prompt)
+        self.assertIn("Nothing appears, materializes or is pulled into frame mid-shot", prompt)
+        self.assertIn("Prop state: track each prop through the consecutive shots of a scene", prompt)
+        self.assertIn('"hand_detail": false', prompt)
+        self.assertIn("hand_detail: true ONLY when the story beat", prompt)
+        self.assertIn('"props": ["each object the action uses', prompt)
+
+    def test_props_and_hand_detail_reach_shot_metadata(self):
+        spec = {**self.spec, "workflow": "story"}
+        plan = FakePlanner(spec, [
+            {"scene_goal": "a", "hand_detail": True, "props": ["a lump of raw clay on the wheel", " ", 3]},
+            {"scene_goal": "b", "hand_detail": "false", "props": "not a list"},
+            {"scene_goal": "c", "hand_detail": "true"},
+        ]).plan(scene_description="x")
+        meta = [shot.metadata for shot in plan.shots]
+        self.assertTrue(meta[0]["hand_detail"])
+        self.assertEqual(meta[0]["props"], ["a lump of raw clay on the wheel", "3"])
+        self.assertNotIn("hand_detail", meta[1])
+        self.assertNotIn("props", meta[1])
+        self.assertTrue(meta[2]["hand_detail"])
+
     def test_dialogue_density_rule_option_and_default(self):
         spec = {**self.spec, "workflow": "story"}
         planner = FakePlanner(spec, [{"scene_goal": "a"}])

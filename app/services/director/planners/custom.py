@@ -87,6 +87,18 @@ SCENE_CRAFT = """SCENE CRAFT (this is what separates a real scene from generated
   realization, a follow when a character crosses the space) and say why in camera_plan.motivation.
 - Framing follows the coverage: establishing or master to place people, over-the-shoulder shot/reverse-shot for
   exchanges, inserts for decisive details (a hand, an object), close-ups for reactions.
+- Body-part inserts of gross motion are strong coverage: feet walking in and stopping, legs entering the frame on
+  an arrival, a back walking away, a resting hand that tightens once, a door opening. Use them for movement,
+  arrivals, departures and expressive details; they also hide the join between two shots.
+- Hands: at most ONE simple, decisive hand action per shot, done in one move and then held still (a hand grabs a
+  wrist and holds it; a hand sets a cup down and rests on the table). Keep hands out of sustained manipulation:
+  no finger-level business, no pouring or liquid in motion, no object passed from hand to hand, no interlocked
+  fingers moving, no continuous shaping, kneading or wiping. Show such a moment through its result or the faces.
+- Props: every object the action uses is already visible at the first frame; name it with its place in
+  opening_blocking and in props. Nothing appears, materializes or is pulled into frame mid-shot.
+- Prop state: track each prop through the consecutive shots of a scene: where it is, who holds it, and its
+  condition (raw clay stays raw until a shot shows it shaped; a tool roll left on the bench stays on the bench).
+  A shot's props open exactly as the previous shot of the scene left them.
 - Do not describe style, grade, lens flare or "aesthetic" in shots: the visual style is set once for the whole
   production. Shot fields describe what the camera sees and what people do.
 - Dialogue: every line has a speaker, the exact cast name of the character who says it. At most one line per
@@ -105,6 +117,10 @@ walk, one unbroken gesture). It is rendered from the previous shot's last frame,
 cannot reframe. false for every cut: shot/reverse-shot, a new angle, a close-up after a wide, an insert, a
 reaction, and always false for the first shot of a scene. When true, the previous shot's closing_blocking is this
 shot's opening_blocking."""
+
+HAND_DETAIL_RULE = """hand_detail: true ONLY when the story beat cannot be told without a delicate hand/object interaction in
+this shot (a ring slipped onto a finger, a folded note opened); such a shot gets a slower, finer render. false for
+every other shot, including body-part inserts of gross motion (feet, legs, a hand that tightens once)."""
 
 
 DIALOGUE_DENSITY_RULES = {
@@ -147,7 +163,7 @@ From the brief, the skill rules and the cast, design the scenes. Return ONLY a J
   "scene_map": "the space as the main camera sees it: what is on the left, in the center, on the right and in the
     background; doors (hinge side, opening inward or outward), windows, stairs and the light sources",
   "sound": "the room tone and recurring sounds of this place",
-  "props": ["objects that matter and which hand or place holds them"],
+  "props": ["objects that matter, which hand or place holds them, and their condition"],
   "beats": ["the dramatic beats of this scene in order, each one action and its reaction"]}]
 Use as few scenes as the story needs (usually one or two for a short piece). Time and light only change
 between scenes, never inside one. When cast locations are listed, every scene takes place in one of them (its
@@ -297,6 +313,7 @@ OUTPUT FORMAT — respond with ONLY a JSON array of shot objects:
   "subjects_on_screen": [{{"name": "the cast name of this person, or empty", "visual_description": "...",
                           "position_or_relation": "screen side, distance, facing"}}],
   "opening_blocking": "exact positions and poses at the first frame", "environment": "...",
+  "props": ["each object the action uses: what it is, where it is at the first frame, its condition"],
   "lighting": "the scene's light", "mood": "...",
   "action_beats": ["timed, e.g. '0.0-2.0s: ...': visible action, visible expression change, reaction"],
   "performance": "the acting task: the intention, where the eyes go, what stays still, and what the actor never does",
@@ -308,9 +325,11 @@ OUTPUT FORMAT — respond with ONLY a JSON array of shot objects:
   "audio_plan": {{"mode": "generated_audio", "ambience": "the room tone of this place at this moment",
                  "effects": ["timed sounds, e.g. '2.0s: the books thud on the floor'"]}},
   "closing_blocking": "exact positions and poses at the last frame",
-  "continues_previous": false{blocking_field}}}]
+  "continues_previous": false, "hand_detail": false{blocking_field}}}]
 
 {CONTINUES_PREVIOUS_RULE}
+
+{HAND_DETAIL_RULE}
 
 {blocking_rule}{timing_rule} Go:"""
         if kwargs.get("polish_block"):
@@ -357,6 +376,9 @@ OUTPUT FORMAT — respond with ONLY a JSON array of shot objects:
             locks = [str(lock).strip() for lock in raw.get("locks") or [] if str(lock).strip()]
             effects = [str(e).strip() for e in audio_raw.get("effects") or [] if str(e).strip()]
             subjects = _subjects(raw.get("subjects_on_screen"), cast_names)
+            props = [str(p).strip()[:160] for p in (raw.get("props") if isinstance(raw.get("props"), list) else [])
+                     if str(p).strip()][:6]
+            hand_detail = raw.get("hand_detail") is True or str(raw.get("hand_detail")).strip().lower() == "true"
             shots.append(ShotPlan(
                 shot_id=self._make_shot_id(i, "cs"),
                 index=i,
@@ -396,6 +418,8 @@ OUTPUT FORMAT — respond with ONLY a JSON array of shot objects:
                     **({"location": scene_location[scene_id]} if scene_location.get(scene_id) else {}),
                     **({"scene_map": str(scene["scene_map"])} if scene.get("scene_map") else {}),
                     **({"closing_blocking": closing} if closing else {}),
+                    **({"props": props} if props else {}),
+                    **({"hand_detail": True} if hand_detail else {}),
                     **({"blocking_map": blocking} if (blocking := parse_blocking_map(
                         raw.get("blocking_map"), cam.get("framing"))) else {}),
                     **({"keep_sec": keep} if not sequence_shots
