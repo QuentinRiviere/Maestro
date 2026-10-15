@@ -219,10 +219,32 @@ VIEW_RESOLUTIONS = {"face_front": "1024x1024", "face_three_quarter": "1024x1024"
                     "back": SHEET_RESOLUTION}
 
 
+# Wardrobe items worn on the front of the body. Named in a back-view prompt,
+# the image model paints them on the back (a pendant between the shoulder blades).
+_FRONT_ONLY_RE = re.compile(
+    r"\b(pendants?|necklaces?|lockets?|chains?|broo?ch(?:es)?|broach(?:es)?|badges?|name ?tags?|neckties?|"
+    r"bow ?ties?|lanyards?)\b", re.IGNORECASE)
+
+
+def back_view_wardrobe(wardrobe: str) -> str:
+    """The wardrobe without the sentences or items only visible from the front."""
+    kept = []
+    for sentence in re.split(r"(?<=[.;])\s+", wardrobe or ""):
+        if not _FRONT_ONLY_RE.search(sentence):
+            kept.append(sentence)
+            continue
+        items = [part for part in re.split(r",\s*|\s+and\s+", sentence) if not _FRONT_ONLY_RE.search(part)]
+        if items:
+            kept.append(", ".join(items).rstrip(".;,") + ".")
+    return " ".join(part.strip() for part in kept if part.strip())
+
+
 def view_prompt(view: str, element: dict, variant: dict, style: str = "", *, ref_label: str = "") -> str:
     """One angle of a character's look, edited from its approved image (reference 1)."""
     label = ref_label or "reference image"
     wardrobe = variant.get("description") or element.get("wardrobe") or ""
+    if view == "back":
+        wardrobe = back_view_wardrobe(wardrobe)
     return (
         f"The exact person of {label} 1, now in {_VIEW_SHOTS[view]}. Keep the same face, eyes, age, skin, "
         "hairstyle and hair color, build and wardrobe; plain light-grey studio background, even soft lighting, "
