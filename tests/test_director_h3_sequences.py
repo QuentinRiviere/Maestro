@@ -19,6 +19,7 @@ from services.director.h3_dialogue import (  # noqa: E402
     validate_h3_prompt_contract,
 )
 from services.director.h3_sequences import (  # noqa: E402
+    MAX_SEQUENCE_SHOTS,
     SEQUENCE_KEY,
     annotate_h3_sequences,
     compile_h3_sequence_prompt,
@@ -80,6 +81,12 @@ class GroupingTests(unittest.TestCase):
         plans = [_plan("a") for _ in range(6)]
         groups = plan_h3_sequences(plans, [72] * 6, max_frames=345, max_shots=4, **LATTICE)
         self.assertEqual(groups, [[0, 1, 2, 3], [4, 5]])
+
+    def test_default_cap_is_three_shots(self):
+        self.assertEqual(MAX_SEQUENCE_SHOTS, 3)
+        plans = [_plan("a") for _ in range(7)]
+        groups = plan_h3_sequences(plans, [72] * 7, max_frames=345, **LATTICE)
+        self.assertEqual(groups, [[0, 1, 2], [3, 4, 5]])
 
     def test_never_across_an_extend_previous_link(self):
         plans = [_plan("a"), _plan("a"), _plan("a", "extend_previous"), _plan("a"), _plan("a")]

@@ -1,6 +1,6 @@
 """MiniMax H3 sequences: consecutive shots of one scene in one generation.
 
-Red Flag method: one H3 render holds 2-4 shots of the same scene joined by
+Red Flag method: one H3 render holds 2-3 shots of the same scene joined by
 timed hard cuts, so set, light and wardrobe stay the same across the cuts.
 The render is then split back at the cut frames, so the edit, the review and
 the Dashboard keep seeing one clip per shot.
@@ -27,7 +27,9 @@ from services.director.h3_dialogue import (
 from services.director_video_strategy import BOUNDED_START_END, video_strategy
 
 SEQUENCE_KEY = "_director_sequence"
-MAX_SEQUENCE_SHOTS = 4
+# H3 drifts off the asked cut times more with every cut (up to ~1 s by the
+# fourth shot), so a sequence holds at most three shots.
+MAX_SEQUENCE_SHOTS = 3
 _SEQUENCE_MODES = {"t2va", "i2va", "fl2va", "l2va"}
 _OFF = {"off", "false", "0", "no"}
 _ON = {"on", "true", "1", "yes"}
