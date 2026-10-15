@@ -11163,6 +11163,37 @@ async def director_bible_assistant(bible_id: str, request: Request):
         raise HTTPException(status_code=502, detail=str(error)) from error
 
 
+@api.post("/api/v1/director/bibles/{bible_id}/elements/{element_id}/layout/suggest")
+async def director_bible_layout_suggest(bible_id: str, element_id: str, request: Request):
+    """A first 3D layout of a place for the blockout guide (not saved).
+
+    ``use_llm`` (default true) asks the LLM; without it, or when it fails,
+    the layout comes from keywords of the description. ``description`` and
+    ``notes`` override the stored text (unsaved edits). Save the bible with
+    the returned ``layout`` on the location to keep it.
+    """
+    from services.director.bibles import find_element, get_bible
+    from services.director.blockout.layout import suggest_layout
+
+    body = await request.json() if request.headers.get("content-length", "0") != "0" else {}
+    body = body if isinstance(body, dict) else {}
+    stored = _bible_call(get_bible, bible_id)
+    if not stored:
+        raise HTTPException(status_code=404, detail="Bible not found")
+    kind, element = _bible_call(find_element, stored, element_id)
+    if kind != "location":
+        raise HTTPException(status_code=400, detail="Only locations have a layout")
+    description = str(body.get("description") if body.get("description") is not None
+                      else element.get("description") or "")
+    notes = str(body.get("notes") if body.get("notes") is not None else element.get("notes") or "")
+    generate = None
+    if body.get("use_llm", True) is not False:
+        from services import llm_service
+        _ensure_llm_loaded()
+        generate = llm_service.generate
+    return await asyncio.to_thread(suggest_layout, element["name"], description, notes, generate=generate)
+
+
 @api.post("/api/v1/director/bibles/{bible_id}/generate")
 async def director_bible_generate(bible_id: str, request: Request):
     """Render every look of the bible (or of one element) that has no approved image yet, in the background."""

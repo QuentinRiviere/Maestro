@@ -183,9 +183,27 @@ def _element(raw: Any, kind: str, folder: Path) -> dict | None:
         element[field] = _text(raw.get(field), limit)
     if kind == "character":
         element["voice_character_id"] = _text(raw.get("voice_character_id"), 80)
+    if kind == "location" and "layout" in raw:
+        # The place's rough 3D layout for the blockout (see blockout.layout);
+        # null clears it, a missing key keeps the stored one (see keep_layouts).
+        from services.director.blockout.layout import normalize_layout
+
+        element["layout"] = normalize_layout(raw.get("layout")) if raw.get("layout") else None
     element["variants"] = _variants(raw, folder)
     element["image"] = approved_image(element)
     return element
+
+
+def keep_layouts(bible: dict, stored: dict) -> None:
+    """Give each location saved without a ``layout`` key the layout it had in ``stored``.
+
+    Clients that do not edit layouts (the bible assistant, older UIs) send
+    places without one; their layout is kept rather than dropped.
+    """
+    before = {e["id"]: e for e in stored.get("locations") or []}
+    for element in bible.get("locations") or []:
+        if "layout" not in element:
+            element["layout"] = (before.get(element["id"]) or {}).get("layout")
 
 
 def _elements(raw: Any, kind: str, folder: Path) -> list[dict]:
@@ -401,6 +419,7 @@ def save_bible(raw: dict, *, bible_id: str | None = None) -> dict:
                     for variant in element["variants"]:
                         variant["images"] = copy.deepcopy((before.get(variant["id"]) or {}).get("images") or [])
                     element["image"] = approved_image(element)
+            keep_layouts(bible, previous)
             # Reference videos and their analyses have their own endpoints.
             bible["style_references"] = copy.deepcopy(previous.get("style_references") or [])
         bible["id"] = bible_id
@@ -810,6 +829,8 @@ def project_cast(bible: dict, out_dir: str, *, characters: Any = None, locations
             # re-recorded in the library reaches the next render of the project.
             if kind == "character" and element.get("voice_character_id"):
                 entry["voice_character_id"] = element["voice_character_id"]
+            if kind == "location" and element.get("layout"):
+                entry["layout"] = copy.deepcopy(element["layout"])
             if look["id"] != DEFAULT_VARIANT and look["description"]:
                 if kind == "character":
                     entry["wardrobe"] = look["description"]

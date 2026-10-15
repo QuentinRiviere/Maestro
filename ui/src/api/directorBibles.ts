@@ -48,6 +48,8 @@ export interface BibleElement {
   arc?: string
   notes?: string
   voice_character_id?: string
+  /** A location's rough 3D layout for the Director blockout guide (see docs/Director-blockout.md). */
+  layout?: Record<string, unknown> | null
   variants: BibleVariant[]
   image: string | null
 }

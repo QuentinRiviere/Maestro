@@ -142,6 +142,7 @@ def _merge(current: dict, proposed: dict, folder: Path) -> dict:
             for variant in element["variants"]:
                 variant["images"] = list((before.get(variant["id"]) or {}).get("images") or [])
             element["image"] = bibles.approved_image(element)
+    bibles.keep_layouts(merged, current)
     merged["id"] = current.get("id", "")
     merged["revision"] = current.get("revision")
     return merged
