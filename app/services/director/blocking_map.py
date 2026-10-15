@@ -212,7 +212,8 @@ def framing_line(blocking: Optional[dict]) -> str:
     framing = blocking["camera"]["framing"]
     if not placed:
         return f"Framing: {framing} shot."
-    placed.sort(key=lambda item: item[0])
+    # Perspective: a point's place across the frame is its lateral offset over its depth.
+    placed.sort(key=lambda item: item[0] / item[1])
     people = []
     for _lateral, _depth, subject in placed:
         facing = _facing_words(blocking, subject["facing_deg"])
@@ -484,6 +485,7 @@ def lock_shot_blocking(layout: dict, blocking: dict) -> tuple[dict, list[str]]:
     side). ``layout`` is updated in place.
     """
     notes: list[str] = []
+    moved = False
     subjects = [dict(s) for s in blocking["subjects"]]
     before = (sum(s["x"] for s in subjects) / len(subjects), sum(s["y"] for s in subjects) / len(subjects))
     for subject in subjects:
@@ -496,6 +498,7 @@ def lock_shot_blocking(layout: dict, blocking: dict) -> tuple[dict, list[str]]:
             if subject.get("facing_deg") is not None:
                 known["facing_deg"] = subject["facing_deg"]
             notes.append(f"{subject['name']} moves to a new place, as planned")
+            moved = True
             continue
         drift = math.hypot(subject["x"] - known["x"], subject["y"] - known["y"])
         if drift > _POSITION_DRIFT:
@@ -521,7 +524,8 @@ def lock_shot_blocking(layout: dict, blocking: dict) -> tuple[dict, list[str]]:
     if distance is not None:
         side = 0 if abs(distance) < _ON_LINE else (1 if distance > 0 else -1)
         target = distance
-        if layout["side"] == 0:
+        if layout["side"] == 0 or (moved and side != 0):
+            # A planned move draws a new line: this shot's camera sets its side.
             layout["side"] = side
         elif side == -layout["side"] and camera.get("crosses_line"):
             layout["side"] = side
