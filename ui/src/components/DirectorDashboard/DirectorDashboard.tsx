@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, Component, type ReactNode } from 'react'
+import { useState, useEffect, useMemo, useRef, Component, type ReactNode } from 'react'
 import { X, ChevronDown, ChevronRight, Play, ImageIcon, Check, AlertTriangle, Clock, Brain, Sparkles, Loader2, Camera, Film, Combine, Pencil, Trash2, BookOpen, LayoutGrid, Workflow, List, Clapperboard } from 'lucide-react'
 import { useStore } from '../../stores/useStore'
 import { fetchPipelineCosts, getFileUrl, updateClipPrompt, type PipelineCosts } from '../../api/client'
@@ -7,6 +7,8 @@ import { QualityReviewPanel } from './QualityReviewPanel'
 import { SaveCastToBible } from '../Sidebar/DirectorBible'
 import type { DirectorView } from '../../lib/directorRoute'
 import { RunsView } from './RunsView'
+import { RunPicker } from './RunPicker'
+import { runListItemFromState } from '../../lib/directorRunList'
 import { RunWorkspace } from './RunWorkspace'
 
 const VIEW_TABS: Array<{ view: DirectorView; label: string; icon: typeof List; title: string }> = [
@@ -48,12 +50,6 @@ function formatTime(sec: number | null): string {
   const m = Math.floor(sec / 60)
   const s = Math.round(sec % 60)
   return `${m}m ${s}s`
-}
-
-function formatDate(ts: number): string {
-  return new Date(ts * 1000).toLocaleString(undefined, {
-    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
-  })
 }
 
 function PipelineProgressBar({ pipeline }: { pipeline: SavedPipelineState }) {
@@ -604,6 +600,11 @@ function DirectorDashboardInner() {
   const [regenErrors, setRegenErrors] = useState<Record<string, string>>({})
   const autoLoadAttemptedPid = useRef<string | null>(null)
   const selectedPid = selectedPipeline?.pipeline_id || null
+  // The loaded run may be outside the first page (deep link), so the picker
+  // shows it from its own state, enriched by the list row when there is one.
+  const selectedRunItem = useMemo(() => selectedPipeline
+    ? runListItemFromState(selectedPipeline, pipelineList.find(p => p.id === selectedPipeline.pipeline_id))
+    : null, [selectedPipeline, pipelineList])
   const repairStarting = repairStartingPid === selectedPid
   const repairCancelling = repairCancellingPid === selectedPid
   const regenError = selectedPid ? regenErrors[selectedPid] || null : null
@@ -719,25 +720,16 @@ function DirectorDashboardInner() {
           })}
         </div>
 
-        {/* Pipeline selector */}
-        <select
-          value={selectedPipeline?.pipeline_id || ''}
-          onChange={e => {
-            if (!e.target.value) return
-            void loadPipeline(e.target.value)
+        {/* Run selector: searchable, pages through the runs API */}
+        <RunPicker
+          className="flex-1 min-w-0 max-w-md"
+          label="Director run"
+          selected={selectedRunItem}
+          onSelect={run => {
+            if (run.id !== selectedPipeline?.pipeline_id) void loadPipeline(run.id)
             if (view === 'runs') setView('storyboard')
           }}
-          className="flex-1 min-w-0 max-w-md bg-bg-tertiary border border-border rounded-lg px-3 py-1.5 text-xs text-text-primary focus:outline-none focus:border-accent-blue truncate"
-        >
-          <option value="">Select pipeline...</option>
-          {pipelineList.map(p => (
-            <option key={p.id} value={p.id}>
-              {p.repair_status ? `[repair: ${p.repair_status}] ` : ''}
-              {formatDate(p.created_at)} — {p.pipeline_type} ({p.clip_count} clips) [{p.status}]
-              {p.scene_description ? ` — ${p.scene_description}` : ''}
-            </option>
-          ))}
-        </select>
+        />
 
         {/* Summary badges */}
         {selectedPipeline && view !== 'runs' && (
@@ -945,7 +937,7 @@ function DirectorDashboardInner() {
         {view === 'runs' ? (
           <div className="flex-1 min-h-0 overflow-y-auto">
             <RunsView
-              runs={pipelineList}
+              liveRuns={pipelineList}
               selectedPid={selectedPipeline?.pipeline_id || null}
               onOpenRun={pid => {
                 if (pid !== selectedPipeline?.pipeline_id) void loadPipeline(pid)

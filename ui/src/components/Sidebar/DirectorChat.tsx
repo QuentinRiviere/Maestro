@@ -13,12 +13,13 @@ import { DirectorSongSetup } from './DirectorSongSetup'
 import { DirectorH3Optimizations } from './DirectorH3Optimizations'
 import { OmniReferenceSection } from './OmniReferenceSection'
 import { GalleryInput } from '../shared/GalleryInput'
+import { RunPicker } from '../DirectorDashboard/RunPicker'
 import { InfoTooltip } from './InfoTooltip'
 import { formatSeconds, recommendedWindowProfile } from './DurationSlider'
 import { DurationPresetControl } from './DurationPresetControl'
 import { LONG_FORM_MAX_SECONDS, formatDuration } from '../../lib/durationPlanning'
 import { formatEstimatedClock, formatEtaDuration } from '../../lib/format'
-import type { DirectorPipelineType, DirectorShotImageGuidance, DirectorSkill, ModelOptions, ShortFilmCharacter, ShortFilmPath, ViralPlatform, ViralStyle } from '../../types'
+import type { DirectorPipelineType, DirectorShotImageGuidance, DirectorSkill, ModelOptions, PipelineListItem, ShortFilmCharacter, ShortFilmPath, ViralPlatform, ViralStyle } from '../../types'
 
 // AUDIO_ACCEPT lists both audio formats AND video formats. When a video
 // file is uploaded, the backend's /api/v1/upload-audio endpoint extracts
@@ -244,45 +245,32 @@ function EnergyDot({ energy }: { energy: number }) {
   return <span className={`inline-block w-2 h-2 rounded-full ${color}`} title={`Energy: ${(energy * 100).toFixed(0)}%`} />
 }
 
-// Chat bubble wrapper
-const SESSION_STATUS_LABEL: Record<string, string> = {
-  running: 'running', paused: 'paused', completed: 'done', failed: 'failed', cancelled: 'stopped',
-}
-
 /** Reopen an earlier Director session: live runs reattach, finished ones load. */
 function DirectorSessionSelect() {
   const pipelines = useStore(s => s.dashboardPipelineList)
   const pipelineId = useStore(s => s.pipelineId)
-  const recent = pipelines.slice(0, 30)
+  const current = pipelines.find(entry => entry.id === pipelineId) || null
 
-  const open = (id: string) => {
-    const item = recent.find(entry => entry.id === id)
-    if (!item || id === pipelineId) return
+  const open = (item: PipelineListItem) => {
+    if (item.id === pipelineId) return
     const state = useStore.getState()
-    if (item.status === 'running' || item.status === 'paused') void state.reattachDirectorPipeline(id, true)
-    else void state.loadDirectorFromPipeline(id)
+    if (item.status === 'running' || item.status === 'paused') void state.reattachDirectorPipeline(item.id, true)
+    else void state.loadDirectorFromPipeline(item.id)
   }
 
   return (
-    <select
-      value={recent.some(entry => entry.id === pipelineId) ? pipelineId ?? '' : ''}
-      onFocus={() => void useStore.getState().loadPipelineList()}
-      onChange={event => open(event.target.value)}
-      aria-label="Reopen a Director session"
-      title="Reopen a Director session"
-      className="max-w-[9rem] truncate bg-bg-tertiary border border-border rounded px-1 py-0.5 text-[10px] text-text-secondary focus:outline-none focus:border-accent-blue"
-    >
-      <option value="">Sessions…</option>
-      {recent.map(entry => (
-        <option key={entry.id} value={entry.id}>
-          {new Date(entry.created_at * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
-          {' · '}{SESSION_STATUS_LABEL[entry.status] ?? entry.status}
-          {' · '}{(entry.scene_description || entry.pipeline_type).slice(0, 40)}
-        </option>
-      ))}
-    </select>
+    <RunPicker
+      compact
+      className="w-[10rem]"
+      label="Reopen a Director session"
+      placeholder="Sessions…"
+      selected={current}
+      onSelect={open}
+    />
   )
 }
+
+// Chat bubble wrapper
 
 function SystemBubble({ children }: { children: React.ReactNode }) {
   return (
