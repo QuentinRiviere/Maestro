@@ -28,6 +28,7 @@ from typing import Any, Callable, Optional
 
 from services.job_lifecycle import (
     GENERATED_MEDIA_EXTENSIONS,
+    LIVE_CLIP_OUTPUTS_KEY,
     request_cancel,
     snapshot_job,
 )
@@ -1352,6 +1353,54 @@ def _clip_video_slots(
     return _map_completed_clip_videos(output_files, clip_count)
 
 
+_LIVE_VIDEO_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
+
+
+def _publish_live_clip_videos(
+    pid: str,
+    job_clip_files: dict,
+    clip_count: int,
+    units: Optional[list[list[int]]] = None,
+) -> bool:
+    """Show the shots a running multi-clip job finished, before the batch ends.
+
+    ``job_clip_files`` maps the job's clip index to its file. With H3
+    sequences one job clip is a render unit: a single-shot unit is its shot,
+    a multi-shot unit is only cut into its shots after the batch, so it is
+    not shown early. Returns whether the saved state changed.
+    """
+    slots: dict[int, str] = {}
+    for key, filename in (job_clip_files or {}).items():
+        try:
+            index = int(key)
+        except (TypeError, ValueError):
+            continue
+        if units is not None:
+            if not 0 <= index < len(units) or len(units[index]) != 1:
+                continue
+            index = units[index][0]
+        if 0 <= index < clip_count and filename:
+            slots[index] = os.path.basename(str(filename))
+    if not slots:
+        return False
+    with _pipeline_lock:
+        pipeline = _pipelines.get(pid)
+        if not pipeline or str(pipeline.get("status") or "").lower() in _LIVE_VIDEO_TERMINAL_STATUSES:
+            return False
+        live = list(pipeline.get("_clip_live_video_files") or [])
+        live.extend([None] * (clip_count - len(live)))
+        changed = False
+        for index, filename in slots.items():
+            if live[index] != filename:
+                live[index] = filename
+                changed = True
+        if not changed:
+            return False
+        pipeline["_clip_live_video_files"] = live
+    _save_pipeline_state(pid)
+    return True
+
+
 def _save_pipeline_state(pid: str) -> bool:
     """Serialize one live pipeline snapshot without racing other writers."""
     with _pipeline_file_lock:
@@ -1383,6 +1432,14 @@ def _save_pipeline_state_locked(pid: str) -> bool:
         clip_videos = _clip_video_slots(
             p.get("output_files") or [], len(clip_plans),
         )
+    # Shots the running video job finished before the whole batch: shown
+    # now, marked provisional, and dropped once the run settles so the
+    # final state only ever names the batch's own result.
+    live_videos = (
+        p.get("_clip_live_video_files") or []
+        if str(p.get("status") or "").lower() not in _LIVE_VIDEO_TERMINAL_STATUSES
+        else []
+    )
 
     clips = []
     for i, plan in enumerate(clip_plans):
@@ -1444,12 +1501,20 @@ def _save_pipeline_state_locked(pid: str) -> bool:
                 if i < len(p.get("_clip_unrefined_images") or []) else None
             ) or None,
             "keyframe_filenames": (p.get("_clip_keyframes", []) or [])[i] if i < len(p.get("_clip_keyframes", [])) else [],
-            "video_filename": clip_videos[i] if i < len(clip_videos) else None,
+            "video_filename": (
+                clip_videos[i] if i < len(clip_videos) and clip_videos[i]
+                else live_videos[i] if i < len(live_videos) else None
+            ),
             "video_stale": False,
             "tag": (p.get("_clip_tags", []) or [])[i] if i < len(p.get("_clip_tags", [])) else None,
             "image_gen_time_sec": clip_timings.get(f"image_{i}"),
             "video_gen_time_sec": clip_timings.get(f"video_{i}"),
         }
+        if (
+            not (i < len(clip_videos) and clip_videos[i])
+            and i < len(live_videos) and live_videos[i]
+        ):
+            clip_state["video_provisional"] = True
         clips.append(clip_state)
 
     state = {
@@ -5311,8 +5376,12 @@ def _submit_and_wait(
     workspace: str = None,
     out_dir: str = None,
     job_id: str = None,
+    on_clip_output: Optional[Callable[[dict], Any]] = None,
 ) -> list[str]:
     """Submit a generation job and block until it completes.
+
+    ``on_clip_output`` receives the job's finished clips ({clip index: file})
+    each time a multi-clip job finishes another one while it still runs.
 
     ``timeout_s`` is a no-progress timeout, not a total batch-duration cap.
     Long Director batches can legitimately take many hours while continuing
@@ -5429,6 +5498,7 @@ def _submit_and_wait(
     deadline = time.monotonic() + timeout_s
     last_activity = _activity_signature(job)
     _abort_signalled = False
+    last_live_clips: dict = {}
     while True:
         j = _jobs.get(job_id)
         if not j:
@@ -5462,6 +5532,14 @@ def _submit_and_wait(
             err = j.get("error") or "Generation failed"
             print(f"[Pipeline] Job {job_id} failed: {err}")
             raise RuntimeError(err)
+        if on_clip_output is not None:
+            live_clips = j.get(LIVE_CLIP_OUTPUTS_KEY)
+            if isinstance(live_clips, dict) and live_clips != last_live_clips:
+                last_live_clips = dict(live_clips)
+                try:
+                    on_clip_output(dict(last_live_clips))
+                except Exception as error:  # noqa: BLE001 - display only
+                    print(f"[Pipeline] Live clip publication failed: {error}")
         # Backstop for stop_pipeline's abort: if the pipeline was cancelled
         # while this job runs (e.g. the job was submitted in the window
         # after the stop endpoint scanned _jobs), signal abort from here.
@@ -6507,7 +6585,9 @@ def _resume_pipeline_reserved(pid: str, out_dir: str) -> tuple[bool, str]:
         "_clip_unrefined_images": clip_unrefined_images,
         "_clip_keyframes": clip_keyframes,
         "_clip_video_files": [
-            c.get("video_filename") for c in saved_clips
+            # A provisional clip was never confirmed by its batch.
+            None if c.get("video_provisional") else c.get("video_filename")
+            for c in saved_clips
         ],
         "output_files": data.get("output_files", []) or [],
         "_llm_log": data.get("llm_log"),
@@ -10753,6 +10833,19 @@ def _run_video_generation(pid: str, params: dict, clip_plans: list[dict],
             CLIP_SEPARATOR,
         )
 
+    # Show each shot as soon as its clip exists; the batch result replaces
+    # these provisional entries when the run settles.
+    on_clip_output = None
+    if not seamless:
+        _update_pipeline(pid, _clip_live_video_files=[])
+        live_units = units
+        live_clip_count = len(clip_plans)
+
+        def on_clip_output(job_clip_files: dict) -> None:
+            _publish_live_clip_videos(
+                pid, job_clip_files, live_clip_count, live_units,
+            )
+
     # Track progress by monitoring the generation job
     try:
         output_files = _submit_and_wait(
@@ -10760,6 +10853,7 @@ def _run_video_generation(pid: str, params: dict, clip_plans: list[dict],
             timeout_s=7200,
             workspace=workspace,
             out_dir=out_dir,
+            on_clip_output=on_clip_output,
         )  # Abort only after 2 hours with no observable generation progress.
     except _GenerationTimeoutError as error:
         if units:
