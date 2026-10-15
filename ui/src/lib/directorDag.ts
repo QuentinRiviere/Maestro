@@ -6,12 +6,17 @@
  * in one generation, so their render node spans the member rows. The output
  * is plain data (positions in pixels); the canvas component maps it to
  * React Flow nodes. Pure and unit-tested.
+ *
+ * Sections can be collapsed: a collapsed scene folds its rows into one
+ * summary row, and a collapsed stage column (prompts, video renders) shrinks
+ * to a thin strip while edges skip over it. Collapse keys live in one set so
+ * the canvas can keep them across live re-layouts.
  */
-import type { RenderUnit, RunShot, SceneGroup, StageStatus } from './directorRun.ts'
+import { formatSeconds, type RenderUnit, type RunShot, type SceneGroup, type StageStatus } from './directorRun.ts'
 
 export type DagNodeKind =
   | 'column' | 'frame' | 'brief' | 'character' | 'location' | 'scene' | 'planning'
-  | 'prompt' | 'image' | 'render' | 'clip' | 'final' | 'cost'
+  | 'prompt' | 'image' | 'render' | 'clip' | 'final' | 'cost' | 'summary'
 
 export interface DagNode {
   id: string
@@ -32,6 +37,12 @@ export interface DagNode {
   detail?: string
   /** Index into the cast list for character/location nodes. */
   castIndex?: number
+  /** Collapse key this node toggles (scene frames and summaries, stage columns). */
+  toggleKey?: string
+  /** Whether the section this node heads is collapsed. */
+  collapsed?: boolean
+  /** Start frames shown as a strip on a collapsed scene summary. */
+  thumbs?: string[]
 }
 
 export interface DagEdge {
@@ -57,23 +68,54 @@ export interface DagInput {
   runStatus: string
   phase: string
   costUsd: number | null
+  /** Collapsed sections: scene keys, and `stageKey(...)` for stage columns. */
+  collapsed?: ReadonlySet<string>
 }
 
 export const DAG_COLUMNS = [
   'Inputs', 'Planning', 'Prompts', 'Start images', 'Video renders', 'Shot clips', 'Final edit',
 ] as const
 
+export type CollapsibleStage = 'prompts' | 'renders'
+
+/** Stage columns that can be collapsed, by column index. */
+export const COLLAPSIBLE_STAGES: Readonly<Partial<Record<number, CollapsibleStage>>> = { 2: 'prompts', 4: 'renders' }
+
+export function stageKey(stage: CollapsibleStage): string {
+  return `stage:${stage}`
+}
+
 export const COL_WIDTH = 200
 export const COL_GAP = 72
 export const ROW_HEIGHT = 128
+export const COLLAPSED_COL_WIDTH = 24
+const COLLAPSED_COL_GAP = 36
+export const SUMMARY_ROW_HEIGHT = 92
+const MAX_SUMMARY_THUMBS = 8
 const NODE_GAP = 14
 const FRAME_HEADER = 30
 const FRAME_PAD = 14
 const SCENE_GAP = 28
 const INPUT_HEIGHT = 64
 
+/** X of a column in the default layout (no collapsed stage). */
 export function columnX(column: number): number {
   return column * (COL_WIDTH + COL_GAP)
+}
+
+/** Column x positions and widths, with collapsed stages shrunk to a strip. */
+export function columnLayout(collapsed: ReadonlySet<string>): { xs: number[]; widths: number[] } {
+  const xs: number[] = []
+  const widths: number[] = []
+  let x = 0
+  DAG_COLUMNS.forEach((_, column) => {
+    const stage = COLLAPSIBLE_STAGES[column]
+    const folded = !!stage && collapsed.has(stageKey(stage))
+    xs.push(x)
+    widths.push(folded ? COLLAPSED_COL_WIDTH : COL_WIDTH)
+    x += folded ? COLLAPSED_COL_WIDTH + COLLAPSED_COL_GAP : COL_WIDTH + COL_GAP
+  })
+  return { xs, widths }
 }
 
 function aggregate(statuses: StageStatus[]): StageStatus {
@@ -96,56 +138,74 @@ function sameLocation(a: string, b: string): boolean {
   return !!x && !!y && (x === y || x.includes(y) || y.includes(x))
 }
 
+function plural(count: number, word: string): string {
+  return `${count} ${word}${count === 1 ? '' : 's'}`
+}
+
 export function buildDirectorDag(input: DagInput): { nodes: DagNode[]; edges: DagEdge[] } {
   const nodes: DagNode[] = []
   const edges: DagEdge[] = []
   const statusOf = new Map<string, StageStatus>()
   const add = (node: DagNode) => { nodes.push(node); statusOf.set(node.id, node.status) }
+  const linked = new Set<string>()
   const link = (source: string, target: string) => {
-    edges.push({ id: `${source}->${target}`, source, target, animated: statusOf.get(target) === 'running' })
+    const id = `${source}->${target}`
+    if (linked.has(id)) return
+    linked.add(id)
+    edges.push({ id, source, target, animated: statusOf.get(target) === 'running' })
   }
   const failedRun = ['failed', 'crashed', 'cancelled'].includes(input.runStatus)
+  const collapsed = input.collapsed ?? new Set<string>()
+  const { xs, widths } = columnLayout(collapsed)
+  const promptsHidden = collapsed.has(stageKey('prompts'))
+  const rendersHidden = collapsed.has(stageKey('renders'))
 
-  DAG_COLUMNS.forEach((title, column) => add({
-    id: `column-${column}`, kind: 'column', x: columnX(column), y: -56, width: COL_WIDTH, height: 28,
-    status: 'pending', label: title,
-  }))
+  DAG_COLUMNS.forEach((title, column) => {
+    const stage = COLLAPSIBLE_STAGES[column]
+    add({
+      id: `column-${column}`, kind: 'column', x: xs[column], y: -56, width: widths[column], height: 28,
+      status: 'pending', label: title,
+      ...(stage ? { toggleKey: stageKey(stage), collapsed: collapsed.has(stageKey(stage)) } : {}),
+    })
+  })
 
-  // Shot rows, scene by scene.
+  // Shot rows, scene by scene. A collapsed scene keeps a single summary row.
   const rowY = new Map<number, number>()
-  const sceneSpans: Array<{ scene: SceneGroup; top: number; height: number }> = []
+  const sceneSpans: Array<{ scene: SceneGroup; top: number; height: number; folded: boolean }> = []
   let cursor = 0
   for (const scene of input.scenes) {
     const top = cursor
-    scene.shots.forEach((shot, i) => rowY.set(shot.index, top + FRAME_HEADER + i * ROW_HEIGHT))
-    const height = FRAME_HEADER + scene.shots.length * ROW_HEIGHT + FRAME_PAD
-    sceneSpans.push({ scene, top, height })
+    const folded = collapsed.has(scene.key)
+    if (!folded) scene.shots.forEach((shot, i) => rowY.set(shot.index, top + FRAME_HEADER + i * ROW_HEIGHT))
+    const height = FRAME_HEADER + (folded ? SUMMARY_ROW_HEIGHT : scene.shots.length * ROW_HEIGHT) + FRAME_PAD
+    sceneSpans.push({ scene, top, height, folded })
     cursor = top + height + SCENE_GAP
   }
   const contentHeight = Math.max(cursor - SCENE_GAP, ROW_HEIGHT)
 
   // Scene frames sit behind the per-shot columns (Planning to Shot clips).
-  for (const { scene, top, height } of sceneSpans) {
-    const left = columnX(1) - FRAME_PAD
+  const frameLeft = xs[1] - FRAME_PAD
+  const frameRight = xs[5] + widths[5] + FRAME_PAD
+  for (const { scene, top, height, folded } of sceneSpans) {
     add({
-      id: `frame-${scene.key}`, kind: 'frame', x: left, y: top,
-      width: columnX(5) + COL_WIDTH + FRAME_PAD - left, height,
+      id: `frame-${scene.key}`, kind: 'frame', x: frameLeft, y: top, width: frameRight - frameLeft, height,
       status: aggregate(scene.shots.map(s => s.videoStatus)),
       label: scene.title,
       detail: scene.group && scene.location ? scene.group : undefined,
+      toggleKey: scene.key, collapsed: folded,
     })
   }
 
   // Inputs: the brief, then the cast.
   let inputY = 0
   add({
-    id: 'brief', kind: 'brief', x: columnX(0), y: inputY, width: COL_WIDTH, height: INPUT_HEIGHT + 16,
+    id: 'brief', kind: 'brief', x: xs[0], y: inputY, width: COL_WIDTH, height: INPUT_HEIGHT + 16,
     status: 'done', label: 'Brief', detail: input.brief,
   })
   inputY += INPUT_HEIGHT + 16 + NODE_GAP
   input.characters.forEach((character, index) => {
     add({
-      id: `character-${index}`, kind: 'character', x: columnX(0), y: inputY, width: COL_WIDTH, height: INPUT_HEIGHT,
+      id: `character-${index}`, kind: 'character', x: xs[0], y: inputY, width: COL_WIDTH, height: INPUT_HEIGHT,
       status: character.image ? 'done' : 'pending', label: character.name || `Character ${index + 1}`,
       media: character.image || null, castIndex: index, detail: 'Character',
     })
@@ -153,7 +213,7 @@ export function buildDirectorDag(input: DagInput): { nodes: DagNode[]; edges: Da
   })
   input.locations.forEach((location, index) => {
     add({
-      id: `location-${index}`, kind: 'location', x: columnX(0), y: inputY, width: COL_WIDTH, height: INPUT_HEIGHT,
+      id: `location-${index}`, kind: 'location', x: xs[0], y: inputY, width: COL_WIDTH, height: INPUT_HEIGHT,
       status: location.image ? 'done' : 'pending', label: location.name || `Location ${index + 1}`,
       media: location.image || null, castIndex: index, detail: 'Location',
     })
@@ -163,7 +223,7 @@ export function buildDirectorDag(input: DagInput): { nodes: DagNode[]; edges: Da
   if (input.shots.length === 0) {
     const planning = input.phase === 'planning' || input.phase === 'casting' || input.phase === 'resuming'
     add({
-      id: 'planning', kind: 'planning', x: columnX(1), y: 0, width: COL_WIDTH, height: 96,
+      id: 'planning', kind: 'planning', x: xs[1], y: 0, width: COL_WIDTH, height: 96,
       status: planning ? 'running' : failedRun ? 'failed' : 'pending',
       label: planning ? 'Planning the storyboard…' : 'No storyboard yet',
     })
@@ -173,82 +233,122 @@ export function buildDirectorDag(input: DagInput): { nodes: DagNode[]; edges: Da
     return { nodes, edges }
   }
 
-  // Planning: one node per scene, centred on its rows.
-  for (const { scene, top, height } of sceneSpans) {
-    const nodeHeight = Math.min(96, height - FRAME_HEADER - FRAME_PAD)
-    add({
-      id: scene.key, kind: 'scene', x: columnX(1),
-      y: top + FRAME_HEADER + (height - FRAME_HEADER - FRAME_PAD - nodeHeight) / 2,
-      width: COL_WIDTH, height: nodeHeight, status: 'done', label: scene.title,
-      detail: `${scene.shots.length} shot${scene.shots.length === 1 ? '' : 's'}`,
-      shot: scene.shots[0]?.index,
-    })
-    link('brief', scene.key)
+  // Planning: one node per scene, centred on its rows. A collapsed scene is
+  // one summary node across every per-shot column instead.
+  const sceneNodeOf = new Map<number, string>()
+  const folded = new Set<number>()
+  for (const span of sceneSpans) {
+    const { scene, top, height } = span
+    let id = scene.key
+    if (span.folded) {
+      id = `summary-${scene.key}`
+      const total = scene.shots.reduce((sum, shot) => sum + (shot.durationSec || 0), 0)
+      const done = scene.shots.filter(s => s.videoStatus === 'done').length
+      const failed = scene.shots.filter(s => s.videoStatus === 'failed').length
+      const running = scene.shots.filter(s => s.videoStatus === 'running' || s.imageStatus === 'running').length
+      add({
+        id, kind: 'summary', x: xs[1], y: top + FRAME_HEADER,
+        width: xs[5] + widths[5] - xs[1], height: SUMMARY_ROW_HEIGHT - NODE_GAP,
+        status: aggregate(scene.shots.map(s => s.videoStatus)),
+        label: scene.title,
+        detail: [
+          plural(scene.shots.length, 'shot'),
+          total > 0 ? formatSeconds(total) : null,
+          `${done}/${scene.shots.length} rendered`,
+          running ? `${running} running` : null,
+          failed ? `${failed} missing` : null,
+        ].filter(Boolean).join(' · '),
+        thumbs: scene.shots.map(s => s.startImage).filter((m): m is string => !!m).slice(0, MAX_SUMMARY_THUMBS),
+        shot: scene.shots[0]?.index, toggleKey: scene.key, collapsed: true,
+      })
+    } else {
+      const nodeHeight = Math.min(96, height - FRAME_HEADER - FRAME_PAD)
+      add({
+        id, kind: 'scene', x: xs[1],
+        y: top + FRAME_HEADER + (height - FRAME_HEADER - FRAME_PAD - nodeHeight) / 2,
+        width: COL_WIDTH, height: nodeHeight, status: 'done', label: scene.title,
+        detail: plural(scene.shots.length, 'shot'),
+        shot: scene.shots[0]?.index,
+      })
+    }
+    for (const shot of scene.shots) {
+      sceneNodeOf.set(shot.index, id)
+      if (span.folded) folded.add(shot.index)
+    }
+    link('brief', id)
     const sceneText = scene.shots
       .map(s => [s.subjects.join(' '), s.imagePrompt, s.dialogue.map(d => d.speaker).join(' ')].join(' '))
       .join(' ')
     input.characters.forEach((character, i) => {
-      if (mentions(sceneText, character.name)) link(`character-${i}`, scene.key)
+      if (mentions(sceneText, character.name)) link(`character-${i}`, id)
     })
     input.locations.forEach((location, i) => {
-      if (scene.shots.some(s => sameLocation(s.location, location.name))) link(`location-${i}`, scene.key)
+      if (scene.shots.some(s => sameLocation(s.location, location.name))) link(`location-${i}`, id)
     })
   }
 
-  const sceneOf = new Map<number, string>()
-  input.scenes.forEach(scene => scene.shots.forEach(shot => sceneOf.set(shot.index, scene.key)))
   const nodeHeight = ROW_HEIGHT - NODE_GAP
+  const visibleShots = input.shots.filter(shot => !folded.has(shot.index))
+  const sceneSource = (index: number) => sceneNodeOf.get(index) || 'brief'
+  const promptSource = (index: number) => promptsHidden ? sceneSource(index) : `prompt-${index}`
+  // The node feeding a shot's video render, skipping collapsed stages.
+  const renderInput = (shot: RunShot) => shot.imageStatus !== 'skipped' ? `image-${shot.index}` : promptSource(shot.index)
 
-  for (const shot of input.shots) {
+  for (const shot of visibleShots) {
     const y = rowY.get(shot.index) ?? 0
     const label = `Shot ${shot.index + 1}`
-    add({
-      id: `prompt-${shot.index}`, kind: 'prompt', x: columnX(2), y, width: COL_WIDTH, height: nodeHeight,
-      status: shot.videoPrompt || shot.imagePrompt ? 'done' : 'pending',
-      label, detail: [shot.sceneType, shot.framing].filter(Boolean).join(' · ') || shot.action, shot: shot.index,
-    })
-    link(sceneOf.get(shot.index) || 'brief', `prompt-${shot.index}`)
+    if (!promptsHidden) {
+      add({
+        id: `prompt-${shot.index}`, kind: 'prompt', x: xs[2], y, width: COL_WIDTH, height: nodeHeight,
+        status: shot.videoPrompt || shot.imagePrompt ? 'done' : 'pending',
+        label, detail: [shot.sceneType, shot.framing].filter(Boolean).join(' · ') || shot.action, shot: shot.index,
+      })
+      link(sceneSource(shot.index), `prompt-${shot.index}`)
+    }
     if (shot.imageStatus !== 'skipped') {
       add({
-        id: `image-${shot.index}`, kind: 'image', x: columnX(3), y, width: COL_WIDTH, height: nodeHeight,
+        id: `image-${shot.index}`, kind: 'image', x: xs[3], y, width: COL_WIDTH, height: nodeHeight,
         status: shot.imageStatus, label, media: shot.startImage, shot: shot.index,
         detail: shot.judge?.verdict && shot.judge.verdict !== 'skipped' ? `judge: ${shot.judge.verdict}` : undefined,
       })
-      link(`prompt-${shot.index}`, `image-${shot.index}`)
+      link(promptSource(shot.index), `image-${shot.index}`)
     }
   }
 
-  for (const unit of input.units) {
-    const first = unit.members[0]
-    const ys = unit.members.map(m => rowY.get(m) ?? 0)
-    const top = Math.min(...ys)
-    const bottom = Math.max(...ys) + nodeHeight
-    const id = `render-${unit.id}`
-    const members = unit.members.map(m => input.shots[m]).filter(Boolean)
-    add({
-      id, kind: 'render', x: columnX(4), y: top, width: COL_WIDTH, height: bottom - top,
-      status: aggregate(members.map(s => s.videoStatus)),
-      label: unit.isSequence ? `Sequence ${unit.id.replace(/^seq_/, '')}` : `Shot ${first + 1}`,
-      detail: unit.isSequence ? `H3 render of shots ${unit.members.map(m => m + 1).join(', ')}` : 'Single render',
-      members: unit.members, shot: first,
-    })
-    for (const shot of members) {
-      link(shot.imageStatus === 'skipped' ? `prompt-${shot.index}` : `image-${shot.index}`, id)
+  // Video renders: a unit spans its visible member rows; a unit whose
+  // members all sit in collapsed scenes folds into their summary.
+  const clipSource = new Map<number, string>()
+  if (!rendersHidden) {
+    for (const unit of input.units) {
+      const visible = unit.members.filter(m => input.shots[m] && !folded.has(m))
+      if (visible.length === 0) continue
+      const ys = visible.map(m => rowY.get(m) ?? 0)
+      const top = Math.min(...ys)
+      const bottom = Math.max(...ys) + nodeHeight
+      const id = `render-${unit.id}`
+      const members = unit.members.map(m => input.shots[m]).filter(Boolean)
+      add({
+        id, kind: 'render', x: xs[4], y: top, width: COL_WIDTH, height: bottom - top,
+        status: aggregate(members.map(s => s.videoStatus)),
+        label: unit.isSequence ? `Sequence ${unit.id.replace(/^seq_/, '')}` : `Shot ${unit.members[0] + 1}`,
+        detail: unit.isSequence ? `H3 render of shots ${unit.members.map(m => m + 1).join(', ')}` : 'Single render',
+        members: unit.members, shot: unit.members[0],
+      })
+      for (const member of visible) {
+        link(renderInput(input.shots[member]), id)
+        clipSource.set(member, id)
+      }
     }
   }
 
-  for (const shot of input.shots) {
+  for (const shot of visibleShots) {
     const y = rowY.get(shot.index) ?? 0
     add({
-      id: `clip-${shot.index}`, kind: 'clip', x: columnX(5), y, width: COL_WIDTH, height: nodeHeight,
+      id: `clip-${shot.index}`, kind: 'clip', x: xs[5], y, width: COL_WIDTH, height: nodeHeight,
       status: shot.videoStatus, label: `Shot ${shot.index + 1}`, media: shot.video,
       detail: shot.sequence ? `split from ${shot.sequence.id}` : undefined, shot: shot.index,
     })
-  }
-  for (const unit of input.units) {
-    for (const member of unit.members) {
-      if (input.shots[member]) link(`render-${unit.id}`, `clip-${member}`)
-    }
+    link(clipSource.get(shot.index) ?? renderInput(shot), `clip-${shot.index}`)
   }
 
   const finalHeight = 150
@@ -257,13 +357,15 @@ export function buildDirectorDag(input: DagInput): { nodes: DagNode[]; edges: Da
     ? 'done'
     : input.phase === 'post_processing' ? 'running' : failedRun ? 'failed' : 'pending'
   add({
-    id: 'final', kind: 'final', x: columnX(6), y: finalY, width: COL_WIDTH, height: finalHeight,
+    id: 'final', kind: 'final', x: xs[6], y: finalY, width: COL_WIDTH, height: finalHeight,
     status: finalStatus, label: 'Final edit', media: input.finalFile,
     detail: `${input.shots.filter(s => s.videoStatus === 'done').length}/${input.shots.length} shots`,
   })
-  for (const shot of input.shots) link(`clip-${shot.index}`, 'final')
+  for (const shot of input.shots) {
+    link(folded.has(shot.index) ? sceneSource(shot.index) : `clip-${shot.index}`, 'final')
+  }
   add({
-    id: 'cost', kind: 'cost', x: columnX(6), y: finalY + finalHeight + NODE_GAP * 2, width: COL_WIDTH, height: 56,
+    id: 'cost', kind: 'cost', x: xs[6], y: finalY + finalHeight + NODE_GAP * 2, width: COL_WIDTH, height: 56,
     status: input.costUsd != null ? 'done' : 'pending', label: 'Cost',
     detail: input.costUsd != null ? `$${input.costUsd.toFixed(2)}` : 'not priced yet',
   })
