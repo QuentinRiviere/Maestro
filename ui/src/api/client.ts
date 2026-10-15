@@ -1,5 +1,6 @@
 import type { DirectorModelCompatibility, GenerationPreview, GenerationPreviewSupport, H3WindowPlan, LTXWindowPlan, MiniMaxH3Reference, ProductionPlan, SavedOmniCharacter, ScailResolutionProfile } from '../types'
 import type { KreaIdentitySettings } from '../lib/kreaIdentityControls'
+import type { AnnotationDraft, AnnotationPatch, RunAnnotation } from '../lib/directorAnnotations'
 
 const BASE = ''  // same origin in production; Vite proxy handles /api in dev
 
@@ -1323,6 +1324,52 @@ export async function updateClipPrompt(pid: string, clipIndex: number, update: {
     throw new Error(err.error || err.detail || 'Failed to save prompt')
   }
 }
+
+function annotationsUrl(pid: string, aid?: string): string {
+  const base = `${BASE}/api/v1/director/pipelines/${encodeURIComponent(pid)}/annotations`
+  return aid ? `${base}/${encodeURIComponent(aid)}` : base
+}
+
+async function annotationResponse<T>(res: Response, fallback: string): Promise<T> {
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: fallback }))
+    throw new Error(err.error || err.detail || fallback)
+  }
+  return res.json()
+}
+
+/** Post-analysis notes of one Director run. */
+export async function fetchRunAnnotations(pid: string): Promise<RunAnnotation[]> {
+  const res = await fetch(annotationsUrl(pid), { cache: 'no-store' })
+  const body = await annotationResponse<{ annotations: RunAnnotation[] }>(res, 'Could not read the notes')
+  return body.annotations || []
+}
+
+export async function createRunAnnotation(pid: string, draft: AnnotationDraft): Promise<RunAnnotation> {
+  const res = await fetch(annotationsUrl(pid), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(draft),
+  })
+  return (await annotationResponse<{ annotation: RunAnnotation }>(res, 'Could not save the note')).annotation
+}
+
+export async function updateRunAnnotation(pid: string, aid: string, patch: AnnotationPatch): Promise<RunAnnotation> {
+  const res = await fetch(annotationsUrl(pid, aid), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  })
+  return (await annotationResponse<{ annotation: RunAnnotation }>(res, 'Could not update the note')).annotation
+}
+
+export async function deleteRunAnnotation(pid: string, aid: string): Promise<void> {
+  const res = await fetch(annotationsUrl(pid, aid), { method: 'DELETE' })
+  await annotationResponse<unknown>(res, 'Could not delete the note')
+}
+
+/** Download URL of every run's notes, with prompt excerpts, as one JSON file. */
+export const DIRECTOR_ANNOTATIONS_EXPORT_URL = `${BASE}/api/v1/director/annotations/export`
 
 export async function startPipelineRepair(pid: string): Promise<{
   pipeline_id: string
