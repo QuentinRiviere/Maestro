@@ -402,6 +402,72 @@ def shot_mix(shots: Sequence[Mapping[str, Any]]) -> dict[str, float]:
     return {size: round(100 * n / len(sizes), 1) for size, n in sorted(counts.items(), key=lambda kv: -kv[1])}
 
 
+def motion_mix(shots: Sequence[Mapping[str, Any]]) -> dict[str, float]:
+    """Percent of the described shots per camera movement, largest first."""
+    moves = [s["movement"] for s in shots if s.get("movement") in MOVEMENTS]
+    if not moves:
+        return {}
+    counts = {move: moves.count(move) for move in MOVEMENTS if move in moves}
+    return {move: round(100 * n / len(moves), 1) for move, n in sorted(counts.items(), key=lambda kv: -kv[1])}
+
+
+def _median_p75(values: Sequence[float]) -> list[float] | None:
+    values = sorted(float(v) for v in values if v and v > 0)
+    if len(values) < 3:
+        return None
+    p75 = values[min(len(values) - 1, round(0.75 * (len(values) - 1)))]
+    return [round(statistics.median(values), 2), round(p75, 2)]
+
+
+def audio_lengths(shots: Sequence[Mapping[str, Any]]) -> dict[str, list[float]]:
+    """[median, p75] length of shots under dialogue and of silent shots (silence or ambience only)."""
+    groups = {"line_sec": [s.get("duration") for s in shots if s.get("audio") == "dialogue"],
+              "silent_sec": [s.get("duration") for s in shots if s.get("audio") in ("silence", "ambience")]}
+    result = {}
+    for key, values in groups.items():
+        pair = _median_p75([float(v) for v in values if isinstance(v, (int, float))])
+        if pair:
+            result[key] = pair
+    return result
+
+
+def reference_measures(reference: Mapping[str, Any], shots: Sequence[Mapping[str, Any]] | None = None) -> dict:
+    """The measured numbers a reference brings to the cinema grammar calibration ({} without any).
+
+    Exact cut statistics (average and median shot, cuts per minute), the
+    shot-size mix, the static share of camera movement and the shot length
+    under a line vs silent. Older analyses without the movement and sound
+    splits in their stats get them from their per-shot breakdown (``shots``).
+    The weight is the reference's shot count.
+    """
+    stats = reference.get("stats") or {}
+    grammar = reference.get("grammar") or {}
+    measures: dict[str, Any] = {}
+    asl = _number(stats.get("asl_sec")) or _number((grammar.get("rhythm") or {}).get("target_asl_sec"))
+    for key, value in (("asl_sec", asl), ("median_sec", _number(stats.get("median_sec"))),
+                       ("cuts_per_minute", _number(stats.get("cuts_per_minute")))):
+        if value and value > 0:
+            measures[key] = value
+    mix = stats.get("shot_mix") or grammar.get("shot_mix")
+    if isinstance(mix, Mapping) and mix:
+        measures["shot_mix"] = dict(mix)
+    motion = stats.get("motion_mix")
+    if not motion and shots:
+        motion = motion_mix(shots)
+    if motion:
+        measures["static_share"] = round(float(motion.get("static", 0)) / 100, 3)
+    lengths = stats.get("audio_lengths")
+    if not lengths and shots:
+        lengths = audio_lengths(shots)
+    for key in ("line_sec", "silent_sec"):
+        if (lengths or {}).get(key):
+            measures[key] = list(lengths[key])
+    if measures:
+        measures["id"] = reference.get("id")
+        measures["weight"] = int(stats.get("shot_count") or reference.get("described_shots") or 1)
+    return measures
+
+
 def _text_list(value: Any, limit: int, size: int = 300) -> list[str]:
     if isinstance(value, str):
         value = [line for line in re.split(r"\n+", value)]
@@ -543,7 +609,8 @@ def analyse_reference(
         described = [s for s in shots if s.get("shot_size")]
         if not described:
             raise StyleReferenceError(errors[0] if errors else "The model described no shot")
-        stats = {**stats, "shot_mix": shot_mix(described), "described_shots": len(described)}
+        stats = {**stats, "shot_mix": shot_mix(described), "motion_mix": motion_mix(described),
+                 "audio_lengths": audio_lengths(described), "described_shots": len(described)}
         on_progress("Writing the staging grammar", {"stats": stats})
         prompt = synthesis_prompt(stats, shots)
         last_error: Exception | None = None
@@ -584,8 +651,12 @@ def _mix_text(mix: Mapping[str, float], limit: int = 6) -> str:
     return ", ".join(f"{SHOT_SIZE_LABELS.get(k, k)} {v:g}%" for k, v in list(mix.items())[:limit])
 
 
-def reference_block(reference: Mapping[str, Any], limit: int = MAX_REFERENCE_CHARS) -> str:
-    """One reference's grammar as compact planner lines, at most ``limit`` characters."""
+def reference_block(reference: Mapping[str, Any], limit: int = MAX_REFERENCE_CHARS, *, numbers: bool = True) -> str:
+    """One reference's grammar as compact planner lines, at most ``limit`` characters.
+
+    ``numbers=False`` leaves out the measured rhythm and shot mix when the
+    CINEMA GRAMMAR block already carries them (calibrated from the references).
+    """
     grammar = reference.get("grammar") or {}
     stats = reference.get("stats") or {}
     rhythm = grammar.get("rhythm") or {}
@@ -604,13 +675,13 @@ def reference_block(reference: Mapping[str, Any], limit: int = MAX_REFERENCE_CHA
     if distribution:
         rhythm_bits.append("lengths " + ", ".join(distribution))
     lines = [head]
-    if rhythm_bits:
+    if rhythm_bits and numbers:
         lines.append("- Rhythm: " + "; ".join(rhythm_bits) + ".")
     if rhythm.get("pace_with_emotion"):
         lines.append("- Pace: " + _short(rhythm["pace_with_emotion"], 220))
     rules = [f"- Rule: {_short(rule, 220)}" for rule in grammar.get("rules") or []]
     optional = []
-    if grammar.get("shot_mix"):
+    if grammar.get("shot_mix") and numbers:
         optional.append("- Shot mix: " + _mix_text(grammar["shot_mix"]) + ".")
     for key, title in (("dialogue_coverage", "Dialogue"), ("scene_openings", "Openings"),
                        ("scene_closings", "Closings"), ("camera_movement", "Camera"),
@@ -649,7 +720,8 @@ def select_references(bible: Mapping[str, Any] | None, choice: Any = CHOICE_AUTO
 
 
 def planner_block(references: Sequence[Mapping[str, Any]], *, brief: str = "",
-                  total_limit: int = MAX_BLOCK_CHARS, per_reference: int = MAX_REFERENCE_CHARS) -> str:
+                  total_limit: int = MAX_BLOCK_CHARS, per_reference: int = MAX_REFERENCE_CHARS,
+                  numbers: bool = True) -> str:
     """The "REFERENCE STAGING GRAMMAR" planner block ("" without references), at most ``total_limit`` chars.
 
     Tagged references whose tags appear in the brief come first, then
@@ -659,10 +731,11 @@ def planner_block(references: Sequence[Mapping[str, Any]], *, brief: str = "",
     if not references:
         return ""
     tagged = any(r.get("scene_tags") for r in references)
+    rhythm_note = ("Shot durations stay inside the allowed range; follow the target rhythm within it." if numbers
+                   else "Their measured rhythm and shot mix are in the CINEMA GRAMMAR block.")
     head = ("REFERENCE STAGING GRAMMAR (editing and staging principles learned from reference videos chosen for "
             "this series: apply them to this production's own story and cast, never copy a reference's content, "
-            "characters or story. Shot durations stay inside the allowed range; follow the target rhythm within "
-            "it.)")
+            f"characters or story. {rhythm_note})")
     if tagged:
         head += ("\nEach reference names the scenes it guides: for each scene, follow the reference whose scenes "
                  "fit its mood; references for every scene always apply.")
@@ -678,7 +751,7 @@ def planner_block(references: Sequence[Mapping[str, Any]], *, brief: str = "",
     share = max(400, min(per_reference, budget // len(ordered)))
     parts, skipped = [], []
     for reference in ordered:
-        block = reference_block(reference, share)
+        block = reference_block(reference, share, numbers=numbers)
         if block and len(block) + 2 <= budget:
             parts.append(block)
             budget -= len(block) + 2
