@@ -119,6 +119,43 @@ and repairs.
   accelerator is already fused. An unknown preset id is rejected when the run
   is submitted. Hand-detail shots never drop below the preset's steps.
 
+## Cinema grammar
+
+`director_cinema_grammar` (`on` or `off`) adds a **CINEMA GRAMMAR** block of
+about 2,500 characters (hard cap 2,800) to the storyboard planner prompt,
+next to the bible's reference staging grammar. Without the parameter it is
+on for K-drama custom skills (an id containing `k_drama` or `kdrama`, such
+as `custom:k_drama_mini`) and off for every other skill. The resolved value
+is saved in the params snapshot with the block size, target duration and
+shot-length range (`_director_cinema_grammar`).
+
+The block tells the planner, as instructions for shots rendered one by one
+by image-to-video models:
+
+- build beats as action -> reaction, with a few deliberate variants (reaction
+  first, sound-only action, reaction chain, withheld reaction);
+- one camera move per shot, chosen by the focal emotion, static by default;
+- medium and bust framing by default, the full-face close-up kept for the
+  turn; scale changes one step at a time; no three cuts with the same size
+  and move;
+- coverage, body-part inserts (feet, legs, hands, backs) for entrances and
+  exits, cut on action or on a look, the 180-degree rule;
+- K-drama framing (frame-within-frame, dividing lines, grouping, reflections,
+  rain), contained acting with living eyes, one motivated light source;
+- rhythm from 2,825 vertical micro-drama episodes (DramaBoard aggregates):
+  median 77 s and 34 shots per episode, 94% static shots, the shot-scale mix,
+  silent and spoken shot lengths clamped to the model's shot range, a shot
+  count for the target duration, and how often a line plays on the listener.
+
+The knowledge, its sources and licenses live in
+`app/services/director/cinema_grammar/` (see its README).
+
+The compiled H3 prompt writes camera moves in a closed vocabulary: synonyms
+such as "dolly in" or "zooms out" become "push-in" or "pulls back", and vague
+motion ("the camera drifts") becomes "static camera". Framing and the move's
+destination stay as planned. MiniMax bracket commands (`[Push in]`) are
+mapped in the same table but stay off (`MINIMAX_BRACKET_COMMANDS`).
+
 ## LoRA strengths
 
 Activated Video and Image LoRAs each show a strength slider and numeric input.
