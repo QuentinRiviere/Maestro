@@ -123,29 +123,56 @@ and repairs.
 
 `director_cinema_grammar` (`on` or `off`) adds a **CINEMA GRAMMAR** block of
 about 2,500 characters (hard cap 2,800) to the storyboard planner prompt,
-next to the bible's reference staging grammar. Without the parameter it is
-on for K-drama custom skills (an id containing `k_drama` or `kdrama`, such
-as `custom:k_drama_mini`) and off for every other skill. The resolved value
-is saved in the params snapshot with the block size, target duration and
-shot-length range (`_director_cinema_grammar`).
+next to the bible's reference staging grammar. Without the parameter it is on
+when a genre profile applies: `director_genre_profile` names one, or a custom
+skill id names one (an id containing `k_drama` or `kdrama`, such as
+`custom:k_drama_mini`; `micro_drama`, `anime` or `vlog` likewise). It is off
+for every other skill.
 
-The block tells the planner, as instructions for shots rendered one by one
-by image-to-video models:
+The block stacks three layers:
 
-- build beats as action -> reaction, with a few deliberate variants (reaction
-  first, sound-only action, reaction chain, withheld reaction);
-- one camera move per shot, chosen by the focal emotion, static by default;
-- medium and bust framing by default, the full-face close-up kept for the
-  turn; scale changes one step at a time; no three cuts with the same size
-  and move;
-- coverage, body-part inserts (feet, legs, hands, backs) for entrances and
-  exits, cut on action or on a look, the 180-degree rule;
-- K-drama framing (frame-within-frame, dividing lines, grouping, reflections,
-  rain), contained acting with living eyes, one motivated light source;
-- rhythm from 2,825 vertical micro-drama episodes (DramaBoard aggregates):
-  median 77 s and 34 shots per episode, 94% static shots, the shot-scale mix,
-  silent and spoken shot lengths clamped to the model's shot range, a shot
-  count for the target duration, and how often a line plays on the listener.
+- **Universal** (always): build beats as action -> reaction with a few
+  deliberate variants; one camera move per shot, named with its speed and end
+  framing, static by default; continuity (180-degree rule, screen direction,
+  eyeline and action matches, constant light direction and props); scale
+  changes one step at a time; AI-video robustness (one simple action per
+  shot, no fast choreography, crowds in contact or readable text; body-part
+  inserts for entrances and exits); acting with living eyes.
+- **Format**, `director_format_profile`: `auto` (default) picks
+  `vertical_short` for a portrait or square `director_aspect_ratio` (9:16,
+  3:4, 1:1) and `horizontal` otherwise. `vertical_short` frames for a phone
+  (one or two large faces, wides only to establish) with the DramaBoard
+  shot-size mix (medium 26%, close-up 24%, medium close-up 23%, medium wide
+  19%, wide 7%); `horizontal` uses the width (two-shots, over-the-shoulder
+  pairs, wides that re-establish geography) with a wider guideline mix.
+  Dialogue coverage (about a quarter of the shots under a line on the
+  listener, 16% of line ends cut to a silent reaction) applies to both.
+- **Genre**, `director_genre_profile`: `auto` (default) takes the skill's
+  genre, else `neutral`; or one of `kdrama`, `micro_drama`,
+  `anime_mini_series`, `vlog`, `neutral`. Each brings rhythm targets, a
+  shot-mix bias, camera habits, a look, an acting style, motifs and do/don't
+  rules. `kdrama` holds shots ~3-6 s (median ~4 s, silent reactions 3-6 s),
+  80% static with slow push-ins on realisations, restrained acting and its
+  framing motifs; `micro_drama` keeps the fast DramaBoard pacing (median
+  1.7 s, 94% static) with hooks and cliffhangers; `anime_mini_series` holds
+  poses, uses stronger angles and avoids smear and impact frames; `vlog` is
+  handheld direct address with jump cuts and POV inserts.
+
+When the run uses analysed style references (`director_style_reference`),
+their measured numbers replace the genre and format defaults: average and
+median shot length, cuts per minute, shot-size mix, static share and the
+shot length under a line vs silent, averaged across references weighted by
+their shot count. Every length is clamped to the video model's shot range,
+and the block names the source of each number ("from your references", the
+genre default, DramaBoard). The REFERENCE STAGING GRAMMAR block then leaves
+its numbers to the cinema block and keeps the references' rules and patterns.
+
+The params snapshot records the resolved values (`director_cinema_grammar`,
+`director_format_profile`, `director_genre_profile`) and
+`_director_cinema_grammar`: block size, target duration, shot-length range,
+`format` and `genre` with their source (`param`, `aspect_ratio`, `skill`,
+`default`), `calibration` (`references` or `genre_default`), the calibrating
+reference ids and the resulting rhythm targets with the source of each number.
 
 The knowledge, its sources and licenses live in
 `app/services/director/cinema_grammar/` (see its README).

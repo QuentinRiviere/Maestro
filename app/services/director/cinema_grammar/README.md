@@ -1,19 +1,65 @@
 # Cinema grammar
 
-Film-grammar knowledge the Director storyboard planner reads for K-drama short
-episodes (45-90 s), written for a planner whose shots are rendered one by one by
-image-to-video models.
+Film-grammar knowledge the Director storyboard planner reads, written for a
+planner whose shots are rendered one by one by image-to-video models. The
+CINEMA GRAMMAR block (about 2,500 characters, hard cap 2,800) stacks three
+layers and lets the run's style references calibrate the numbers.
 
-- `data/grammar.json`: shot sizes, angles, camera moves, camera by emotion,
-  lenses, light vocabularies and setups, the action-reaction unit and its
-  variants, cut logic, dialogue coverage, editing rules, K-drama motifs, acting
-  rules and bad-acting fixes, director style notes, duration references, the
-  storyboard columns, and `planner_rules` (the lines the planner block renders).
+## Layers
+
+| Layer | File | Chosen by | Carries |
+|---|---|---|---|
+| Universal | `data/universal.json` | always | action -> reaction unit, one camera move per shot, continuity (180-degree rule, eyeline and action matches), scale steps, AI-video robustness, acting basics, angles. No genre numbers. |
+| Format | `data/formats.json` | `director_format_profile` (`vertical_short`, `horizontal`), else `director_aspect_ratio` (portrait or square -> `vertical_short`, landscape -> `horizontal`), else `horizontal` | framing habits and the base shot-size mix (DramaBoard mix for 9:16, a guideline for 16:9) |
+| Genre | `data/genres/<id>.json` | `director_genre_profile` (an id), else `auto`: the custom skill id (`skill_pattern`, e.g. `custom:k_drama_mini` -> `kdrama`), else `neutral` | rhythm targets, shot-mix bias, camera habits, look, acting style, motifs, do/don't, whether shot/reverse coverage applies |
+
+Genres:
+
+| Genre | Median shot | Average shot band | Silent holds | Under a line | Static | Notes |
+|---|---|---|---|---|---|---|
+| `kdrama` | ~4 s | 3.5-5.5 s | 3-6 s | 3-5 s | 80% | held looks and silences, slow push-ins on realisations, restrained acting, frame-within-frame, dividing lines, rain and reflections, hand inserts |
+| `micro_drama` | 1.7 s | 1.8-2.9 s | 1.3-2.0 s | 1.9-3.0 s | 94% | DramaBoard aggregates; hooks in the first 3 s, cliffhanger endings |
+| `anime_mini_series` | ~3 s | 2.5-5 s | 2.5-5 s | 2.5-4.5 s | 85% | limited animation, held poses, stronger angles, stylised looks; no smear or impact frames (AI video morphs them) |
+| `vlog` | ~2.5 s | 2-4.5 s | 1.5-3 s | 2.5-5 s | 30% | handheld direct address, jump cuts, POV inserts, natural light; no shot/reverse coverage |
+| `neutral` | ~3 s | 2.5-5 s | 2-4 s | 2.5-5 s | 70% | default when no genre applies |
+
+Only `micro_drama` is measured on a corpus; the others are Maestro guidelines
+from the conventions of each genre. Adding a genre is adding a JSON file with
+the same keys (`id`, `label`, `tag`, `summary`, `skill_pattern`, `source`,
+`rhythm` or `rhythm_source`, `shot_mix_bias`, `coverage`, `camera`, `look`,
+`acting`, `motifs`, `do`, `dont`).
+
+## Calibration by style references
+
+When the run uses analysed style references of its bible
+(`director_style_reference`, `app/services/director/style_reference.py`),
+their measured numbers replace the genre and format defaults:
+average and median shot length, cuts per minute, shot-size mix, static share
+of camera movement and the shot length under a line vs silent. Several
+references are averaged, weighted by their shot count; a number only averages
+the references that measured it. Without a measured silent/line split, the
+genre's holds are scaled by the references' pace. Every length is clamped into
+the video model's shot range, and the block names the source of each number
+("from your references", "K-drama default", "K-drama default scaled to your
+references", "DramaBoard"). The REFERENCE STAGING GRAMMAR block then leaves its
+rhythm and shot-mix numbers out and keeps the references' rules and patterns.
+
+## Files
+
+- `profiles.py`: loads the layers, selects the format and genre, the biased
+  shot mix, and `calibrate()` (weighted average of reference measures).
+- `render.py`: `rhythm_targets()` and `planner_block()`; lines are kept by
+  priority and the hard cap drops the lowest-priority lines whole.
+- `data/grammar.json`: the distilled knowledge base the layers summarise:
+  shot sizes, angles, camera moves, camera by emotion, lenses, light
+  vocabularies and setups, the action-reaction unit and its variants, cut
+  logic, dialogue coverage, editing rules, K-drama motifs, acting rules and
+  bad-acting fixes, director style notes, duration references, the storyboard
+  columns.
 - `data/dramaboard_rhythm.json`: aggregate rhythm statistics of vertical
-  micro-drama episodes, computed by `scripts/dramaboard_rhythm_stats.py`.
-- `render.py`: `planner_block()` renders the CINEMA GRAMMAR block (about 2,500
-  characters, hard cap 2,800), with rhythm targets clamped to the model's shot
-  length range.
+  micro-drama episodes, computed by `scripts/dramaboard_rhythm_stats.py`. It
+  feeds the `micro_drama` rhythm, the `vertical_short` shot mix and the
+  dialogue-coverage numbers (listener share, silent reaction after a line).
 - `vocabulary.py`: the closed camera-move vocabulary used by the H3 prompt
   compiler, and the switch for MiniMax bracket commands (off).
 
