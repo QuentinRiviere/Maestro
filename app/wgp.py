@@ -8520,7 +8520,15 @@ def generate_video(
             offload.sync_models_loras(trans_lora, trans2_lora)
         if hasattr(wan_model, "finalize_loras"):
             wan_model.finalize_loras()
-        
+        # A transformer kept in VRAM since the previous generation is never
+        # reloaded, so MMGP would not build the GPU copies its LoRA hooks read
+        # and the adapters would silently do nothing.
+        from services.lora_residency import sync_resident_loras
+        for lora_target in (trans_lora, trans2_lora):
+            synced = sync_resident_loras(offloadobj, lora_target)
+            if synced:
+                print(f"[LoRA] Attached LoRA weights to {synced} modules of a transformer already in VRAM")
+
     seed = None if seed == -1 else seed
     # negative_prompt = "" # not applicable in the inference
     model_filename = get_model_filename(base_model_type)  
