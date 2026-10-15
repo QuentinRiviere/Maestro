@@ -381,3 +381,11 @@ test('live clip number falls back to the progress message', async () => {
   assert.equal(liveClipNumber({ message: 'Review images' }), 0)
   assert.equal(liveClipNumber(null), 0)
 })
+
+test('keep range accepts only a valid [start, end] pair', async () => {
+  const { keepRange } = await import('../src/lib/directorRun.ts')
+  assert.deepEqual(keepRange([0, 2.5]), [0, 2.5])
+  assert.equal(keepRange([2, 1]), null)
+  assert.equal(keepRange(null), null)
+  assert.equal(keepRange([0]), null)
+})

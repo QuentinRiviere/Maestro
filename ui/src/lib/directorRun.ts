@@ -77,6 +77,8 @@ export interface RunShot {
   startImage: string | null
   video: string | null
   videoStale: boolean
+  /** Part of the rendered clip the edit keeps ([start, end] seconds), when the render runs longer. */
+  keep: [number, number] | null
   sceneType: string
   framing: string
   location: string
@@ -272,6 +274,7 @@ export function buildRunShots(
       startImage,
       video,
       videoStale,
+      keep: keepRange(savedClip._director_keep_sec),
       sceneType: text(plan._director_scene_type),
       framing: text(plan._director_camera_framing),
       location: text(plan._director_location),
@@ -313,6 +316,13 @@ export function buildRunShots(
     }
   }
   return shots
+}
+
+/** A saved ``_director_keep_sec`` range, or null when the whole render is used. */
+export function keepRange(value: unknown): [number, number] | null {
+  if (!Array.isArray(value) || value.length !== 2) return null
+  const [start, end] = value.map(Number)
+  return Number.isFinite(start) && Number.isFinite(end) && end > start && start >= 0 ? [start, end] : null
 }
 
 /**

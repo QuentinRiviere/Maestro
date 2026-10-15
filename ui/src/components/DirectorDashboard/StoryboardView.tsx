@@ -20,7 +20,7 @@ function ShotPanel({ shot, aspect, staged, onOpen }: {
       className={`group text-left rounded-lg border ${tagRing} bg-bg-secondary overflow-hidden flex flex-col transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-blue`}
     >
       <div className="relative">
-        <ShotMedia image={shot.startImage} video={shot.video} alt={`Shot ${shot.index + 1}`} aspect={aspect} />
+        <ShotMedia image={shot.startImage} video={shot.video} keep={shot.keep} alt={`Shot ${shot.index + 1}`} aspect={aspect} />
         <span className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded bg-black/65 text-white text-[10px] font-semibold tabular-nums">
           {shot.index + 1}
         </span>

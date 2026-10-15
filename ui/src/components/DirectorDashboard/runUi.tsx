@@ -3,6 +3,7 @@ import { ImageIcon } from 'lucide-react'
 import { getFileUrl } from '../../api/client'
 import { judgeLabel, type StageStatus, type StoryboardJudgeShot } from '../../lib/directorRun'
 import { STATUS_DOT, STATUS_LABEL } from './runStyles'
+import { trimProps } from '../../lib/videoTrim'
 
 export function StatusDot({ status, title }: { status: StageStatus; title?: string }) {
   return (
@@ -47,9 +48,10 @@ export function JudgeBadge({ judge, className = '' }: { judge: StoryboardJudgeSh
  * A shot's start frame; hovering plays the rendered clip when there is one.
  * Falls back to the clip's first frame, then to a placeholder.
  */
-export function ShotMedia({ image, video, alt, aspect, playOnHover = true }: {
+export function ShotMedia({ image, video, alt, aspect, keep = null, playOnHover = true }: {
   image: string | null
   video: string | null
+  keep?: [number, number] | null
   alt: string
   aspect: string
   playOnHover?: boolean
@@ -60,7 +62,7 @@ export function ShotMedia({ image, video, alt, aspect, playOnHover = true }: {
     const el = videoRef.current
     if (!el) return
     el.pause()
-    el.currentTime = 0
+    el.currentTime = keep ? keep[0] : 0
   }
   return (
     <div
@@ -79,9 +81,10 @@ export function ShotMedia({ image, video, alt, aspect, playOnHover = true }: {
       {video && (
         <video
           ref={videoRef}
-          src={`${getFileUrl(video)}#t=0.1`}
+          src={`${getFileUrl(video)}#t=${keep ? keep[0] + 0.05 : 0.1}`}
           muted
           loop
+          {...trimProps(keep, true)}
           playsInline
           preload="metadata"
           aria-label={`${alt} clip`}

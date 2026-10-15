@@ -6,6 +6,7 @@ import type { RunAnnotation } from '../../lib/directorAnnotations'
 import { AnnotationForm, AnnotationList } from './Annotations'
 import type { AnnotationActions } from './useRunAnnotations'
 import { JudgeBadge, StatusDot } from './runUi'
+import { trimProps } from '../../lib/videoTrim'
 import { STATUS_LABEL, frameAspect } from './runStyles'
 
 export interface PromptUpdate {
@@ -138,7 +139,7 @@ export function ShotDrawer({ shot, aspect, stagedNote, actions, annotations = []
             <figure className="rounded-lg overflow-hidden border border-border">
               <div className="relative bg-media-canvas" style={{ aspectRatio: frameAspect(aspect) }}>
                 {shot.video
-                  ? <video src={getFileUrl(shot.video)} controls playsInline preload="metadata" className="absolute inset-0 w-full h-full object-cover" />
+                  ? <video src={getFileUrl(shot.video)} controls playsInline preload="metadata" className="absolute inset-0 w-full h-full object-cover" {...trimProps(shot.keep, false)} />
                   : <span className="absolute inset-0 flex items-center justify-center text-[10px] text-text-muted">No clip yet</span>}
               </div>
               <figcaption className="px-2 py-1 text-[10px] text-text-muted flex items-center gap-1.5">
