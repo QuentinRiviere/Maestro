@@ -287,14 +287,20 @@ def contract_text(contract: dict | None) -> str:
 
 def _ask(http: httpx.Client, fal_key: str, model: str, system: str, prompt: str, video_urls: list[str],
          sleep: Callable[[float], None], *, max_tokens: int = 12000,
-         timeout: float = TIMEOUT_SECONDS) -> tuple[str, float | None]:
-    """One fal openrouter/router/video call; returns (text, cost)."""
+         timeout: float = TIMEOUT_SECONDS, router: str = FAL_ROUTER) -> tuple[str, float | None]:
+    """One fal openrouter router call (``openrouter/router/video`` by default); returns (text, cost).
+
+    A text-only call passes no video and another ``router`` (e.g. ``openrouter/router``).
+    """
     headers = {"Authorization": f"Key {fal_key}"}
-    submitted = http.post(f"{FAL_QUEUE_URL}/{FAL_ROUTER}", headers=headers, json={
-        "model": model, "system_prompt": system, "prompt": prompt, "video_urls": video_urls,
+    payload: dict[str, Any] = {
+        "model": model, "system_prompt": system, "prompt": prompt,
         # Gemini 3.x Flash refuses requests without reasoning; give it room.
         "reasoning": True, "temperature": 0.2, "max_tokens": max_tokens,
-    })
+    }
+    if video_urls or router == FAL_ROUTER:
+        payload["video_urls"] = video_urls
+    submitted = http.post(f"{FAL_QUEUE_URL}/{router}", headers=headers, json=payload)
     if submitted.status_code >= 400:
         raise JudgeError(f"fal.ai error {submitted.status_code}: {submitted.text[:300]}")
     handle = submitted.json()
