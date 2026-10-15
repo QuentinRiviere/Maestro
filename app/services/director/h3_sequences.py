@@ -270,6 +270,56 @@ def _speech_beats(plan: Mapping[str, Any]) -> list[Any]:
     return list(plan.get("_director_dialogue_beats") or [])
 
 
+_CUT_FRAMING_MAX_WORDS = 6
+_CUT_SUBJECT_MAX = 3
+
+
+def _cut_framing(plan: Mapping[str, Any]) -> str:
+    """The shot's framing in a few words ("a medium close-up")."""
+    framing = _normalized_space(plan.get("_director_camera_framing", "")).strip(" .")
+    framing = re.split(r"[,;:(]|\s+-\s+", framing, maxsplit=1)[0].strip()
+    words = framing.split()[:_CUT_FRAMING_MAX_WORDS]
+    if not words:
+        return ""
+    if words[0].casefold() in {"a", "an", "the"}:
+        return " ".join(words)
+    framing = " ".join(words).lower()
+    article = "an" if framing[:1] in "aeiou" else "a"
+    return f"{article} {framing}"
+
+
+def _cut_subjects(plan: Mapping[str, Any]) -> str:
+    names: list[str] = []
+    for subject in plan.get("_director_subjects_on_screen") or []:
+        if not isinstance(subject, Mapping):
+            continue
+        name = _normalized_space(subject.get("speaker_name") or "")
+        if not name:
+            text = _normalized_space(subject.get("visual_description") or "")
+            text = re.split(r"[,;.(]|\s(?:in|with|wearing|who|holding)\s", text, maxsplit=1)[0]
+            name = " ".join(text.split()[:5]).strip()
+        if name and name not in names:
+            names.append(name)
+    names = names[:_CUT_SUBJECT_MAX]
+    if len(names) > 1:
+        return f"{', '.join(names[:-1])} and {names[-1]}"
+    return names[0] if names else ""
+
+
+def cut_target(plan: Mapping[str, Any]) -> str:
+    """What the official H3 cut sentence cuts to: the shot's framing and subject.
+
+    The H3 prompt guide writes every later shot as
+    ``[Shot N] At MM:SS.mmm, the camera cuts to <framing/subject>...``.
+    """
+    framing, subjects = _cut_framing(plan), _cut_subjects(plan)
+    if framing and subjects:
+        return f"{framing} of {subjects}"
+    if subjects:
+        return subjects
+    return framing or "the next shot"
+
+
 def compile_h3_sequence_prompt(
     member_plans: Sequence[Mapping[str, Any]],
     *,
@@ -281,8 +331,8 @@ def compile_h3_sequence_prompt(
 
     Each member is first compiled alone by ``compile_h3_clip_plans`` (exact
     dialogue tags, speaker ids, identity anchors). This keeps those bodies,
-    opens with ``[Shot 1]``, marks every later cut ``[Shot N] At MM:SS.mmm``
-    and validates the result against the same Context-IR contract.
+    opens with ``[Shot 1]``, marks every later cut with the official H3 form
+    ``[Shot N] At MM:SS.mmm, the camera cuts to <framing> of <subject>.`` and validates the result against the same Context-IR contract.
     """
     from services.h3_window_planner import _h3_shot_timestamp
 
@@ -308,7 +358,9 @@ def compile_h3_sequence_prompt(
         if look:
             body = _normalized_space(body.replace(f"Visual style: {look}", ""))
         body = shift_local_times(body, float(offset))
-        lead = "[Shot 1]" if number == 1 else f"[Shot {number}] At {_h3_shot_timestamp(offset)}, hard cut."
+        lead = "[Shot 1]" if number == 1 else (
+            f"[Shot {number}] At {_h3_shot_timestamp(offset)}, the camera cuts to {cut_target(plan)}."
+        )
         shots.append(f"{lead} {body}")
         sound = _normalized_space(fields.get("overall_soundscape", "")).rstrip(". ")
         if sound and sound.upper() != "N/A" and sound not in soundscapes:

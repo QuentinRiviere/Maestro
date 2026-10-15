@@ -23,6 +23,7 @@ from services.director.h3_sequences import (  # noqa: E402
     SEQUENCE_KEY,
     annotate_h3_sequences,
     compile_h3_sequence_prompt,
+    cut_target,
     h3_sequences_enabled,
     plan_h3_sequences,
     saved_sequence_members,
@@ -158,7 +159,8 @@ class SequencePromptTests(unittest.TestCase):
                                             total_duration_sec=260 / 24)
         self.assertTrue(prompt.startswith("For the target video, at 0.00 seconds"))
         self.assertIn("integrated_multimodal_description: [Shot 1] ", prompt)
-        self.assertIn("[Shot 2] At 00:05.167, hard cut.", prompt)
+        self.assertIn("[Shot 2] At 00:05.167, the camera cuts to Ross.", prompt)
+        self.assertNotIn("hard cut", prompt)
         self.assertEqual(prompt.count("[Shot 1]"), 2)  # header + description
         self.assertLess(prompt.index("You're late."), prompt.index("The train stopped."))
         self.assertEqual(prompt.count("<d>"), 2)
@@ -166,6 +168,19 @@ class SequencePromptTests(unittest.TestCase):
         self.assertIn("Fridge hum; Fridge hum and rain on the window.", prompt)
         beats = plans[0]["_director_dialogue_beats"] + plans[1]["_director_dialogue_beats"]
         self.assertEqual(validate_h3_prompt_contract(prompt, beats, mode="i2va"), [])
+
+    def test_cut_sentence_names_the_framing_and_subject(self):
+        plans = _compiled_members()
+        plans[1]["_director_camera_framing"] = "Medium close-up, eye level, from the doorway"
+        prompt = compile_h3_sequence_prompt(plans, mode="i2va", offsets_sec=[0.0, 5.167],
+                                            total_duration_sec=260 / 24)
+        self.assertIn("[Shot 2] At 00:05.167, the camera cuts to a medium close-up of Ross.", prompt)
+        self.assertEqual(cut_target({"_director_camera_framing": "over-the-shoulder shot"}),
+                         "an over-the-shoulder shot")
+        self.assertEqual(cut_target({"_director_subjects_on_screen": [
+            {"speaker_name": "Ross"}, {"visual_description": "a tall waiter in a black vest"}]}),
+            "Ross and a tall waiter")
+        self.assertEqual(cut_target({}), "the next shot")
 
     def test_fl2va_header_names_the_last_shot(self):
         plans = _compiled_members()
