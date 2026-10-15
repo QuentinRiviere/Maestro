@@ -12171,6 +12171,18 @@ async def _prepare_generation_submission(
     # to the remote worker.
     try:
         _precision_overrides = _job_precision_overrides(_generation_model_def, body)
+        _job_quantization = _precision_overrides.get("transformer_quantization")
+        if _job_quantization and not _generation_model_def.get("auto_quantize", False):
+            from shared.precision_overrides import transformer_file_matches
+
+            _job_transformer = wgp.get_model_filename(
+                body["model_type"], _job_quantization, wgp.transformer_dtype_policy,
+            )
+            if not transformer_file_matches(_job_transformer, _job_quantization):
+                raise ValueError(
+                    f"Model '{body['model_type']}' has no {_job_quantization} transformer checkpoint "
+                    f"(the closest is '{os.path.basename(_job_transformer or '')}')."
+                )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     from shared.precision_overrides import JOB_PARAMS as _PRECISION_JOB_PARAMS
