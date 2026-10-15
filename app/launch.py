@@ -11409,18 +11409,9 @@ def director_pipeline_resume(pid: str):
 
 # ── Director Pipeline Dashboard ───────────────────────────────────────────
 
-@api.get("/api/v1/director/pipelines")
-def list_saved_pipelines():
-    """List saved pipeline states for the active workspace."""
-    from services.director_pipeline import list_pipeline_states
-    base = wgp.server_config.get("save_path", "outputs")
-    pipelines = list_pipeline_states(base)
-    for pipeline in pipelines:
-        if pipeline.get("output_count") or pipeline.get("clip_count"):
-            pipeline["thumbnail_url"] = (
-                f"/api/v1/director/pipelines/{quote(str(pipeline.get('id') or ''), safe='')}/thumbnail"
-            )
-    return {"pipelines": pipelines}
+# Saved runs, newest first; paged and searchable with limit/cursor/q/status.
+from services.director_runs_list import register_routes as _register_director_runs_list
+_register_director_runs_list(api, get_base_dir=lambda: wgp.server_config.get("save_path", "outputs"))
 
 
 @api.get("/api/v1/director/pipelines/{pid}/thumbnail")

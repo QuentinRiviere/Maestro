@@ -1585,8 +1585,157 @@ def _saved_run_duration(data: dict) -> Optional[float]:
         return None
 
 
+def _coerce_timestamp(value: Any) -> Optional[float]:
+    """Return a positive Unix timestamp in seconds, or None.
+
+    Saved runs are edited by hand and come from several Maestro versions, so
+    ``created_at`` may be a number, a numeric string, an ISO date, or garbage.
+    Millisecond values are scaled down so they sort with second values.
+    """
+    if isinstance(value, bool) or value is None:
+        return None
+    result: Optional[float] = None
+    if isinstance(value, (int, float)):
+        result = float(value)
+    elif isinstance(value, str) and value.strip():
+        text = value.strip()
+        try:
+            result = float(text)
+        except ValueError:
+            try:
+                from datetime import datetime, timezone
+                parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                result = parsed.timestamp()
+            except ValueError:
+                return None
+    if result is None or not math.isfinite(result) or result <= 0:
+        return None
+    if result > 1e11:  # milliseconds
+        result /= 1000.0
+    return result
+
+
+def pipeline_activity_time(summary: dict) -> float:
+    """Most recent known activity of a saved run (0 when nothing is known)."""
+    times = [
+        _coerce_timestamp(summary.get(key))
+        for key in ("created_at", "completed_at", "updated_at")
+    ]
+    return max((t for t in times if t is not None), default=0.0)
+
+
+def pipeline_sort_key(summary: dict) -> tuple:
+    """Newest activity first, ties broken by id so the order is stable."""
+    return (-pipeline_activity_time(summary), str(summary.get("id") or ""))
+
+
+# Light summaries keyed by state file path, reused while the file's
+# (mtime, size, inode) stay the same. Full state files can be megabytes, so
+# re-reading every one per list request made the runs page slow to open.
+_pipeline_summary_cache: dict[str, tuple[tuple, dict]] = {}
+_pipeline_summary_cache_lock = threading.Lock()
+
+
+def _file_signature(filepath: str) -> Optional[tuple]:
+    try:
+        st = os.stat(filepath)
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size, st.st_ino)
+
+
+def _summary_needs_live_check(summary: dict) -> bool:
+    # These depend on in-memory worker state, not only on the file: a
+    # "running" run with no live worker is reported (and saved) as crashed,
+    # and an active repair without its worker as interrupted.
+    return (
+        summary.get("status") == "running"
+        or summary.get("repair_status") in _REPAIR_ACTIVE_STATUSES
+    )
+
+
+def _read_pipeline_summary(filepath: str, workspace: str) -> Optional[dict]:
+    signature = _file_signature(filepath)
+    if signature is None:
+        return None
+    with _pipeline_summary_cache_lock:
+        cached = _pipeline_summary_cache.get(filepath)
+    if cached and cached[0] == signature and not _summary_needs_live_check(cached[1]):
+        return dict(cached[1])
+
+    with _pipeline_file_lock:
+        before = os.stat(filepath)
+        with open(filepath, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        repaired_data = repair_payload(data)
+        text_changed = repaired_data != data
+        data = repaired_data
+        # Normalize and replace the exact snapshot read while retaining the
+        # file lock. Releasing it between read and write let a repair worker
+        # publish newer progress that this stale list snapshot then overwrote.
+        pid = data.get("pipeline_id", "")
+        changed = _normalize_interrupted_repair(data, pid) or text_changed
+
+        # Detect stale "running" pipelines while retaining the same
+        # serialization boundary as repair normalization.
+        status = data.get("status", "unknown")
+        with _pipeline_lock:
+            pipeline_present = pid in _pipelines
+        if status == "running" and not pipeline_present:
+            data["status"] = "crashed"
+            status = "crashed"
+            changed = True
+        if changed:
+            _write_pipeline_json_unlocked(filepath, data)
+            # Listing is not activity: keep the run's last-write time so
+            # this bookkeeping does not move an old run to the top.
+            try:
+                os.utime(filepath, ns=(before.st_atime_ns, before.st_mtime_ns))
+            except OSError:
+                pass
+        signature = _file_signature(filepath)
+
+    updated_at = signature[0] / 1e9 if signature else before.st_mtime
+    summary = {
+        "id": pid,
+        "status": status,
+        "pipeline_type": data.get("pipeline_type", ""),
+        "created_at": _coerce_timestamp(data.get("created_at")),
+        "completed_at": _coerce_timestamp(data.get("completed_at")),
+        "updated_at": updated_at,
+        "clip_count": len(data.get("clips", []) or []),
+        "output_count": len(data.get("output_files", []) or []),
+        "scene_description": (data.get("scene_description", "") or "")[:100],
+        "workspace": workspace,
+        "repair_status": (data.get("repair") or {}).get("status"),
+        "duration_sec": _saved_run_duration(data),
+        "_filepath": filepath,
+        # Searched by the paginated list; dropped from API responses.
+        "_search_text": " ".join(
+            str(part) for part in (
+                pid,
+                data.get("scene_description") or "",
+                data.get("pipeline_type") or "",
+                data.get("title") or data.get("label") or data.get("name") or "",
+                workspace,
+            ) if part
+        ).lower(),
+    }
+    summary["activity_at"] = pipeline_activity_time(summary)
+    if signature is not None:
+        with _pipeline_summary_cache_lock:
+            _pipeline_summary_cache[filepath] = (signature, dict(summary))
+    return summary
+
+
 def list_pipeline_states(out_dir: str) -> list[dict]:
-    """Scan directory for saved pipeline state files. Returns summary list."""
+    """Scan directory for saved pipeline state files. Returns summary list.
+
+    Sorted newest activity first (max of created, completed and last file
+    write), ties broken by id.
+    """
     results = []
     if not os.path.isdir(out_dir):
         return results
@@ -1597,52 +1746,32 @@ def list_pipeline_states(out_dir: str) -> list[dict]:
         if os.path.isdir(sub):
             dirs_to_scan.append(sub)
 
+    seen_paths: set[str] = set()
     for scan_dir in dirs_to_scan:
-        for fname in os.listdir(scan_dir):
+        workspace = os.path.basename(scan_dir) if scan_dir != out_dir else "default"
+        try:
+            names = os.listdir(scan_dir)
+        except OSError:
+            continue
+        for fname in names:
             if fname.startswith(_PIPELINE_FILE_PREFIX) and fname.endswith(".json"):
+                filepath = os.path.join(scan_dir, fname)
+                seen_paths.add(filepath)
                 try:
-                    filepath = os.path.join(scan_dir, fname)
-                    with _pipeline_file_lock:
-                        with open(filepath, "r", encoding="utf-8") as f:
-                            data = json.load(f)
-                        repaired_data = repair_payload(data)
-                        text_changed = repaired_data != data
-                        data = repaired_data
-                        # Normalize and replace the exact snapshot read while
-                        # retaining the file lock. Releasing it between read
-                        # and write let a repair worker publish newer progress
-                        # that this stale list snapshot then overwrote.
-                        pid = data.get("pipeline_id", "")
-                        changed = _normalize_interrupted_repair(data, pid) or text_changed
-
-                        # Detect stale "running" pipelines while retaining the
-                        # same serialization boundary as repair normalization.
-                        status = data.get("status", "unknown")
-                        with _pipeline_lock:
-                            pipeline_present = pid in _pipelines
-                        if status == "running" and not pipeline_present:
-                            data["status"] = "crashed"
-                            status = "crashed"
-                            changed = True
-                        if changed:
-                            _write_pipeline_json_unlocked(filepath, data)
-                    results.append({
-                        "id": pid,
-                        "status": status,
-                        "pipeline_type": data.get("pipeline_type", ""),
-                        "created_at": data.get("created_at"),
-                        "clip_count": len(data.get("clips", [])),
-                        "output_count": len(data.get("output_files", [])),
-                        "scene_description": (data.get("scene_description", "") or "")[:100],
-                        "workspace": os.path.basename(scan_dir) if scan_dir != out_dir else "default",
-                        "repair_status": (data.get("repair") or {}).get("status"),
-                        "completed_at": data.get("completed_at"),
-                        "duration_sec": _saved_run_duration(data),
-                        "_filepath": filepath,
-                    })
+                    summary = _read_pipeline_summary(filepath, workspace)
                 except Exception:
-                    pass
-    results.sort(key=lambda x: x.get("created_at") or 0, reverse=True)
+                    summary = None
+                if summary is not None:
+                    results.append(summary)
+
+    # Forget deleted runs under this root so the cache cannot grow forever.
+    root = os.path.join(os.path.abspath(out_dir), "")
+    with _pipeline_summary_cache_lock:
+        for path in list(_pipeline_summary_cache):
+            if os.path.abspath(path).startswith(root) and path not in seen_paths:
+                del _pipeline_summary_cache[path]
+
+    results.sort(key=pipeline_sort_key)
     return results
 
 
