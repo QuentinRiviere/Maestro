@@ -573,7 +573,8 @@ def lock_scene_blockings(raw_maps: list[Any], *, scene_map: Any = None) -> list[
 
     Returns one entry per shot, in order: ``{"blocking": the locked map or
     None, "reverse": the camera faces the opposite wall, "notes": [what the
-    lock changed]}``. The layout comes from ``scene_map`` when it is a
+    lock changed or followed], "corrected": the shot's own map contradicted
+    the layout}``. The layout comes from ``scene_map`` when it is a
     structured map, else from the first shot with a usable blocking map.
     """
     blockings = [parse_blocking_map(raw) for raw in raw_maps]
@@ -581,13 +582,15 @@ def lock_scene_blockings(raw_maps: list[Any], *, scene_map: Any = None) -> list[
     layout = None
     results = []
     for blocking in blockings:
-        if blocking is None:
-            results.append({"blocking": None, "reverse": False, "notes": []})
-            continue
-        if layout is None:
+        if layout is None and blocking is not None:
             layout = scene_floor_layout(blocking, scene_map, main)
+        if blocking is None or layout is None:
+            results.append({"blocking": blocking, "reverse": False, "notes": [], "corrected": False})
+            continue
         locked, notes = lock_shot_blocking(layout, blocking)
-        results.append({"blocking": locked, "reverse": camera_faces_reverse(layout, locked), "notes": notes})
+        results.append({"blocking": locked, "reverse": camera_faces_reverse(layout, locked), "notes": notes,
+                        # Planned moves and crossings are followed, not corrected.
+                        "corrected": any(not note.endswith("as planned") for note in notes)})
     return results
 
 

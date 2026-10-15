@@ -1343,6 +1343,7 @@ def _save_pipeline_state_locked(pid: str) -> bool:
             "_director_opening_blocking": plan.get("_director_opening_blocking"),
             "_director_closing_blocking": plan.get("_director_closing_blocking"),
             "_director_blocking_map": plan.get("_director_blocking_map"),
+            "_director_scene_map": plan.get("_director_scene_map"),
             # Scene bookkeeping the storyboard uses to keep a scene's set.
             "_director_continuity_group": plan.get("_director_continuity_group"),
             "_director_continuity_strategy": plan.get("_director_continuity_strategy"),
@@ -2351,18 +2352,22 @@ def _rerun_clip_image_impl(out_dir: str, pid: str, clip_index: int, prompt_overr
                 and os.path.basename(name) == name and os.path.isfile(os.path.join(clip_out_dir, name))):
             scene_master = os.path.join(clip_out_dir, name)
             break
-    layout_ref, prompt = director_shot_layout(pid, clip_index, clip, prompt, image_model, clip_out_dir)
+    # The scene's one floor plan, as in the run (see director_scene_locks).
+    shot_plan = scene_locked_plan(clip, director_scene_locks(clips)[clip_index])
+    layout_ref, prompt = director_shot_layout(pid, clip_index, shot_plan, prompt, image_model, clip_out_dir)
     character_needles, prop_needles = cast_ref_needles(
         {**snapshot, "character_ref_paths": character_ref_paths}, clip_out_dir,
     )
+    scene_location = location_by_name.get(str(clip.get("_director_location") or "")) or ""
     request = director_shot_image_request(
-        image_model, clip, prompt,
+        image_model, shot_plan, prompt,
         scene_master=scene_master, anchor=ref_path,
-        scene_location=location_by_name.get(str(clip.get("_director_location") or "")) or "",
+        scene_location=scene_location,
         first_scene=group == first_group, scene_sets=bool(group and location_by_name),
-        subject_refs=shot_identity_refs(snapshot, clip, shot_subject_refs(
+        subject_refs=shot_identity_refs(snapshot, shot_plan, shot_subject_refs(
             clip, prompt, character_needles, prop_needles, valid_character_refs)),
         extra_refs=valid_character_refs + valid_location_refs, layout=bool(layout_ref),
+        scene_location_reverse=location_reverse_view(snapshot, scene_location),
     )
 
     # Reference art-style lock: reruns re-apply the detected style prefix
@@ -5410,8 +5415,13 @@ def shot_is_tight(plan: dict) -> bool:
     return normalize_framing(f"{framing} {plan.get('_director_scene_type') or ''}") == "close-up"
 
 
+REVERSE_NOTE = ("This camera faces the opposite side of the room from {view}: the walls, windows and doors that "
+                 "were behind that view's camera are in frame now, and the wall that view looks at is behind "
+                 "this camera, out of frame; keep the same materials, colours and light. ")
+
+
 def scene_shot_refs(image_model: str, plan: dict, prompt: str, *, master: str, identity: list[str],
-                    layout: bool = False, empty_set: bool = False) -> tuple[list[str], str]:
+                    layout: bool = False, empty_set: bool = False, reverse: str = "") -> tuple[list[str], str]:
     """References and prompt of a scene shot that is not the scene's master.
 
     The people (character sheets, named props) come first, for identity; the
@@ -5424,6 +5434,10 @@ def scene_shot_refs(image_model: str, plan: dict, prompt: str, *, master: str, i
     bible location). It has no people's framing to copy, so every shot keeps
     it, close-ups and inserts included, and the scene keeps one room and one
     light from shot to shot.
+
+    ``reverse``: the camera faces the wall opposite the master's. "view":
+    ``master`` is the place seen from that opposite wall; "text": ``master``
+    shows the usual side, and the prompt says the camera looks the other way.
     """
     budget = director_image_ref_budget(image_model)
     slots = None if budget is None else max(1, budget - (1 if layout else 0))
@@ -5439,7 +5453,10 @@ def scene_shot_refs(image_model: str, plan: dict, prompt: str, *, master: str, i
         names = ", ".join(_ref_name(image_model, n) for n in range(1, len(people) + 1))
         lead += (f"{names} {'show' if len(people) > 1 else 'shows'} who and what is in this shot: keep faces, "
                  "clothes and hairstyles, not their pose or framing. ")
-    if keep_master and empty_set:
+    if keep_master and empty_set and reverse == "view":
+        lead += (f"{_ref_name(image_model, len(refs))} shows this place empty, seen from its opposite wall: the "
+                 "side of the room this camera looks at. Keep its walls, windows, furniture, colours and light. ")
+    elif keep_master and empty_set:
         lead += (f"{_ref_name(image_model, len(refs))} shows this place empty: keep its walls, furniture, colours "
                  "and light; the camera may stand anywhere in it. ")
     elif keep_master:
@@ -5449,6 +5466,9 @@ def scene_shot_refs(image_model: str, plan: dict, prompt: str, *, master: str, i
         setting = str(plan.get("_director_environment") or plan.get("_director_location") or "").strip()
         if setting and setting.lower() not in prompt.lower():
             lead += f"Setting: {setting.rstrip('.')}. "
+    if reverse == "text":
+        lead += REVERSE_NOTE.format(view=f"the view of {_ref_name(image_model, len(refs))}" if keep_master
+                                    else "the scene's main view")
     return refs, f"{lead}The camera setup of this shot is: {prompt}"
 
 
@@ -5479,13 +5499,19 @@ def director_prompt_with_props(plan: dict, prompt: str) -> str:
 def director_shot_image_request(image_model: str, plan: dict, prompt: str, *, scene_master: str = "",
                                 anchor: str = "", scene_location: str = "", first_scene: bool = True,
                                 scene_sets: bool = False, subject_refs: Optional[list[str]] = None,
-                                extra_refs: Optional[list[str]] = None, layout: bool = False) -> dict:
+                                extra_refs: Optional[list[str]] = None, layout: bool = False,
+                                scene_location_reverse: str = "") -> dict:
     """Prompt, source, supplemental refs and canvas mode of a shot's start image.
 
     Shared by the storyboard run and the Dashboard rerun, so a rerun gets the
     same set, people and diagram as the run did. A later shot of a scene uses
     ``scene_shot_refs``; the first shot of a scene (its master) starts from the
     anchor or its own set; a shot outside any scene keeps every reference.
+
+    A later shot whose camera faces the opposite wall (``_director_camera_reverse``,
+    from the scene lock) takes the place's reverse view
+    (``scene_location_reverse``) instead of its main image when the bible has
+    one; otherwise the prompt says the camera looks at the other side.
     """
     subject_refs = list(subject_refs or [])
     if scene_master:
@@ -5495,11 +5521,17 @@ def director_shot_image_request(image_model: str, plan: dict, prompt: str, *, sc
         # it would only bring another scene's room into a shot with nobody in
         # it (an insert).
         identity = subject_refs or ([] if scene_location else [anchor])
-        refs, scene_prompt = scene_shot_refs(image_model, plan, prompt, master=scene_location or scene_master,
+        reverse = ""
+        place = scene_location
+        if plan.get("_director_camera_reverse"):
+            reverse = "view" if scene_location and scene_location_reverse else "text"
+            place = scene_location_reverse if reverse == "view" else scene_location
+        refs, scene_prompt = scene_shot_refs(image_model, plan, prompt, master=place or scene_master,
                                              identity=identity, layout=layout,
-                                             empty_set=bool(scene_location))
+                                             empty_set=bool(scene_location), reverse=reverse)
         blocking = str(plan.get("_director_opening_blocking") or "").strip()
-        if blocking and blocking.lower() not in prompt.lower():
+        # The planner's words for a layout the scene lock had to correct would undo it.
+        if blocking and blocking.lower() not in prompt.lower() and not plan.get("_director_layout_corrected"):
             scene_prompt += f" Positions at the start of this shot: {blocking}"
         return {"prompt": scene_prompt, "source": refs[0] if refs else "", "supplemental": refs[1:],
                 "canvas": False}
@@ -5608,6 +5640,47 @@ def shot_identity_refs(params: dict, plan: dict, refs: list[str]) -> list[str]:
         view = subject_view(blocking, names.get(ref, ""))
         out.append((views.get(ref) or {}).get(view) or ref if view else ref)
     return out
+
+
+def director_scene_locks(plans: list[dict]) -> list[Optional[dict]]:
+    """Each shot's blocking on its scene's one floor plan (None outside a scene or without a map).
+
+    Shots of a continuity group share one layout (see ``lock_scene_blockings``):
+    people keep their place and facing, the camera keeps its side of the
+    action line, so screen directions hold from shot to shot.
+    """
+    from services.director.blocking_map import lock_scene_blockings
+
+    locks: list[Optional[dict]] = [None] * len(plans)
+    groups: dict[str, list[int]] = {}
+    for index, plan in enumerate(plans):
+        group = str((plan or {}).get("_director_continuity_group") or "") if isinstance(plan, dict) else ""
+        if group:
+            groups.setdefault(group, []).append(index)
+    for indexes in groups.values():
+        scene_map = next((plans[i]["_director_scene_map"] for i in indexes
+                          if isinstance(plans[i].get("_director_scene_map"), dict)), None)
+        results = lock_scene_blockings([plans[i].get("_director_blocking_map") for i in indexes],
+                                       scene_map=scene_map)
+        for index, lock in zip(indexes, results):
+            if lock["blocking"] is not None:
+                locks[index] = lock
+    return locks
+
+
+def scene_locked_plan(plan: dict, lock: Optional[dict]) -> dict:
+    """The plan a shot image is built from: its blocking replaced by the scene-locked one."""
+    if not lock:
+        return plan
+    return {**plan, "_director_blocking_map": lock["blocking"], "_director_camera_reverse": bool(lock["reverse"]),
+            "_director_layout_corrected": bool(lock.get("corrected"))}
+
+
+def location_reverse_view(params: dict, location: str) -> str:
+    """The bible's view of a place from its opposite wall ("" when it has none)."""
+    views = params.get("_director_image_views") or {}
+    path = str((views.get(location) or {}).get("reverse") or "") if location and isinstance(views, dict) else ""
+    return path if path and os.path.isfile(path) else ""
 
 
 def cast_ref_needles(params: dict, out_dir: str) -> tuple[list[tuple[str, list[str]]], list[tuple[str, list[str]]]]:
@@ -6126,6 +6199,7 @@ def _resume_pipeline_reserved(pid: str, out_dir: str) -> tuple[bool, str]:
         "_director_opening_blocking": c.get("_director_opening_blocking"),
         "_director_closing_blocking": c.get("_director_closing_blocking"),
         "_director_blocking_map": c.get("_director_blocking_map"),
+        "_director_scene_map": c.get("_director_scene_map"),
         "_director_continuity_group": c.get("_director_continuity_group"),
         "_director_continuity_strategy": c.get("_director_continuity_strategy"),
         "_director_scene_type": c.get("_director_scene_type"),
@@ -8061,6 +8135,9 @@ def _run_planning_v2(pid: str, params: dict, pipeline_type: str):
             ),
             "_director_closing_blocking": closing_blocking,
             "_director_blocking_map": metadata.get("blocking_map"),
+            # A structured scene floor plan, when the planner gives one, seeds the scene lock.
+            "_director_scene_map": (metadata.get("scene_map")
+                                    if isinstance(metadata.get("scene_map"), dict) else None),
             # Retain the structured H3 speech contract through prompt polish,
             # persistence, resume, and Dashboard reruns. The final preflight
             # compiler uses these fields as the authoritative dialogue source.
@@ -8880,6 +8957,8 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
     location_by_name, first_group = director_scene_locations(params, location_ref_paths, clip_plans)
     scene_masters: dict[str, str] = {}
     character_needles, prop_needles = cast_ref_needles(params, out_dir)
+    # One floor plan per scene: people keep their places, the camera its side of the line.
+    scene_locks = director_scene_locks(clip_plans)
 
     for i, plan in enumerate(clip_plans):
         if _pipelines[pid]["status"] == "cancelled":
@@ -8914,7 +8993,10 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
         # The shot's top view fixes framing and camera position; the scene's
         # photos only give surfaces and light. Editors that cannot take it
         # (text-only, or one reference) read the same layout as a sentence.
-        layout_ref, prompt = director_shot_layout(pid, i, plan, prompt, image_model, out_dir)
+        shot_plan = scene_locked_plan(plan, scene_locks[i])
+        for note in (scene_locks[i] or {}).get("notes") or []:
+            print(f"[Pipeline {pid}] Shot {i+1}: scene layout: {note}")
+        layout_ref, prompt = director_shot_layout(pid, i, shot_plan, prompt, image_model, out_dir)
 
         img_t0 = time.time()
         try:
@@ -8928,14 +9010,19 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
                 extra_refs[:] = saved_extras  # restore
             else:
                 request = director_shot_image_request(
-                    image_model, plan, prompt,
+                    image_model, shot_plan, prompt,
                     scene_master=scene_master or "", anchor=ref_image_path or "",
                     scene_location=scene_location or "", first_scene=group == first_group,
                     scene_sets=bool(group and location_by_name),
-                    subject_refs=shot_identity_refs(params, plan, shot_subject_refs(
+                    subject_refs=shot_identity_refs(params, shot_plan, shot_subject_refs(
                         plan, prompt, character_needles, prop_needles, valid_character_refs)),
                     extra_refs=extra_refs, layout=bool(layout_ref),
+                    scene_location_reverse=location_reverse_view(params, scene_location or ""),
                 )
+                if scene_master and shot_plan.get("_director_camera_reverse"):
+                    print(f"[Pipeline {pid}] Shot {i+1}: camera faces the opposite wall of the place"
+                          + (" (reverse view)" if location_reverse_view(params, scene_location or "")
+                             else " (no reverse view: described in text)"))
                 if scene_master:
                     print(f"[Pipeline {pid}] Shot {i+1}: same scene as {os.path.basename(scene_master)}"
                           + ("" if scene_master in request["supplemental"] + [request["source"]]
