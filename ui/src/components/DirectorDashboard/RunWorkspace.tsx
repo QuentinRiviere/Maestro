@@ -15,6 +15,8 @@ import { ShotDrawer, type PromptUpdate, type ShotActions } from './ShotDrawer'
 import { StoryboardView } from './StoryboardView'
 import { frameAspect } from './runStyles'
 import { useLiveRun, useRunCosts } from './useLiveRun'
+import { useRunAnnotations } from './useRunAnnotations'
+import { annotationsForShot } from '../../lib/directorAnnotations'
 
 const CanvasView = lazy(() => import('./CanvasView'))
 
@@ -59,6 +61,8 @@ export function RunWorkspace({ pipeline, view, busy, details }: {
 }) {
   const pid = pipeline.pipeline_id
   const { live, refresh } = useLiveRun(pid, pipeline.status)
+  // Notes follow the live poll (the status object changes on every poll).
+  const { annotations, actions: annotationActions } = useRunAnnotations(pid, live)
   const chatPipelineId = useStore(s => s.pipelineId)
   const storeContinue = useStore(s => s.continuePipeline)
   const storeStop = useStore(s => s.stopPipeline)
@@ -217,6 +221,8 @@ export function RunWorkspace({ pipeline, view, busy, details }: {
               phase={phase}
               costUsd={costs?.usd ?? null}
               onOpenShot={setOpenShot}
+              annotations={annotations}
+              annotationActions={annotationActions}
             />
           </Suspense>
         ) : (
@@ -239,6 +245,8 @@ export function RunWorkspace({ pipeline, view, busy, details }: {
           aspect={pipeline.director_aspect_ratio}
           stagedNote={stagedShots.has(shot.index)}
           actions={actions}
+          annotations={annotationsForShot(annotations, shot.index)}
+          annotationActions={annotationActions}
           onClose={() => setOpenShot(null)}
         />
       )}

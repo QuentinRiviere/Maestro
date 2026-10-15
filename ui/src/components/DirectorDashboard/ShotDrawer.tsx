@@ -1,7 +1,10 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { AlertTriangle, Camera, Check, Film, Loader2, Save, X } from 'lucide-react'
+import { AlertTriangle, Camera, Check, Film, Loader2, MessageSquarePlus, Save, X } from 'lucide-react'
 import { getFileUrl } from '../../api/client'
 import { formatSeconds, type RunShot } from '../../lib/directorRun'
+import type { RunAnnotation } from '../../lib/directorAnnotations'
+import { AnnotationForm, AnnotationList } from './Annotations'
+import type { AnnotationActions } from './useRunAnnotations'
 import { JudgeBadge, StatusDot } from './runUi'
 import { STATUS_LABEL, frameAspect } from './runStyles'
 
@@ -48,11 +51,14 @@ function Fact({ label, value }: { label: string; value: ReactNode }) {
 }
 
 /** Right-side drawer with everything about one shot, and its edit/rerun actions. */
-export function ShotDrawer({ shot, aspect, stagedNote, actions, onClose }: {
+export function ShotDrawer({ shot, aspect, stagedNote, actions, annotations = [], annotationActions, onClose }: {
   shot: RunShot
   aspect: string | null | undefined
   stagedNote: boolean
   actions: ShotActions
+  /** Post-analysis notes about this shot. */
+  annotations?: RunAnnotation[]
+  annotationActions?: AnnotationActions
   onClose: () => void
 }) {
   const windowed = shot.windowPrompts.length > 1
@@ -61,6 +67,7 @@ export function ShotDrawer({ shot, aspect, stagedNote, actions, onClose }: {
   const [windowPrompts, setWindowPrompts] = useState(shot.windowPrompts)
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [addingNote, setAddingNote] = useState(false)
 
   // The parent keys this drawer by shot, so local edits reset per shot;
   // a field is "dirty" while it differs from the latest saved/live value.
@@ -152,6 +159,40 @@ export function ShotDrawer({ shot, aspect, stagedNote, actions, onClose }: {
               className={`flex items-center gap-1 px-2 py-1 rounded border text-[10px] disabled:opacity-40 ${shot.tag === 'needs_work' ? 'bg-amber-500 text-white border-amber-500' : 'border-border text-text-secondary hover:text-indicator-warning'}`}
             ><AlertTriangle size={11} /> Needs work</button>
           </div>
+
+          {annotationActions && (
+            <Section
+              title={`Notes${annotations.length ? ` (${annotations.length})` : ''}`}
+              right={!addingNote && (
+                <button
+                  onClick={() => setAddingNote(true)}
+                  className="flex items-center gap-1 px-2 py-0.5 rounded border border-border text-[10px] text-text-secondary hover:text-accent-blue"
+                  title="Pin a post-analysis note on this shot"
+                ><MessageSquarePlus size={10} /> Add note</button>
+              )}
+            >
+              {addingNote && (
+                <div className="rounded border border-accent-blue/40 p-2">
+                  <AnnotationForm
+                    target={{ kind: 'shot', ref: String(shot.index) }}
+                    allowTimecode
+                    onCancel={() => setAddingNote(false)}
+                    onSubmit={async draft => {
+                      await annotationActions.create(draft)
+                      setAddingNote(false)
+                    }}
+                  />
+                </div>
+              )}
+              <AnnotationList
+                annotations={annotations}
+                actions={annotationActions}
+                allowTimecode
+                showTarget
+                empty={addingNote ? undefined : 'No notes on this shot yet.'}
+              />
+            </Section>
+          )}
 
           {shot.judge && (shot.judge.issues?.length || shot.judge.fix_hint || shot.judge.error) ? (
             <Section title="Storyboard judge">
