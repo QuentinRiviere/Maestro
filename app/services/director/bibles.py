@@ -64,6 +64,14 @@ _LIVE_SLOTS: set[str] = set()
 WORLD_FIELDS = ("logline", "story", "stakes", "twists", "tone", "narrative_style", "look", "rules", "forbidden")
 WORLD_LIMITS = {"story": 4000, "twists": 3000}
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
+# Reference videos of a series (staging, editing and rhythm to learn from);
+# see ``style_reference``. They are stored next to the bible's images.
+VIDEO_SUFFIXES = (".mp4", ".mov", ".webm", ".mkv")
+MAX_STYLE_REFERENCES = 8
+STYLE_REFERENCE_STATES = ("queued", "analysing", "done", "failed")
+# Analyses owned by this process. A reference still queued or analysing that
+# is not in it was cut by a restart.
+_LIVE_ANALYSES: set[str] = set()
 _LOCK = threading.RLock()
 _SLUG = re.compile(r"[^a-z0-9]+")
 _ID = re.compile(r"[a-z0-9_]{1,40}")
@@ -197,6 +205,49 @@ def _world(raw: Any) -> dict:
     return {field: _text(raw.get(field), WORLD_LIMITS.get(field, 2000)) for field in WORLD_FIELDS}
 
 
+def _style_references(raw: Any, folder: Path) -> list[dict]:
+    """Reference videos of the bible; their files must exist. Analysis results are kept as stored."""
+    references, ids = [], set()
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict):
+            continue
+        file = os.path.basename(str(item.get("file") or ""))
+        if not file.lower().endswith(VIDEO_SUFFIXES) or not (folder / file).is_file():
+            continue
+        ref_id = _key(item.get("id"), "ref_" + secrets.token_hex(4))
+        if ref_id in ids:
+            continue
+        ids.add(ref_id)
+        status = item.get("status") if item.get("status") in STYLE_REFERENCE_STATES else "failed"
+        error = _text(item.get("error"), 400)
+        if status in ("queued", "analysing") and ref_id not in _LIVE_ANALYSES:
+            status, error = "failed", "Interrupted"
+        tags = item.get("scene_tags") if isinstance(item.get("scene_tags"), list) else []
+        cost = item.get("cost_usd")
+        references.append({
+            "id": ref_id,
+            "label": _text(item.get("label"), 80) or _text(item.get("source_filename"), 80) or ref_id,
+            "file": file,
+            "source_filename": _text(item.get("source_filename"), 160),
+            "created_at": str(item.get("created_at") or _now()),
+            "updated_at": str(item.get("updated_at") or item.get("created_at") or _now()),
+            "status": status,
+            "error": error,
+            "progress": _text(item.get("progress"), 200),
+            "enabled": item.get("enabled") is not False,
+            "scene_tags": list(dict.fromkeys(t for t in (_slug(str(tag), 24) for tag in tags) if t))[:8],
+            "stats": copy.deepcopy(item["stats"]) if isinstance(item.get("stats"), dict) else None,
+            # The per-shot breakdown lives in a sidecar file (see ``style_reference``).
+            "described_shots": described if isinstance(described := item.get("described_shots"), int)
+            and not isinstance(described, bool) and described > 0 else 0,
+            "grammar": copy.deepcopy(item["grammar"]) if isinstance(item.get("grammar"), dict) else None,
+            "summary": str(item.get("summary") or "")[:12000],
+            "cost_usd": cost if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None,
+            "model": _text(item.get("model"), 120),
+        })
+    return references[:MAX_STYLE_REFERENCES]
+
+
 def normalize_bible(raw: Any, folder: Path) -> dict:
     """The stored fields of a bible, bounded; ids and timestamps are kept as given."""
     raw = raw if isinstance(raw, dict) else {}
@@ -213,6 +264,7 @@ def normalize_bible(raw: Any, folder: Path) -> dict:
     }
     for kind, plural in KINDS.items():
         bible[plural] = _elements(raw.get(plural), kind, folder)
+    bible["style_references"] = _style_references(raw.get("style_references"), folder)
     return bible
 
 
@@ -295,6 +347,7 @@ def list_bibles() -> list[dict]:
                 "id": bible["id"], "name": bible["name"], "description": bible.get("description", ""),
                 "revision": bible.get("revision", 1), "updated_at": bible.get("updated_at", ""),
                 **{plural: [e["name"] for e in bible.get(plural) or []] for plural in KINDS.values()},
+                "style_references": len(bible.get("style_references") or []),
             })
     return sorted(summaries, key=lambda item: item["updated_at"], reverse=True)
 
@@ -334,6 +387,7 @@ def save_bible(raw: dict, *, bible_id: str | None = None) -> dict:
                     for variant in element["variants"]:
                         variant["images"] = []
                     element["image"] = None
+            bible["style_references"] = []
         else:
             previous = get_bible(bible_id) or {}
             if not previous:
@@ -347,6 +401,8 @@ def save_bible(raw: dict, *, bible_id: str | None = None) -> dict:
                     for variant in element["variants"]:
                         variant["images"] = copy.deepcopy((before.get(variant["id"]) or {}).get("images") or [])
                     element["image"] = approved_image(element)
+            # Reference videos and their analyses have their own endpoints.
+            bible["style_references"] = copy.deepcopy(previous.get("style_references") or [])
         bible["id"] = bible_id
         _write(_stamp(bible, previous))
     return bible
@@ -359,6 +415,15 @@ def delete_bible(bible_id: str) -> bool:
             return False
         shutil.rmtree(folder)
         return True
+
+
+def video_path(bible_id: str, name: str) -> Path | None:
+    """The file of one reference video of a bible, or None when the name is not one."""
+    name = os.path.basename(name or "")
+    if not name.lower().endswith(VIDEO_SUFFIXES):
+        return None
+    path = _folder(bible_id) / name
+    return path if path.is_file() else None
 
 
 def image_path(bible_id: str, name: str) -> Path | None:

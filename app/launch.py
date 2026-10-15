@@ -11184,6 +11184,22 @@ def director_bible_image_delete(bible_id: str, element_id: str, variant_id: str,
     return {"bible": _bible_call(delete_image, bible_id, element_id, variant_id, image_id)}
 
 
+# Reference videos of a bible: their staging, editing and rhythm, analysed by
+# the video LLM the judges use, guide the Director storyboard planners.
+def _style_reference_model() -> str:
+    from services.director.video_judge import DEFAULT_MODEL
+    return str(wgp.server_config.get("services", {}).get("director_style_reference_model") or DEFAULT_MODEL)
+
+
+def _style_reference_fal_key() -> str | None:
+    from services import cloud_image
+    return cloud_image.provider_api_key("fal", wgp.server_config.get("services", {}))
+
+
+from services.director.style_reference import register_routes as _register_style_references
+_register_style_references(api, get_fal_key=_style_reference_fal_key, get_model=_style_reference_model)
+
+
 @api.post("/api/v1/director/pipeline/{pid}/bible")
 async def director_pipeline_save_to_bible(pid: str, request: Request):
     """Save a project's cast and style into a new bible, or merge them into one."""
