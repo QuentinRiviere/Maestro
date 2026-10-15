@@ -99,7 +99,7 @@ class BuildTests(unittest.TestCase):
             "minimax_h3_turbo_preset": "alibaba-pai-fl2va-pdd-8step",
             "skip_steps_cache_type": "first_block",
             "skip_steps_multiplier": 0.15,
-            "spatial_upsampling": "flashvsr2_x1.5",
+            "spatial_upsampling": "flashvsr1.5",
             "film_grain_intensity": 0.1,
             "film_grain_saturation": 0.5,
         }
@@ -139,7 +139,7 @@ class BuildTests(unittest.TestCase):
             "step_cache_multiplier": 0.15,
         })
         self.assertEqual(record["postprocessing"], {
-            "spatial_upsampling": "flashvsr2_x1.5", "film_grain_intensity": 0.1, "film_grain_saturation": 0.5,
+            "spatial_upsampling": "flashvsr1.5", "film_grain_intensity": 0.1, "film_grain_saturation": 0.5,
         })
         self.assertEqual(record["hardware"], {"location": "local", "gpu": "NVIDIA A100 80GB", "vram_gb": 79.2})
         self.assertEqual(record["timing"], {

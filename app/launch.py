@@ -30650,6 +30650,9 @@ def get_status(job_id: str):
         # Present only on failed jobs that look like CUDA OOMs. UI
         # renders the OOM recovery banner when this is non-null.
         "oom_info": j.get("oom_info"),
+        # What produced the outputs (model, runtime, GPU, timing, cost);
+        # set when the job finishes, absent before and on older jobs.
+        "provenance": j.get("provenance"),
         # Automatic multi-window plans may be produced after submission, once
         # the queued job owns the generation slot. Publish them through normal
         # polling so the placeholder can show the exact prompts being used.
@@ -30789,6 +30792,7 @@ def get_studio_job(job_id: str):
         "error": j.get("error"),
         "created_at": j.get("created_at"),
         "outputs": outputs,
+        "provenance": j.get("provenance"),
         **_generation_previews.fields(j),
     }
 
@@ -30897,6 +30901,7 @@ def list_jobs():
                 "error": j["error"],
                 "enhancement": public_enhancement(j.get("enhancement"), summary=True),
                 "oom_info": j.get("oom_info"),
+                "provenance": j.get("provenance"),
                 "created_at": j.get("created_at", 0),
                 **_generation_previews.fields(j),
                 **_job_eta_response_fields(j),
