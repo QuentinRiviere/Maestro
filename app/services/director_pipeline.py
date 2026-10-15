@@ -7310,6 +7310,34 @@ def _apply_bible(pid: str, params: dict) -> str:
     return bibles.world_block(bible, props=params.get("bible_props"))
 
 
+def _apply_style_references(pid: str, params: dict) -> str:
+    """The staging grammar of the bible's reference videos, as a planner block ("" without one).
+
+    ``director_style_reference`` picks them: "auto" (default) every enabled,
+    analysed reference of the bible, "off" none, else one reference id. The
+    choice and the references used are recorded in the params snapshot.
+    """
+    from services.director import bibles
+    from services.director.style_reference import CHOICE_AUTO, planner_block, select_references
+
+    choice = str(params.get("director_style_reference") or CHOICE_AUTO).strip() or CHOICE_AUTO
+    params["director_style_reference"] = choice
+    bible_id = str(params.get("bible_id") or "").strip()
+    bible = bibles.get_bible(bible_id) if bible_id else None
+    references = select_references(bible, choice)
+    brief = "\n".join(str(params.get(key) or "") for key in ("scene_description", "story", "concept"))
+    block = planner_block(references, brief=brief)
+    params["_director_style_references"] = [
+        {"id": r["id"], "label": r.get("label"), "scene_tags": r.get("scene_tags") or [],
+         "target_asl_sec": ((r.get("grammar") or {}).get("rhythm") or {}).get("target_asl_sec")}
+        for r in references
+    ] if block else []
+    if block:
+        print(f"[Pipeline {pid}] Style references: {', '.join(r.get('label') or r['id'] for r in references)} "
+              f"({len(block)} chars)")
+    return block
+
+
 _SETTINGS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "settings")
 
 
@@ -8137,6 +8165,14 @@ def _run_planning_v2(pid: str, params: dict, pipeline_type: str):
     bible_block = _apply_bible(pid, params)
     if bible_block:
         planner_kwargs["polish_block"] = "\n\n".join(filter(None, [planner_kwargs.get("polish_block", ""), bible_block]))
+    # Its reference videos bring a staging grammar (rhythm, coverage, rules).
+    try:
+        style_block = _apply_style_references(pid, params)
+    except Exception as error:  # noqa: BLE001 - guidance only, never fail planning
+        print(f"[Pipeline {pid}] Style references skipped: {error}")
+        style_block = ""
+    if style_block:
+        planner_kwargs["polish_block"] = "\n\n".join(filter(None, [planner_kwargs.get("polish_block", ""), style_block]))
 
     # Style contract: the medium this project aims for (any style, not only
     # realism). The planner writes for it and quality review judges against it.
