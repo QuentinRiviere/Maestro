@@ -3,6 +3,7 @@ import { AlertTriangle, Check, ChevronLeft, ChevronRight, Clock, ImagePlus, Load
 import { useStore } from '../../stores/useStore'
 import { AppModeToggle, MaestroBrand } from '../AppModeNavigation'
 import { BibleChat } from './BibleChat'
+import { BibleStyleReferences } from './BibleStyleReferences'
 import { useConfirm } from './ConfirmDialog'
 import { fetchRemoteWorkerSettings, updateRemoteWorkerSettings } from '../../api/client'
 import type { RemoteWorkerSettings } from '../../types'
@@ -15,8 +16,10 @@ import {
 
 const input = 'w-full bg-bg-tertiary border border-border rounded px-2 py-1 text-[11px] text-text-primary focus:outline-none focus:border-accent-blue'
 const label = 'text-[9px] text-text-muted uppercase tracking-wider block mb-0.5'
-const TABS: Array<[BibleKind | 'world', string]> = [
+type BibleTab = BibleKind | 'world' | 'style'
+const TABS: Array<[BibleTab, string]> = [
   ['character', 'Characters'], ['location', 'Locations'], ['prop', 'Props'], ['world', 'World & style'],
+  ['style', 'Style references'],
 ]
 const FIELDS: Record<BibleKind, Array<[keyof BibleElement, string, boolean]>> = {
   character: [['role', 'Role', false], ['descriptor', 'How shots name them', false],
@@ -561,7 +564,7 @@ function BibleManagerPanel({ initialId, onClose }: { initialId?: string; onClose
   const [selected, setSelected] = useState(initialId || '')
   const [bible, setBible] = useState<DirectorBible | null>(null)
   const [draft, setDraft] = useState<DirectorBible | null>(null)
-  const [tab, setTab] = useState<BibleKind | 'world'>('character')
+  const [tab, setTab] = useState<BibleTab>('character')
   const [newName, setNewName] = useState('')
   const [saving, setSaving] = useState(false)
   const { ask, dialog: confirmDialog } = useConfirm()
@@ -586,7 +589,8 @@ function BibleManagerPanel({ initialId, onClose }: { initialId?: string; onClose
     setBible(next)
     setDraft(current => {
       if (!current || current.id !== next.id) return next
-      const merged = { ...current, revision: next.revision, updated_at: next.updated_at }
+      // Style references are server-owned (their own endpoints), like images.
+      const merged = { ...current, revision: next.revision, updated_at: next.updated_at, style_references: next.style_references }
       for (const plural of ['characters', 'locations', 'props'] as const) {
         const server = new Map(next[plural].map(e => [e.id, e]))
         merged[plural] = current[plural].map(e => {
@@ -668,7 +672,7 @@ function BibleManagerPanel({ initialId, onClose }: { initialId?: string; onClose
     refreshList()
   }
   const savedIds = new Set(bible ? [...bible.characters, ...bible.locations, ...bible.props].map(e => e.id) : [])
-  const elements = draft && tab !== 'world' ? draft[BIBLE_PLURAL[tab]] : []
+  const elements = draft && tab !== 'world' && tab !== 'style' ? draft[BIBLE_PLURAL[tab]] : []
   const setElements = (kind: BibleKind, next: BibleElement[]) => draft && setDraft({ ...draft, [BIBLE_PLURAL[kind]]: next })
 
   return (
@@ -747,12 +751,16 @@ function BibleManagerPanel({ initialId, onClose }: { initialId?: string; onClose
                 {TABS.map(([id, title]) => (
                   <button key={id} onClick={() => setTab(id)}
                     className={`rounded px-2 py-1 text-[11px] ${tab === id ? 'bg-bg-hover text-text-primary' : 'text-text-secondary hover:text-text-primary'}`}>
-                    {title}{id !== 'world' ? ` (${draft[BIBLE_PLURAL[id]].length})` : ''}
+                    {title}{id === 'style'
+                      ? (bible.style_references?.length ? ` (${bible.style_references.length})` : '')
+                      : id !== 'world' ? ` (${draft[BIBLE_PLURAL[id]].length})` : ''}
                   </button>
                 ))}
               </nav>
               <div className="flex-1 overflow-y-auto p-2.5">
-                {tab === 'world' ? (
+                {tab === 'style' ? (
+                  <BibleStyleReferences key={draft.id} bibleId={draft.id} ask={ask} />
+                ) : tab === 'world' ? (
                   <div className="space-y-2 max-w-2xl">
                     <label className="block"><span className={label}>Description</span>
                       <textarea className={input} rows={2} value={draft.description}

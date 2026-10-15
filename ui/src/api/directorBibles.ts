@@ -14,6 +14,8 @@ export interface DirectorBibleSummary {
   characters: string[]
   locations: string[]
   props: string[]
+  /** How many reference videos the bible keeps. */
+  style_references?: number
 }
 
 export interface BibleImage {
@@ -72,8 +74,74 @@ export interface DirectorBible {
   characters: BibleElement[]
   locations: BibleElement[]
   props: BibleElement[]
+  /** Reference videos (staging, editing, rhythm); edited through their own endpoints, never by a bible save. */
+  style_references?: StyleReference[]
   created_at: string
   updated_at: string
+}
+
+export type StyleReferenceStatus = 'queued' | 'analysing' | 'done' | 'failed'
+
+export interface StyleReferenceStats {
+  duration_sec: number
+  fps?: number | null
+  width?: number
+  height?: number
+  has_audio?: boolean
+  shot_count: number
+  cut_count?: number
+  asl_sec: number | null
+  median_sec: number | null
+  min_sec?: number | null
+  max_sec?: number | null
+  cuts_per_minute: number | null
+  distribution?: { bucket: string; count: number; percent: number }[]
+  /** Average shot length per 10 s window. */
+  pacing?: { start: number; end: number; asl_sec: number; cuts: number }[]
+  /** Percent of the described shots per shot size, largest first. */
+  shot_mix?: Record<string, number>
+  described_shots?: number
+}
+
+export interface StyleGrammar {
+  rhythm: { target_asl_sec: number | null; pace_with_emotion: string; notes: string }
+  shot_mix: Record<string, number>
+  patterns: string[]
+  scene_openings: string
+  scene_closings: string
+  dialogue_coverage: string
+  camera_movement: string
+  lighting_color: string
+  music_silence: string
+  rules: string[]
+  rules_edited?: boolean
+}
+
+export interface StyleReference {
+  id: string
+  label: string
+  file: string
+  source_filename: string
+  created_at: string
+  updated_at: string
+  status: StyleReferenceStatus
+  error: string
+  progress: string
+  enabled: boolean
+  scene_tags: string[]
+  stats: StyleReferenceStats | null
+  described_shots: number
+  grammar: StyleGrammar | null
+  summary: string
+  cost_usd: number | null
+  model: string
+}
+
+export interface StyleReferencePatch {
+  label?: string
+  enabled?: boolean
+  scene_tags?: string[]
+  rules?: string[]
 }
 
 async function json<T>(res: Response, fallback: string): Promise<T> {
@@ -218,4 +286,51 @@ export interface BibleRender {
 export async function fetchBibleRenders(): Promise<BibleRender[]> {
   return (await json<{ renders: BibleRender[] }>(await fetch(`${BASE}/api/v1/director/bibles/renders`),
     'Could not load bible renders')).renders
+}
+
+// ── Style references: reference videos analysed into a staging grammar ──
+
+const styleRefUrl = (bibleId: string, refId = '') =>
+  `${BASE}/api/v1/director/bibles/${encodeURIComponent(bibleId)}/style-references`
+  + (refId ? `/${encodeURIComponent(refId)}` : '')
+
+export const STYLE_REFERENCE_MAX_BYTES = 500 * 1024 * 1024
+export const STYLE_REFERENCE_ACCEPT = '.mp4,.mov,.webm,.mkv,video/mp4,video/quicktime,video/webm,video/x-matroska'
+
+export async function fetchStyleReferences(bibleId: string): Promise<StyleReference[]> {
+  return (await json<{ references: StyleReference[] }>(await fetch(styleRefUrl(bibleId)),
+    'Could not load the style references')).references
+}
+
+/** Upload a reference video; its analysis starts in the background. */
+export async function uploadStyleReference(bibleId: string, file: File, label: string,
+  sceneTags: string[]): Promise<StyleReference> {
+  const form = new FormData()
+  form.append('file', file)
+  form.append('label', label)
+  form.append('scene_tags', sceneTags.join(','))
+  return (await json<{ reference: StyleReference }>(await fetch(styleRefUrl(bibleId), { method: 'POST', body: form }),
+    'Could not upload the video')).reference
+}
+
+export async function updateStyleReference(bibleId: string, refId: string,
+  patch: StyleReferencePatch): Promise<StyleReference> {
+  return (await json<{ reference: StyleReference }>(await fetch(styleRefUrl(bibleId, refId), {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
+  }), 'Could not save the reference')).reference
+}
+
+export async function analyseStyleReference(bibleId: string, refId: string): Promise<StyleReference> {
+  return (await json<{ reference: StyleReference }>(
+    await fetch(`${styleRefUrl(bibleId, refId)}/analyse`, { method: 'POST' }),
+    'Could not start the analysis')).reference
+}
+
+export async function deleteStyleReference(bibleId: string, refId: string): Promise<StyleReference[]> {
+  return (await json<{ references: StyleReference[] }>(
+    await fetch(styleRefUrl(bibleId, refId), { method: 'DELETE' }), 'Could not delete the reference')).references
+}
+
+export function styleReferenceVideoUrl(bibleId: string, refId: string): string {
+  return `${styleRefUrl(bibleId, refId)}/video`
 }
