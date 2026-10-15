@@ -156,3 +156,21 @@ def test_start_refuses_without_r2_and_while_a_job_runs(tmp_path):
     assert client.fleets[0]["configuration"]["backends"] == ["runpod"]
     with pytest.raises(cache_warmer.CacheWarmerError):
         warmer.start(["minimax_h3"])
+
+
+def test_warm_pod_reads_its_own_r2_secret_names():
+    from services.remote_worker.worker_spec import (
+        SECRET_R2_ACCESS_KEY_ID, SECRET_R2_SECRET_ACCESS_KEY, build_run_spec, dstack_secrets,
+    )
+    settings = _settings()
+    env = cache_warmer.build_warm_run_spec(settings, ["minimax_h3"])["configuration"]["env"]
+    assert env["R2_ACCESS_KEY_ID"] == "${{ secrets.%s }}" % (SECRET_R2_ACCESS_KEY_ID + cache_warmer.SECRET_SUFFIX)
+    assert env["R2_SECRET_ACCESS_KEY"] == "${{ secrets.%s }}" % (
+        SECRET_R2_SECRET_ACCESS_KEY + cache_warmer.SECRET_SUFFIX)
+    # A GPU worker starting at the same time writes the unsuffixed names only.
+    worker = dstack_secrets(settings, {"access_key_id": "worker-id", "secret_access_key": "worker-secret"})
+    warm = dstack_secrets(settings, {"access_key_id": "warm-id", "secret_access_key": "warm-secret"},
+                          suffix=cache_warmer.SECRET_SUFFIX)
+    assert not (set(worker) & set(warm)) - {"MAESTRO_R2_ACCOUNT_ID", "MAESTRO_REGISTRY_TOKEN"}
+    assert warm[SECRET_R2_ACCESS_KEY_ID + cache_warmer.SECRET_SUFFIX] == "warm-id"
+    assert "secrets.%s }}" % SECRET_R2_ACCESS_KEY_ID in json.dumps(build_run_spec(settings))

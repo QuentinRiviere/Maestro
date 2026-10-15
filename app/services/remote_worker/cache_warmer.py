@@ -60,6 +60,11 @@ class CacheWarmerError(RuntimeError):
     pass
 
 
+# The warmer's own R2 secret names, so a GPU worker starting at the same time
+# cannot overwrite the key pair this pod reads.
+SECRET_SUFFIX = "_CACHE_WARM"
+
+
 def _secret_ref(name: str) -> str:
     return "${{ secrets.%s }}" % name
 
@@ -116,8 +121,8 @@ def build_warm_run_spec(settings: RemoteWorkerSettings, model_types: list[str],
         "commands": [clone, warm],
         "env": {
             "R2_ACCOUNT_ID": _secret_ref(SECRET_R2_ACCOUNT_ID),
-            "R2_ACCESS_KEY_ID": _secret_ref(SECRET_R2_ACCESS_KEY_ID),
-            "R2_SECRET_ACCESS_KEY": _secret_ref(SECRET_R2_SECRET_ACCESS_KEY),
+            "R2_ACCESS_KEY_ID": _secret_ref(SECRET_R2_ACCESS_KEY_ID + SECRET_SUFFIX),
+            "R2_SECRET_ACCESS_KEY": _secret_ref(SECRET_R2_SECRET_ACCESS_KEY + SECRET_SUFFIX),
             "MAESTRO_R2_BUCKET": settings.r2_bucket,
             "MAESTRO_R2_PREFIX": settings.r2_prefix,
         },
@@ -207,7 +212,7 @@ class CacheWarmer:
             if run and str(run.get("status") or "") not in _FINISHED and not run.get("deleted"):
                 raise CacheWarmerError("A cache job is already running")
             keys = self._pod_r2_keys(settings, RUN_NAME, MAX_DURATION, trusted=True)
-            for name, value in dstack_secrets(settings, keys).items():
+            for name, value in dstack_secrets(settings, keys, suffix=SECRET_SUFFIX).items():
                 client.set_secret(name, value)
             client.apply_fleet(build_warm_fleet_spec(settings, backends))
             client.apply(build_warm_run_spec(settings, model_types, backends))

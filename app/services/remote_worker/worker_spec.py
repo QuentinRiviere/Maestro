@@ -36,23 +36,28 @@ def _secret_ref(name: str) -> str:
 
 
 def dstack_secrets(
-    settings: RemoteWorkerSettings, r2_keys: dict[str, str] | None = None,
+    settings: RemoteWorkerSettings, r2_keys: dict[str, str] | None = None, *, suffix: str = "",
 ) -> dict[str, str]:
     """Secrets the run spec references, with their values.
 
     ``r2_keys`` (a per-pod key from ephemeral_r2) replaces the long-lived R2
-    keys, which then never leave this machine.
+    keys, which then never leave this machine. ``suffix`` gives a run its own
+    R2 secret names: dstack secrets are project-wide, so two runs starting
+    together would otherwise overwrite each other's key pair and a pod could
+    read one run's key id with the other's secret.
     """
     secrets: dict[str, str] = {}
     if settings.r2_configured:
         secrets[SECRET_R2_ACCOUNT_ID] = settings.r2_account_id
-        secrets[SECRET_R2_ACCESS_KEY_ID] = (r2_keys or {}).get("access_key_id") or settings.r2_access_key_id
-        secrets[SECRET_R2_SECRET_ACCESS_KEY] = (
+        secrets[SECRET_R2_ACCESS_KEY_ID + suffix] = (
+            (r2_keys or {}).get("access_key_id") or settings.r2_access_key_id
+        )
+        secrets[SECRET_R2_SECRET_ACCESS_KEY + suffix] = (
             (r2_keys or {}).get("secret_access_key") or settings.r2_secret_access_key
         )
         for field, (secret, _env) in _SCOPED_SECRETS.items():
             if (r2_keys or {}).get(field):
-                secrets[secret] = r2_keys[field]
+                secrets[secret + suffix] = r2_keys[field]
     if settings.registry_username and settings.registry_token:
         secrets[SECRET_REGISTRY_TOKEN] = settings.registry_token
     return secrets
