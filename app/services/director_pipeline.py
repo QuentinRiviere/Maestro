@@ -2289,6 +2289,8 @@ def _rerun_clip_image_impl(out_dir: str, pid: str, clip_index: int, prompt_overr
     prompt = prompt_override or clip.get("image_prompt", "")
     if not prompt:
         raise ValueError("No image prompt for this clip")
+    if not prompt_override:
+        prompt = director_prompt_with_props(clip, prompt)
 
     snapshot = state.get("_params_snapshot") or {}
 
@@ -5458,6 +5460,20 @@ def director_shot_prompt_type(image_model: str, refs: list[str], canvas: bool = 
     """
     prompt_type = _director_image_prompt_type(image_model, refs)
     return "I" if not canvas and prompt_type == "KI" else prompt_type
+
+
+def director_prompt_with_props(plan: dict, prompt: str) -> str:
+    """The start image prompt naming every prop the shot's action uses.
+
+    Nothing may appear mid-shot, so a prop the action needs has to be in the
+    start frame; a prop the prompt already names is not repeated.
+    """
+    prompt = str(prompt or "")
+    props = [str(p).strip().rstrip(".") for p in plan.get("_director_props") or [] if str(p).strip()]
+    missing = [p for p in props if p.lower() not in prompt.lower()]
+    if not missing:
+        return prompt
+    return f"{prompt.rstrip()} Visible in the frame: {'; '.join(missing)}.".strip()
 
 
 def director_shot_image_request(image_model: str, plan: dict, prompt: str, *, scene_master: str = "",
@@ -8891,7 +8907,7 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
             "step": 0, "total_steps": 0,
         })
 
-        prompt = plan.get("image_prompt", "")
+        prompt = director_prompt_with_props(plan, plan.get("image_prompt", ""))
         ref_exists = os.path.isfile(source_ref) if source_ref else False
         print(f"[Pipeline {pid}] Shot {i+1} start image: source={image_source}, ref={source_ref} (exists={ref_exists}), prompt='{prompt[:60]}...'")
 

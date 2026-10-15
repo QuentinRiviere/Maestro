@@ -389,6 +389,16 @@ class CastLocationTests(unittest.TestCase):
         self.assertEqual([s["location"] for s in scenes], ["Hallway", ""])
 
 
+
+class ShotPropsPromptTests(unittest.TestCase):
+    def test_start_image_prompt_names_the_shot_props(self):
+        plan = {"_director_props": ["a lump of raw clay on the wheel.", "a sponge in a water bowl", " "]}
+        prompt = pipeline.director_prompt_with_props(plan, "Close-up of hands above a pottery wheel, a sponge in a water bowl beside it.")
+        self.assertEqual(prompt, "Close-up of hands above a pottery wheel, a sponge in a water bowl beside it. "
+                                 "Visible in the frame: a lump of raw clay on the wheel.")
+        self.assertEqual(pipeline.director_prompt_with_props({}, "A quiet studio."), "A quiet studio.")
+
+
 if __name__ == "__main__":
     unittest.main()
 
