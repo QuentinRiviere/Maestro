@@ -1599,6 +1599,20 @@ def _download_model_files_in_scope(model_type: str, precision_overrides: dict):
 
 _checkpoint_cache_lock = threading.Lock()
 
+# FlashVSR upscaler weights are not a model type; they get an R2 cache entry
+# of their own so a remote worker or the CPU cache warmer can fetch them.
+FLASHVSR_CACHE_KEY = "flashvsr"
+
+
+def _download_flashvsr_files() -> None:
+    """Every FlashVSR file (tiny and full variants)."""
+    wgp.process_files_def(**wgp.flashvsr.query_download_def(enabled_only=False))
+
+
+if _is_remote_worker_process:
+    wgp.flashvsr.download_wrapper = lambda fetch: _download_model_files_cached(
+        FLASHVSR_CACHE_KEY, download=fetch)
+
 
 def _download_model_files_cached(
     model_type: str,
@@ -1606,6 +1620,7 @@ def _download_model_files_cached(
     *,
     background_publish: bool = True,
     precision_overrides: dict | None = None,
+    download=None,
 ) -> int | None:
     """On a remote worker, wrap the download with the R2 checkpoint cache.
 
@@ -1616,6 +1631,10 @@ def _download_model_files_cached(
     A job's ``precision_overrides`` select another set of files; they get a
     cache manifest of their own (``minimax_h3@tq-bf16``...) so the default
     manifest, which every new pod pulls, never grows with A/B variants.
+
+    ``download`` replaces Maestro's model resolution for cache entries that
+    are not a model type (``flashvsr`` weights); ``model_type`` is then only
+    the cache key.
     """
     from services.remote_worker.checkpoint_cache import (
         CheckpointCacheError,
@@ -1635,8 +1654,11 @@ def _download_model_files_cached(
         if wgp.server_config.get("loras_root"):
             roots["loras"] = wgp.server_config["loras_root"]
         cache = R2CheckpointCache.from_environment(roots)
+    if download is None:
+        def download():
+            _download_model_files(model_type, precision_overrides)
     if cache is None:
-        _download_model_files(model_type, precision_overrides)
+        download()
         return None
 
     def phase(name: str) -> None:
@@ -1664,7 +1686,7 @@ def _download_model_files_cached(
         # Files found already on disk (shared with a model fetched before)
         # belong to this model's manifest too.
         with cache.record_checks() as checked:
-            _download_model_files(model_type, precision_overrides)
+            download()
         used = cache.used_files(checked)
         after = cache.snapshot()
     phase("done")
@@ -32015,6 +32037,21 @@ def _run_cache_warm(model_types: list[str]) -> int:
 
     failures = 0
     for model_type in model_types:
+        if model_type == FLASHVSR_CACHE_KEY:
+            if cache.has_hashes(model_type):
+                emit(model_type, "cached", message="Already in the R2 cache")
+                continue
+            emit(model_type, "downloading")
+            started = time.time()
+            try:
+                published = _download_model_files_cached(model_type, background_publish=False,
+                                                          download=_download_flashvsr_files)
+            except Exception as exc:
+                emit(model_type, "failed", error=_warm_error(exc))
+                failures += 1
+                continue
+            emit(model_type, "cached", files=published, seconds=round(time.time() - started))
+            continue
         # ``model@tq-bf16+vae-fp16`` warms the files a job with those
         # precision overrides loads, under that variant's own manifest.
         try:

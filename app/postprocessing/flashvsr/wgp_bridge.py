@@ -42,6 +42,9 @@ class FlashVSRBridge:
     def __init__(self, server_config: dict[str, Any], files_locator):
         self.server_config = server_config
         self.files_locator = files_locator
+        # Optional ``wrapper(fetch)`` around the weight download (the remote
+        # worker routes it through the R2 checkpoint cache).
+        self.download_wrapper: Callable[[Callable[[], Any]], Any] | None = None
 
     @classmethod
     def normalize_topk_ratio(cls, value: Any) -> float:
@@ -195,7 +198,14 @@ class FlashVSRBridge:
         from shared.utils.download import send_download_status
 
         send_download_status(send_cmd, status_text)
-        process_files(**flashvsr_def)
+
+        def fetch():
+            return process_files(**flashvsr_def)
+
+        if self.download_wrapper is not None:
+            self.download_wrapper(fetch)
+        else:
+            fetch()
         return True
 
     def upscale(self, sample, spatial_upsampling, *, seed=0, continue_cache=None, return_continue_cache=False, vae_tile_size=None, process_files: Callable[..., Any], vae_config: int, init_pipe: Callable[..., int], profile, still_image=False, abort_callback=None, progress_callback=None):
