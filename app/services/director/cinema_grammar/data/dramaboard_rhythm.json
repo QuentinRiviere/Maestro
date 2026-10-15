@@ -1,0 +1,493 @@
+{
+ "schema_version": 1,
+ "source": {
+  "dataset": "DramaBoard storyboard annotations (iLearn-Lab/DramaDirector, arXiv 2606.24107)",
+  "code_license": "MIT",
+  "note": "Aggregate statistics only. Annotations describe copyrighted vertical micro-dramas (mostly Chinese); no raw annotation is redistributed.",
+  "episodes": 2825,
+  "shots": 101759
+ },
+ "scale_vocabulary": [
+  "extreme_close_up",
+  "close_up",
+  "medium_close_up",
+  "medium",
+  "medium_wide",
+  "wide",
+  "extreme_wide"
+ ],
+ "episode": {
+  "duration_sec": {
+   "n": 2825,
+   "mean": 80.19,
+   "median": 76.9,
+   "p10": 59.48,
+   "p25": 65.08,
+   "p75": 90.72,
+   "p90": 107.75
+  },
+  "shots": {
+   "n": 2825,
+   "mean": 36.02,
+   "median": 34.0,
+   "p10": 19.0,
+   "p25": 26.0,
+   "p75": 44.0,
+   "p90": 54.0
+  },
+  "asl_sec": {
+   "n": 2825,
+   "mean": 2.53,
+   "median": 2.24,
+   "p10": 1.57,
+   "p25": 1.84,
+   "p75": 2.9,
+   "p90": 3.76
+  }
+ },
+ "shot_duration_sec": {
+  "overall": {
+   "n": 101759,
+   "mean": 2.23,
+   "median": 1.72,
+   "p10": 0.72,
+   "p25": 1.1,
+   "p75": 2.72,
+   "p90": 4.2
+  },
+  "by_scale": {
+   "medium": {
+    "n": 26400,
+    "mean": 2.32,
+    "median": 1.77,
+    "p10": 0.76,
+    "p25": 1.16,
+    "p75": 2.83,
+    "p90": 4.4
+   },
+   "close_up": {
+    "n": 24224,
+    "mean": 2.11,
+    "median": 1.62,
+    "p10": 0.64,
+    "p25": 1.0,
+    "p75": 2.6,
+    "p90": 4.04
+   },
+   "medium_close_up": {
+    "n": 23536,
+    "mean": 2.16,
+    "median": 1.7,
+    "p10": 0.73,
+    "p25": 1.12,
+    "p75": 2.66,
+    "p90": 4.04
+   },
+   "medium_wide": {
+    "n": 18943,
+    "mean": 2.31,
+    "median": 1.74,
+    "p10": 0.72,
+    "p25": 1.1,
+    "p75": 2.8,
+    "p90": 4.44
+   },
+   "wide": {
+    "n": 7147,
+    "mean": 2.27,
+    "median": 1.8,
+    "p10": 0.76,
+    "p25": 1.14,
+    "p75": 2.8,
+    "p90": 4.12
+   },
+   "extreme_close_up": {
+    "n": 684,
+    "mean": 2.17,
+    "median": 1.46,
+    "p10": 0.6,
+    "p25": 0.93,
+    "p75": 2.57,
+    "p90": 4.53
+   },
+   "extreme_wide": {
+    "n": 602,
+    "mean": 2.15,
+    "median": 1.52,
+    "p10": 0.64,
+    "p25": 1.0,
+    "p75": 2.59,
+    "p90": 3.84
+   },
+   "other": {
+    "n": 223,
+    "mean": 1.76,
+    "median": 1.4,
+    "p10": 0.52,
+    "p25": 0.81,
+    "p75": 2.19,
+    "p90": 3.55
+   }
+  },
+  "by_motion": {
+   "static": {
+    "n": 95392,
+    "mean": 2.25,
+    "median": 1.73,
+    "p10": 0.73,
+    "p25": 1.12,
+    "p75": 2.76,
+    "p90": 4.23
+   },
+   "follow": {
+    "n": 3773,
+    "mean": 1.8,
+    "median": 1.28,
+    "p10": 0.45,
+    "p25": 0.73,
+    "p75": 2.23,
+    "p90": 3.72
+   },
+   "pan": {
+    "n": 1302,
+    "mean": 1.72,
+    "median": 1.1,
+    "p10": 0.5,
+    "p25": 0.68,
+    "p75": 2.0,
+    "p90": 3.64
+   },
+   "push_in": {
+    "n": 700,
+    "mean": 2.27,
+    "median": 1.57,
+    "p10": 0.6,
+    "p25": 0.88,
+    "p75": 2.92,
+    "p90": 4.96
+   },
+   "handheld": {
+    "n": 241,
+    "mean": 1.31,
+    "median": 0.92,
+    "p10": 0.5,
+    "p25": 0.62,
+    "p75": 1.52,
+    "p90": 2.36
+   },
+   "transition": {
+    "n": 153,
+    "mean": 2.01,
+    "median": 1.52,
+    "p10": 0.52,
+    "p25": 0.8,
+    "p75": 2.6,
+    "p90": 3.77
+   },
+   "other": {
+    "n": 109,
+    "mean": 2.31,
+    "median": 1.3,
+    "p10": 0.35,
+    "p25": 0.6,
+    "p75": 2.12,
+    "p90": 4.14
+   },
+   "pull_out": {
+    "n": 82,
+    "mean": 2.51,
+    "median": 2.08,
+    "p10": 0.65,
+    "p25": 1.17,
+    "p75": 3.08,
+    "p90": 4.99
+   },
+   "crane": {
+    "n": 7,
+    "mean": 1.6,
+    "median": 1.8,
+    "p10": 0.56,
+    "p25": 0.77,
+    "p75": 2.12,
+    "p90": 2.78
+   }
+  },
+  "by_dialogue": {
+   "silent": {
+    "n": 25808,
+    "mean": 1.64,
+    "median": 1.32,
+    "p10": 0.53,
+    "p25": 0.83,
+    "p75": 2.04,
+    "p90": 3.08
+   },
+   "with_dialogue": {
+    "n": 75951,
+    "mean": 2.42,
+    "median": 1.87,
+    "p10": 0.82,
+    "p25": 1.22,
+    "p75": 2.96,
+    "p90": 4.56
+   }
+  },
+  "by_emotion": {
+   "none": {
+    "n": 17323,
+    "mean": 1.75,
+    "median": 1.4,
+    "p10": 0.53,
+    "p25": 0.84,
+    "p75": 2.17,
+    "p90": 3.28
+   },
+   "other": {
+    "n": 17167,
+    "mean": 2.38,
+    "median": 1.84,
+    "p10": 0.76,
+    "p25": 1.17,
+    "p75": 2.92,
+    "p90": 4.5
+   },
+   "calm_neutral": {
+    "n": 15218,
+    "mean": 2.25,
+    "median": 1.8,
+    "p10": 0.8,
+    "p25": 1.2,
+    "p75": 2.74,
+    "p90": 4.2
+   },
+   "fear_tension": {
+    "n": 9100,
+    "mean": 2.25,
+    "median": 1.68,
+    "p10": 0.72,
+    "p25": 1.08,
+    "p75": 2.74,
+    "p90": 4.3
+   },
+   "threat_command": {
+    "n": 7648,
+    "mean": 2.35,
+    "median": 1.8,
+    "p10": 0.84,
+    "p25": 1.2,
+    "p75": 2.9,
+    "p90": 4.4
+   },
+   "surprise": {
+    "n": 7512,
+    "mean": 2.23,
+    "median": 1.72,
+    "p10": 0.8,
+    "p25": 1.12,
+    "p75": 2.7,
+    "p90": 4.16
+   },
+   "anger": {
+    "n": 7308,
+    "mean": 2.26,
+    "median": 1.68,
+    "p10": 0.68,
+    "p25": 1.06,
+    "p75": 2.73,
+    "p90": 4.4
+   },
+   "contempt": {
+    "n": 7218,
+    "mean": 2.53,
+    "median": 1.92,
+    "p10": 0.84,
+    "p25": 1.26,
+    "p75": 3.08,
+    "p90": 4.84
+   },
+   "tenderness_joy": {
+    "n": 6950,
+    "mean": 2.44,
+    "median": 1.88,
+    "p10": 0.84,
+    "p25": 1.24,
+    "p75": 3.0,
+    "p90": 4.6
+   },
+   "sadness": {
+    "n": 6315,
+    "mean": 2.21,
+    "median": 1.65,
+    "p10": 0.6,
+    "p25": 1.0,
+    "p75": 2.68,
+    "p90": 4.24
+   }
+  }
+ },
+ "distribution": {
+  "shot_scale": {
+   "medium": 0.2594,
+   "close_up": 0.2381,
+   "medium_close_up": 0.2313,
+   "medium_wide": 0.1862,
+   "wide": 0.0702,
+   "extreme_close_up": 0.0067,
+   "extreme_wide": 0.0059,
+   "other": 0.0022
+  },
+  "camera_angle": {
+   "eye_level": 0.8221,
+   "profile": 0.0497,
+   "high": 0.0472,
+   "low": 0.0421,
+   "over_the_shoulder": 0.0324,
+   "dutch": 0.0043,
+   "from_behind": 0.0015,
+   "other": 0.0006
+  },
+  "camera_motion": {
+   "static": 0.9374,
+   "follow": 0.0371,
+   "pan": 0.0128,
+   "push_in": 0.0069,
+   "handheld": 0.0024,
+   "transition": 0.0015,
+   "other": 0.0011,
+   "pull_out": 0.0008,
+   "crane": 0.0001
+  },
+  "emotion": {
+   "none": 0.1702,
+   "other": 0.1687,
+   "calm_neutral": 0.1495,
+   "fear_tension": 0.0894,
+   "threat_command": 0.0752,
+   "surprise": 0.0738,
+   "anger": 0.0718,
+   "contempt": 0.0709,
+   "tenderness_joy": 0.0683,
+   "sadness": 0.0621
+  }
+ },
+ "transitions_scale_to_next": {
+  "medium": {
+   "n": 25914,
+   "medium": 0.4351,
+   "close_up": 0.1872,
+   "medium_wide": 0.1738,
+   "medium_close_up": 0.1424,
+   "wide": 0.0543,
+   "extreme_wide": 0.0034,
+   "extreme_close_up": 0.0025,
+   "other": 0.0013
+  },
+  "close_up": {
+   "n": 23226,
+   "close_up": 0.4046,
+   "medium": 0.1938,
+   "medium_close_up": 0.1715,
+   "medium_wide": 0.1523,
+   "wide": 0.0574,
+   "extreme_close_up": 0.0129,
+   "extreme_wide": 0.005,
+   "other": 0.0024
+  },
+  "medium_close_up": {
+   "n": 23058,
+   "medium_close_up": 0.4701,
+   "close_up": 0.1657,
+   "medium": 0.1635,
+   "medium_wide": 0.1367,
+   "wide": 0.0563,
+   "extreme_wide": 0.0038,
+   "extreme_close_up": 0.0031,
+   "other": 0.0008
+  },
+  "medium_wide": {
+   "n": 18563,
+   "medium_wide": 0.282,
+   "medium": 0.258,
+   "close_up": 0.1983,
+   "medium_close_up": 0.1853,
+   "wide": 0.0659,
+   "extreme_wide": 0.0045,
+   "extreme_close_up": 0.0038,
+   "other": 0.0022
+  },
+  "wide": {
+   "n": 6768,
+   "medium_wide": 0.2315,
+   "medium": 0.2225,
+   "close_up": 0.197,
+   "medium_close_up": 0.1922,
+   "wide": 0.1432,
+   "extreme_wide": 0.0087,
+   "extreme_close_up": 0.0031,
+   "other": 0.0018
+  },
+  "extreme_close_up": {
+   "n": 649,
+   "close_up": 0.2789,
+   "extreme_close_up": 0.2388,
+   "medium_close_up": 0.1587,
+   "medium": 0.131,
+   "medium_wide": 0.1279,
+   "wide": 0.0555,
+   "extreme_wide": 0.0062,
+   "other": 0.0031
+  },
+  "extreme_wide": {
+   "n": 539,
+   "medium_wide": 0.3098,
+   "extreme_wide": 0.1744,
+   "wide": 0.1688,
+   "close_up": 0.1633,
+   "medium": 0.1132,
+   "medium_close_up": 0.0686,
+   "other": 0.0019
+  },
+  "other": {
+   "n": 217,
+   "other": 0.2627,
+   "close_up": 0.212,
+   "medium_wide": 0.2074,
+   "medium": 0.129,
+   "medium_close_up": 0.1152,
+   "wide": 0.0599,
+   "extreme_wide": 0.0092,
+   "extreme_close_up": 0.0046
+  }
+ },
+ "dialogue_coverage": {
+  "shots_with_line": {
+   "speaker_on_screen": 0.7224,
+   "listener_or_insert": 0.2574,
+   "voice_over": 0.0202
+  },
+  "shots_per_line": {
+   "n": 73745,
+   "mean": 1.03,
+   "median": 1.0,
+   "p10": 1.0,
+   "p25": 1.0,
+   "p75": 1.0,
+   "p90": 1.0
+  },
+  "line_cut_over_2plus_shots_share": 0.027,
+  "after_line_ends": {
+   "silent_shot_share": 0.1573,
+   "next_line_share": 0.8427,
+   "silent_shot_scale": {
+    "close_up": 0.2783,
+    "medium_wide": 0.2018,
+    "medium": 0.1972,
+    "medium_close_up": 0.1918,
+    "wide": 0.1076,
+    "extreme_wide": 0.0117,
+    "extreme_close_up": 0.0094,
+    "other": 0.0023
+   }
+  }
+ }
+}
