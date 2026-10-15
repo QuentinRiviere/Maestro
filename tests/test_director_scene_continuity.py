@@ -1,6 +1,7 @@
 """Storyboard images keep a scene's set, wardrobe and blocking from shot to shot."""
 from __future__ import annotations
 
+import inspect
 import os
 import sys
 import tempfile
@@ -391,12 +392,12 @@ class CastLocationTests(unittest.TestCase):
 
 
 class ShotPropsPromptTests(unittest.TestCase):
-    def test_start_image_prompt_names_the_shot_props(self):
-        plan = {"_director_props": ["a lump of raw clay on the wheel.", "a sponge in a water bowl", " "]}
-        prompt = pipeline.director_prompt_with_props(plan, "Close-up of hands above a pottery wheel, a sponge in a water bowl beside it.")
-        self.assertEqual(prompt, "Close-up of hands above a pottery wheel, a sponge in a water bowl beside it. "
-                                 "Visible in the frame: a lump of raw clay on the wheel.")
-        self.assertEqual(pipeline.director_prompt_with_props({}, "A quiet studio."), "A quiet studio.")
+    def test_start_image_prompt_does_not_list_props(self):
+        # Listing props made the image model invent objects: the start image
+        # prompt is the planner's image prompt, props stay in the plan only.
+        self.assertFalse(hasattr(pipeline, "director_prompt_with_props"))
+        source = inspect.getsource(pipeline)
+        self.assertNotIn("Visible in the frame:", source)
 
 
 if __name__ == "__main__":
