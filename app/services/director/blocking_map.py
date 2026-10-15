@@ -365,8 +365,14 @@ def props_line(blocking: Optional[dict]) -> str:
 # (where each person stands and faces, the set pieces, the master camera and
 # its side of the action line); later shots only move the camera.
 
-# A person this far (room widths) from their place in the scene layout contradicts it.
+# A person this far (room widths) from their place in the scene layout contradicts it
+# and is put back (planner drift).
 _POSITION_DRIFT = 0.12
+# A person farther than this from their place has moved: the layout follows the shot.
+_MOVE_DRIFT = 0.2
+_FOLLOWED_MOVE = "as the shot places them"
+# Notes ending like this follow the shot; any other note is a correction.
+_FOLLOWED = ("as planned", _FOLLOWED_MOVE)
 # A person turned this far (degrees) from their facing in the layout contradicts it.
 _FACING_DRIFT = 60.0
 # A camera this close to the action line stands on it and is moved off it, to the scene's side.
@@ -478,8 +484,9 @@ def lock_shot_blocking(layout: dict, blocking: dict) -> tuple[dict, list[str]]:
     """This shot's blocking on the scene's floor plan; returns it and what was changed, in words.
 
     People keep their place and facing from the layout (only the camera
-    moves) unless the shot marks them ``moves`` (the action moved them; the
-    layout follows). A person the layout does not know yet joins it where
+    moves) unless the shot marks them ``moves`` or puts them farther than
+    ``_MOVE_DRIFT`` from their place (the action moved them; the layout
+    follows this shot). Small drift is put back. A person the layout does not know yet joins it where
     the shot puts them. The camera keeps the scene's side of the action line
     unless it is marked ``crosses_line`` (the scene then stays on the new
     side). ``layout`` is updated in place.
@@ -501,6 +508,15 @@ def lock_shot_blocking(layout: dict, blocking: dict) -> tuple[dict, list[str]]:
             moved = True
             continue
         drift = math.hypot(subject["x"] - known["x"], subject["y"] - known["y"])
+        if drift > _MOVE_DRIFT:
+            # Too far to be drift: the shot moved them. Forcing the old place
+            # would contradict the shot's prose (duplicates, teleports).
+            known.update(x=subject["x"], y=subject["y"])
+            if subject.get("facing_deg") is not None:
+                known["facing_deg"] = subject["facing_deg"]
+            notes.append(f"{subject['name']} moves to a new place, {_FOLLOWED_MOVE}")
+            moved = True
+            continue
         if drift > _POSITION_DRIFT:
             notes.append(f"{subject['name']} kept at the scene position ({known['x']:.2f}, {known['y']:.2f}) "
                          f"instead of ({subject['x']:.2f}, {subject['y']:.2f})")
@@ -593,8 +609,8 @@ def lock_scene_blockings(raw_maps: list[Any], *, scene_map: Any = None) -> list[
             continue
         locked, notes = lock_shot_blocking(layout, blocking)
         results.append({"blocking": locked, "reverse": camera_faces_reverse(layout, locked), "notes": notes,
-                        # Planned moves and crossings are followed, not corrected.
-                        "corrected": any(not note.endswith("as planned") for note in notes)})
+                        # Planned moves, far moves and crossings are followed, not corrected.
+                        "corrected": any(not note.endswith(_FOLLOWED) for note in notes)})
     return results
 
 

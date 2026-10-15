@@ -62,10 +62,10 @@ class SceneLayoutTests(unittest.TestCase):
         self.assertEqual(layout["camera"]["facing_deg"], 0.0)
 
     def test_later_shots_keep_the_people_where_the_scene_put_them(self):
-        # The planner drifted: face to face became side by side, facing the camera.
+        # The planner drifted a little (0.16 of the room) and turned the woman away.
         drifted = {"camera": {"x": 0.5, "y": 0.95, "facing_deg": 0, "framing": "medium"},
-                   "subjects": [{"name": "Man", "x": 0.45, "y": 0.5, "facing_deg": 180},
-                                {"name": "Woman", "x": 0.55, "y": 0.5, "facing_deg": 180}]}
+                   "subjects": [{"name": "Man", "x": 0.4, "y": 0.42, "facing_deg": 180},
+                                {"name": "Woman", "x": 0.6, "y": 0.58, "facing_deg": 180}]}
         master, shot = lock_scene_blockings([MASTER, drifted])
         self.assertFalse(master["corrected"])
         self.assertEqual(master["notes"], [])
@@ -83,18 +83,43 @@ class SceneLayoutTests(unittest.TestCase):
         moved = {"camera": {"x": 0.5, "y": 0.95, "facing_deg": 0, "framing": "medium"},
                  "subjects": [{"name": "Man", "x": 0.2, "y": 0.6, "facing_deg": 90, "moves": True}]}
         later = {"camera": {"x": 0.5, "y": 0.95, "facing_deg": 0, "framing": "medium"},
-                 "subjects": [{"name": "Man", "x": 0.5, "y": 0.3, "facing_deg": 180}]}
+                 "subjects": [{"name": "Man", "x": 0.3, "y": 0.5, "facing_deg": 180}]}
         _, move, after = lock_scene_blockings([MASTER, moved, later])
         self.assertFalse(move["corrected"])
         self.assertEqual(move["notes"], ["Man moves to a new place, as planned"])
         man = after["blocking"]["subjects"][0]
         self.assertEqual((man["x"], man["y"], man["facing_deg"]), (0.2, 0.6, 90.0))
 
+    def test_a_far_move_follows_the_shot_instead_of_the_old_place(self):
+        # Past 0.2 of the room this is a move, not drift: forcing the old
+        # place would contradict the shot's own prose.
+        walked = {"camera": {"x": 0.5, "y": 0.95, "facing_deg": 0, "framing": "medium"},
+                  "subjects": [{"name": "Man", "x": 0.15, "y": 0.6, "facing_deg": 90}, WOMAN]}
+        later = {"camera": {"x": 0.5, "y": 0.95, "facing_deg": 0, "framing": "medium"},
+                 "subjects": [{"name": "Man", "x": 0.2, "y": 0.62, "facing_deg": 90}]}
+        _, walk, after = lock_scene_blockings([MASTER, walked, later])
+        self.assertFalse(walk["corrected"])
+        self.assertEqual(walk["notes"], ["Man moves to a new place, as the shot places them"])
+        man = next(s for s in walk["blocking"]["subjects"] if s["name"] == "Man")
+        self.assertEqual((man["x"], man["y"], man["facing_deg"]), (0.15, 0.6, 90.0))
+        # The scene layout now holds the new place: the next shot's small drift snaps to it.
+        man = after["blocking"]["subjects"][0]
+        self.assertEqual((man["x"], man["y"]), (0.15, 0.6))
+        self.assertFalse(after["corrected"])
+
+    def test_a_far_move_still_gets_the_facing_of_the_others_corrected(self):
+        walked = {"camera": {"x": 0.5, "y": 0.95, "facing_deg": 0, "framing": "medium"},
+                  "subjects": [{"name": "Man", "x": 0.15, "y": 0.6, "facing_deg": 90},
+                               {"name": "Woman", "x": 0.5, "y": 0.7, "facing_deg": 180}]}
+        _, walk = lock_scene_blockings([MASTER, walked])
+        self.assertTrue(walk["corrected"])
+        self.assertTrue(any("Woman kept facing 0 degrees" in note for note in walk["notes"]))
+
     def test_someone_new_joins_the_layout_where_they_first_appear(self):
         newcomer = {"camera": {"x": 0.5, "y": 0.95, "facing_deg": 0, "framing": "wide"},
                     "subjects": [{"name": "Waiter", "x": 0.8, "y": 0.4, "facing_deg": 270}, MAN]}
         again = {"camera": {"x": 0.5, "y": 0.95, "facing_deg": 0, "framing": "wide"},
-                 "subjects": [{"name": "Waiter", "x": 0.2, "y": 0.4, "facing_deg": 270}]}
+                 "subjects": [{"name": "Waiter", "x": 0.65, "y": 0.4, "facing_deg": 270}]}
         locks = lock_scene_blockings([MASTER, newcomer, again])
         self.assertEqual(locks[2]["blocking"]["subjects"][0]["x"], 0.8)
         self.assertTrue(locks[2]["corrected"])
