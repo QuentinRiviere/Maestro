@@ -1,6 +1,7 @@
 import type { DirectorModelCompatibility, GenerationPreview, GenerationPreviewSupport, H3WindowPlan, LTXWindowPlan, MiniMaxH3Reference, ProductionPlan, SavedOmniCharacter, ScailResolutionProfile } from '../types'
 import type { KreaIdentitySettings } from '../lib/kreaIdentityControls'
 import type { AnnotationDraft, AnnotationPatch, RunAnnotation } from '../lib/directorAnnotations'
+import { runPageSearch, type RunPage, type RunPageQuery } from '../lib/directorRunList'
 
 const BASE = ''  // same origin in production; Vite proxy handles /api in dev
 
@@ -1286,8 +1287,22 @@ export async function fetchPreflight(): Promise<{ ok: boolean; checks: Preflight
 
 // ── Director Pipeline Dashboard ──────────────────────────────────────────
 
+/** Every saved Director run, newest first. Prefer `fetchPipelinePage`. */
 export async function fetchPipelineList(): Promise<{ pipelines: import('../types').PipelineListItem[] }> {
   const res = await fetch(`${BASE}/api/v1/director/pipelines`, { cache: 'no-store' })
+  if (!res.ok) throw new Error('Failed to fetch pipelines')
+  return res.json()
+}
+
+/** One page of saved Director runs, newest first, optionally searched. */
+export async function fetchPipelinePage(
+  query: RunPageQuery,
+  signal?: AbortSignal,
+): Promise<RunPage> {
+  const res = await fetch(`${BASE}/api/v1/director/pipelines${runPageSearch({ limit: 20, ...query })}`, {
+    cache: 'no-store',
+    signal,
+  })
   if (!res.ok) throw new Error('Failed to fetch pipelines')
   return res.json()
 }

@@ -2148,7 +2148,12 @@ export interface PipelineListItem {
   id: string
   status: string
   pipeline_type: string
-  created_at: number
+  /** Unix seconds; null when the saved state has no usable start time. */
+  created_at: number | null
+  /** Last write of the run's state file (Unix seconds). */
+  updated_at?: number | null
+  /** Latest of created_at, completed_at and updated_at (server sort key). */
+  activity_at?: number | null
   clip_count: number
   output_count: number
   scene_description: string
