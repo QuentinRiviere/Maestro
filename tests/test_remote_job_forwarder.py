@@ -289,6 +289,92 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class LiveClipRelayTests(unittest.TestCase):
+    """Finished clips of a running multi-clip job reach the controller mid-job."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.out_dir = os.path.join(self.tmp, "outputs")
+        self.worker = FakeWorker()
+        self.forwarder = RemoteJobForwarder(
+            FakeManager(),
+            client_factory=lambda url, token: self.worker,
+            poll_interval=0,
+            sleep=lambda s: None,
+        )
+        self.worker.contents = {"c0.mp4": b"clip0", "c1.mp4": b"clip1", "c1.json": b"{}"}
+        self.worker.timeline = [
+            {"status": "running", "live_clip_output_files": {"0": "c0.mp4"}},
+            {"status": "running", "live_clip_output_files": {"0": "c0.mp4", "1": "c1.mp4"}},
+        ]
+        self.worker.final = {
+            "status": "completed", "output_files": ["c0.mp4", "c1.mp4"],
+            "files": ["c0.mp4", "c1.mp4"], "sidecars": ["c1.json"],
+            "clip_output_files": {"0": "c0.mp4", "1": "c1.mp4"}, "join_output_file": None,
+        }
+        self.seen = []
+
+    def _run(self, on_clip_output):
+        return self.forwarder.run(
+            {"model_type": "minimax_h3"},
+            out_dir=self.out_dir,
+            resolve_lora=lambda m, n: None,
+            update=lambda **u: None,
+            is_cancelled=lambda: False,
+            on_clip_output=on_clip_output,
+        )
+
+    def test_each_finished_clip_is_downloaded_and_announced_once(self):
+        def on_clip(index, name):
+            # The file is on disk when the controller is told about it.
+            with open(os.path.join(self.out_dir, name), "rb") as handle:
+                self.seen.append((index, name, handle.read()))
+
+        result = self._run(on_clip)
+        self.assertEqual(self.seen, [("0", "c0.mp4", b"clip0"), ("1", "c1.mp4", b"clip1")])
+        # The final download reuses the live names instead of adding c0_1.mp4.
+        self.assertEqual(result.clip_output_files, {"0": "c0.mp4", "1": "c1.mp4"})
+        self.assertEqual(sorted(os.listdir(self.out_dir)), ["c0.mp4", "c1.json", "c1.mp4"])
+
+    def test_the_final_copy_replaces_a_clip_changed_after_its_live_fetch(self):
+        self.worker.timeline = [{"status": "running", "live_clip_output_files": {"0": "c0.mp4"}}]
+        original_download = self.worker.download
+
+        def download(path, dest):
+            original_download(path, dest)
+            self.worker.contents["c0.mp4"] = b"final"
+
+        self.worker.download = download
+        self._run(lambda index, name: None)
+        with open(os.path.join(self.out_dir, "c0.mp4"), "rb") as handle:
+            self.assertEqual(handle.read(), b"final")
+
+    def test_a_failed_live_fetch_never_fails_the_job(self):
+        attempts = []
+        original_download = self.worker.download
+
+        def download(path, dest):
+            attempts.append(path)
+            if len(attempts) == 1:
+                raise RemoteJobError("proxy hiccup")
+            original_download(path, dest)
+
+        self.worker.download = download
+        result = self._run(lambda index, name: self.seen.append((index, name)))
+        self.assertEqual(result.clip_output_files, {"0": "c0.mp4", "1": "c1.mp4"})
+        # The clip that failed on its first poll is retried on the next one.
+        self.assertEqual(self.seen, [("0", "c0.mp4"), ("1", "c1.mp4")])
+
+    def test_without_a_callback_nothing_is_fetched_mid_job(self):
+        downloads = []
+        original_download = self.worker.download
+        self.worker.download = lambda path, dest: (downloads.append(path), original_download(path, dest))
+        self._run(None)
+        # Only the final download of the two clips and the sidecar.
+        self.assertEqual(len(downloads), 3)
+
+
 class WorkerClientRetryTests(unittest.TestCase):
     def _client(self, statuses):
         import requests

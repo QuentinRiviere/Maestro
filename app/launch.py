@@ -376,11 +376,13 @@ api.add_middleware(
 # --- Generation job tracking ---
 from services.job_lifecycle import (
     GENERATED_MEDIA_EXTENSIONS,
+    LIVE_CLIP_OUTPUTS_KEY,
     collect_job_outputs,
     finish_job,
     generation_slot,
     is_cancel_requested,
     record_job_outputs,
+    record_live_clip_output,
     register_terminal_listener,
     register_abort_state,
     release_held,
@@ -26703,6 +26705,12 @@ def _run_remote_generation(job: dict, raw_params: dict, *, finalize: bool) -> bo
                 job_id, data, content_type, info,
             ),
             on_preview_notice=lambda notice: _generation_previews.set_notice(job_id, notice),
+            # Deferred jobs publish nothing before their owner finalizes them.
+            on_clip_output=(
+                None
+                if defer_output_publication
+                else lambda index, name: record_live_clip_output(job, index, name)
+            ),
         )
     except RemoteJobCancelled:
         return False
@@ -26938,7 +26946,14 @@ def worker_job_file(job_id: str, name: str):
     if job is None:
         raise HTTPException(status_code=404, detail="Unknown job")
     files, sidecars = _worker_job_files(job)
-    if name not in files and name not in sidecars:
+    # Clips a running multi-clip job already finished: a controller fetches
+    # them mid-job to show each shot as soon as it exists.
+    live_files = [
+        os.path.basename(str(value))
+        for value in (job.get(LIVE_CLIP_OUTPUTS_KEY) or {}).values()
+        if value
+    ]
+    if name not in files and name not in sidecars and name not in live_files:
         raise HTTPException(status_code=404, detail="Not an output of this job")
     path = os.path.join(job.get("out_dir") or wgp.save_path, name)
     if not os.path.isfile(path):
@@ -28520,6 +28535,16 @@ def _run_generation(job_id: str, *, finalize: bool = True, _slot_owned: bool = F
                             ] = latest_clip_file
                         except (TypeError, ValueError):
                             pass
+                        else:
+                            # Let a waiting caller (Director, a controller
+                            # following this worker) show the clip now
+                            # instead of after the whole batch.
+                            if not defer_output_publication:
+                                record_live_clip_output(
+                                    job,
+                                    clip_info["index"],
+                                    latest_clip_file,
+                                )
 
                 if is_cancel_requested(job) or gen.get("abort"):
                     cancelled = True

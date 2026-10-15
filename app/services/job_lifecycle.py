@@ -17,6 +17,8 @@ from typing import Any
 
 
 TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
+# Job key of the clips a multi-clip job finished so far (clip index -> file).
+LIVE_CLIP_OUTPUTS_KEY = "live_clip_output_files"
 _lifecycle_lock = threading.RLock()
 _registrations: dict[
     str,
@@ -193,9 +195,36 @@ def snapshot_job(job: MutableMapping[str, Any]) -> dict[str, Any]:
         snapshot = dict(job)
         if isinstance(snapshot.get("output_files"), list):
             snapshot["output_files"] = list(snapshot["output_files"])
-        if isinstance(snapshot.get("clip_output_files"), dict):
-            snapshot["clip_output_files"] = dict(snapshot["clip_output_files"])
+        for key in ("clip_output_files", LIVE_CLIP_OUTPUTS_KEY):
+            if isinstance(snapshot.get(key), dict):
+                snapshot[key] = dict(snapshot[key])
         return snapshot
+
+
+def record_live_clip_output(
+    job: MutableMapping[str, Any], clip_index: int | str, filename: str,
+) -> bool:
+    """Announce one finished multi-clip file while its job is still running.
+
+    Kept apart from ``clip_output_files``: that map is the job's published
+    result (it honours deferred publication and later renames), while this one
+    only lets a waiting caller show a clip before the whole batch ends. The
+    file named here may still be replaced by the final result.
+    """
+    try:
+        key = str(int(clip_index))
+    except (TypeError, ValueError):
+        return False
+    name = os.path.basename(str(filename or ""))
+    if not name:
+        return False
+    with _lifecycle_lock:
+        live = dict(job.get(LIVE_CLIP_OUTPUTS_KEY) or {})
+        if live.get(key) == name:
+            return False
+        live[key] = name
+        job[LIVE_CLIP_OUTPUTS_KEY] = live
+        return True
 
 
 def record_job_outputs(

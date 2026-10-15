@@ -40,6 +40,10 @@ _MIRRORED_FIELDS = (
     "progress", "step", "total_steps", "phase", "message",
     "eta_seconds", "eta_confidence", "eta_label",
 )
+# Worker job key listing the clips a running multi-clip job finished so far.
+_LIVE_CLIPS_KEY = "live_clip_output_files"
+# Attempts at fetching one finished clip mid-job before leaving it to the end.
+_LIVE_FETCH_ATTEMPTS = 3
 # Params whose values are free text, never file paths.
 _TEXT_KEYS = {"prompt", "negative_prompt", "alt_prompt", "multi_prompts", "prompt_enhancer"}
 
@@ -225,12 +229,16 @@ class RemoteJobForwarder:
         preview_mode: str | None = None,
         on_preview: Callable[[bytes, str, Mapping[str, Any]], Any] | None = None,
         on_preview_notice: Callable[[str | None], Any] | None = None,
+        on_clip_output: Callable[[str, str], Any] | None = None,
     ) -> RemoteJobResult:
         """Run one prepared job remotely.
 
         ``preview_mode`` is the controller's Generation Preview preference;
         the worker renders previews in that mode and ``on_preview`` receives
         each new one (bytes, content type, the worker's preview descriptor).
+        ``on_clip_output`` receives (clip index, local file name) for each
+        clip of a multi-clip job as soon as the worker finished it; the file
+        is downloaded into ``out_dir`` mid-job and refreshed at the end.
         """
         model_type = str(params.get("model_type") or "")
         update(phase="Remote worker", message="Waiting for the remote GPU worker…")
@@ -270,12 +278,15 @@ class RemoteJobForwarder:
             # Never sent twice: a retried submission could start the job twice.
             remote_id = str(client.post_json("api/v1/worker/jobs", body, retry=False)["job_id"])
             work_started = time.monotonic()
+            live_files: dict[str, str] = {}
             remote = self._follow(
                 client, remote_id, update=update, is_cancelled=is_cancelled,
                 on_preview=on_preview, on_preview_notice=on_preview_notice,
+                on_clip_output=on_clip_output, out_dir=out_dir, live_files=live_files,
             )
             result = self._fetch_outputs(
                 client, store, remote_id, remote, job_id=job_id or remote_id, out_dir=out_dir, update=update,
+                live_files=live_files,
             )
             result.billing = _billing(manager, status, waited=work_started - waiting_since,
                                       worked=time.monotonic() - work_started)
@@ -369,8 +380,10 @@ class RemoteJobForwarder:
         return remote_params
 
     def _follow(self, client, remote_id: str, *, update, is_cancelled,
-                on_preview=None, on_preview_notice=None) -> Mapping[str, Any]:
+                on_preview=None, on_preview_notice=None, on_clip_output=None,
+                out_dir: str = "", live_files: dict[str, str] | None = None) -> Mapping[str, Any]:
         cancel_sent_at: float | None = None
+        live_attempts: dict[str, int] = {}
         missing = 0
         relayed_revision: Any = None
         relayed_notice: Any = None
@@ -408,7 +421,43 @@ class RemoteJobForwarder:
                 if on_preview_notice is not None and notice != relayed_notice:
                     on_preview_notice(notice)
                     relayed_notice = notice
+                if on_clip_output is not None and live_files is not None and out_dir:
+                    self._relay_live_clips(client, remote_id, remote, out_dir=out_dir,
+                                           live_files=live_files, attempts=live_attempts,
+                                           on_clip_output=on_clip_output)
             self._sleep(self._poll_interval)
+
+    @staticmethod
+    def _relay_live_clips(client, remote_id: str, remote: Mapping[str, Any], *, out_dir: str,
+                          live_files: dict[str, str], attempts: dict[str, int],
+                          on_clip_output) -> None:
+        """Download each clip the worker finished since the last poll.
+
+        Best effort: a failed fetch is retried on the next polls, then left
+        to the final download. It never fails the job.
+        """
+        clips = remote.get(_LIVE_CLIPS_KEY)
+        if not isinstance(clips, Mapping):
+            return
+        for index, name in sorted(clips.items(), key=lambda item: str(item[0])):
+            if not isinstance(name, str) or not name or name in live_files:
+                continue
+            if attempts.get(name, 0) >= _LIVE_FETCH_ATTEMPTS:
+                continue
+            attempts[name] = attempts.get(name, 0) + 1
+            local_name = _unique_local_name(out_dir, name)
+            try:
+                os.makedirs(out_dir, exist_ok=True)
+                client.download(f"api/v1/worker/jobs/{remote_id}/files/{quote(name)}",
+                                os.path.join(out_dir, local_name))
+            except Exception as exc:  # noqa: BLE001 - a preview of a clip, never fatal
+                log.warning("live fetch of clip %s (%s) failed: %s", index, name, exc)
+                continue
+            live_files[name] = local_name
+            try:
+                on_clip_output(str(index), local_name)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("live clip callback for %s failed: %s", name, exc)
 
     @staticmethod
     def _relay_preview(client, remote: Mapping[str, Any], last_revision: Any, on_preview) -> Any:
@@ -427,7 +476,8 @@ class RemoteJobForwarder:
             log.warning("remote preview relay failed: %s", exc)
         return revision
 
-    def _fetch_outputs(self, client, store, remote_id, remote, *, job_id, out_dir, update) -> RemoteJobResult:
+    def _fetch_outputs(self, client, store, remote_id, remote, *, job_id, out_dir, update,
+                       live_files: Mapping[str, str] | None = None) -> RemoteJobResult:
         os.makedirs(out_dir, exist_ok=True)
         objects: dict[str, str] = {}
         if store is not None:
@@ -450,7 +500,9 @@ class RemoteJobForwarder:
         renamed: dict[str, str] = {}
         for name in remote.get("files") or []:
             update(phase="Remote worker", message=f"Downloading {name}…")
-            local_name = _unique_local_name(out_dir, name)
+            # A clip fetched mid-job keeps its local name; the final copy
+            # replaces it in place, so a caller that already shows it stays valid.
+            local_name = (live_files or {}).get(name) or _unique_local_name(out_dir, name)
             fetch(name, os.path.join(out_dir, local_name))
             renamed[name] = local_name
             sidecar = f"{os.path.splitext(name)[0]}.json"

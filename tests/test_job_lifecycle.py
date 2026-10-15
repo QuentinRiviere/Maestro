@@ -17,11 +17,13 @@ if _APP_DIR not in sys.path:
 
 from services.job_lifecycle import (  # noqa: E402
     GENERATED_MEDIA_EXTENSIONS,
+    LIVE_CLIP_OUTPUTS_KEY,
     acquire_generation_slot,
     call_with_sticky_interrupt,
     collect_job_outputs,
     finish_job,
     record_job_outputs,
+    record_live_clip_output,
     register_abort_state,
     register_terminal_listener,
     release_held,
@@ -446,6 +448,25 @@ class TestJobLifecycle(unittest.TestCase):
                 self.assertTrue(state["abort"])
                 interrupt.assert_called_once_with()
             unregister_abort_state(job["id"], states, state)
+
+
+class LiveClipOutputTests(unittest.TestCase):
+    def test_live_clips_stay_apart_from_the_published_result(self):
+        job = _job()
+        self.assertTrue(record_live_clip_output(job, 1, "/out/clip_1.mp4"))
+        self.assertFalse(record_live_clip_output(job, "1", "clip_1.mp4"))
+        self.assertFalse(record_live_clip_output(job, "x", "clip.mp4"))
+        self.assertFalse(record_live_clip_output(job, 2, ""))
+        self.assertEqual(job[LIVE_CLIP_OUTPUTS_KEY], {"1": "clip_1.mp4"})
+        self.assertNotIn("clip_output_files", job)
+        self.assertNotIn("output_files", job)
+
+    def test_snapshot_copies_the_live_clip_map(self):
+        job = _job()
+        record_live_clip_output(job, 0, "a.mp4")
+        snapshot = snapshot_job(job)
+        record_live_clip_output(job, 1, "b.mp4")
+        self.assertEqual(snapshot[LIVE_CLIP_OUTPUTS_KEY], {"0": "a.mp4"})
 
 
 if __name__ == "__main__":
