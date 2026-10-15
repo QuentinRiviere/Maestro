@@ -27,7 +27,7 @@ function ShotPanel({ shot, aspect, staged, onOpen }: {
         <JudgeBadge judge={shot.judge} className="absolute top-1.5 right-1.5 backdrop-blur-sm" />
         <div className="absolute bottom-1.5 left-1.5 flex items-center gap-1 px-1.5 py-0.5 rounded bg-black/65 text-[9px] text-white/90">
           <StatusDot status={shot.imageStatus} title={`Start frame: ${STATUS_LABEL[shot.imageStatus]}`} />
-          <StatusDot status={shot.videoStatus} title={`Clip: ${shot.videoStale ? 'stale' : STATUS_LABEL[shot.videoStatus]}`} />
+          <StatusDot status={shot.videoStatus} title={`Clip: ${shot.videoStale ? 'stale' : STATUS_LABEL[shot.videoStatus]}${shot.videoProvisional ? ' (preview until the batch ends)' : ''}`} />
           {shot.sequence && <span className="ml-0.5 flex items-center gap-0.5" title={`Rendered in ${shot.sequence.id}`}><Layers size={9} />{shot.sequence.index + 1}/{shot.sequence.size}</span>}
         </div>
         {shot.durationSec != null && (

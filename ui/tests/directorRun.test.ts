@@ -99,6 +99,22 @@ test('live plans override the saved file and mark the active shot', () => {
   assert.equal(shots[2].imageStatus, 'pending')
 })
 
+test('a clip published before the batch ends shows as a provisional render', () => {
+  const state = saved([
+    clip(0, { video_filename: 'shot_1.mp4', video_provisional: true }),
+    clip(1),
+    clip(2),
+  ], { status: 'running' })
+  const shots = buildRunShots(state, {
+    status: 'running', phase: 'generating_video', progress: { current_clip: 2 },
+    clip_plans: [{}, {}, {}],
+  })
+  assert.equal(shots[0].video, 'shot_1.mp4')
+  assert.equal(shots[0].videoProvisional, true)
+  assert.equal(shots[1].videoProvisional, false)
+  assert.deepEqual(shots.map(s => s.videoStatus), ['done', 'running', 'pending'])
+})
+
 test('a running H3 sequence marks every member shot as rendering', () => {
   const state = saved([
     clip(0, { _director_sequence: sequence([0, 1], 0) }),

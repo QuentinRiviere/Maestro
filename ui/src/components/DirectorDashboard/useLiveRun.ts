@@ -45,6 +45,7 @@ export function useLiveRun(pid: string | null, savedStatus?: string): {
     let timer: number | null = null
     let polls = 0
     let lastPhase = ''
+    let lastClip = 0
     let wasActive = false
 
     const tick = async () => {
@@ -53,13 +54,17 @@ export function useLiveRun(pid: string | null, savedStatus?: string): {
       if (token !== tokenRef.current) return
       const active = !!status && !status.recovered_from_disk && isRunActive(status.status)
       const phase = String(status?.phase || '')
+      // A new clip number means the previous clip just finished: its video
+      // is published into the saved run before the batch ends.
+      const clip = Number(status?.progress?.current_clip) || 0
       polls += 1
-      if (active && (phase !== lastPhase || polls % SAVED_REFRESH_EVERY === 0)) void refreshSaved(pid)
+      if (active && (phase !== lastPhase || clip !== lastClip || polls % SAVED_REFRESH_EVERY === 0)) void refreshSaved(pid)
       if (wasActive && !active) {
         void refreshSaved(pid)
         void loadPipelineList()
       }
       lastPhase = phase
+      lastClip = clip
       wasActive = active
       if (active) timer = window.setTimeout(tick, LIVE_POLL_MS)
     }

@@ -144,6 +144,7 @@ export function ShotDrawer({ shot, aspect, stagedNote, actions, annotations = []
               </div>
               <figcaption className="px-2 py-1 text-[10px] text-text-muted flex items-center gap-1.5">
                 <StatusDot status={shot.videoStatus} /> Clip · {shot.videoStale ? 'stale' : STATUS_LABEL[shot.videoStatus]}
+                {shot.videoProvisional && <span title="Shown as soon as it rendered; the batch result may replace it"> · preview</span>}
               </figcaption>
             </figure>
           </div>

@@ -77,6 +77,8 @@ export interface RunShot {
   startImage: string | null
   video: string | null
   videoStale: boolean
+  /** The clip finished while the batch still runs; its result may replace it. */
+  videoProvisional: boolean
   /** Part of the rendered clip the edit keeps ([start, end] seconds), when the render runs longer. */
   keep: [number, number] | null
   sceneType: string
@@ -274,6 +276,7 @@ export function buildRunShots(
       startImage,
       video,
       videoStale,
+      videoProvisional: !!video && savedClip.video_provisional === true,
       keep: keepRange(savedClip._director_keep_sec),
       sceneType: text(plan._director_scene_type),
       framing: text(plan._director_camera_framing),
@@ -302,8 +305,9 @@ export function buildRunShots(
     const target = clip > 0
       ? shots[clip - 1]
       : shots.find(shot => shot.videoStatus === 'pending')
-    // Per-shot renders land in the saved run only when the phase ends, so the
-    // shots before the live clip are already rendered.
+    // Single-shot renders land in the saved run as each one finishes; older
+    // runs (and H3 sequences) only at the phase end, so the shots before the
+    // live clip are already rendered.
     if (clip > 0 && !shots.some(shot => shot.sequence)) {
       for (const shot of shots.slice(0, clip - 1)) {
         if (shot.videoStatus === 'pending') shot.videoStatus = 'done'

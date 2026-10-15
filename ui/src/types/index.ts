@@ -2021,6 +2021,8 @@ export interface PipelineClipState {
   keyframe_filenames: string[]
   video_filename: string | null
   video_stale?: boolean
+  /** Shown while the batch still runs; the batch result may replace it. */
+  video_provisional?: boolean
   tag: 'good' | 'needs_work' | null
   image_gen_time_sec: number | null
   video_gen_time_sec: number | null
