@@ -5465,8 +5465,12 @@ def director_shot_image_request(image_model: str, plan: dict, prompt: str, *, sc
     if scene_master:
         # The place's own empty image keeps the room and the light without a
         # composition to copy; the scene's first shot stands in without one.
+        # The anchor is the episode's first frame: with the place's own image
+        # it would only bring another scene's room into a shot with nobody in
+        # it (an insert).
+        identity = subject_refs or ([] if scene_location else [anchor])
         refs, scene_prompt = scene_shot_refs(image_model, plan, prompt, master=scene_location or scene_master,
-                                             identity=subject_refs or [anchor], layout=layout,
+                                             identity=identity, layout=layout,
                                              empty_set=bool(scene_location))
         blocking = str(plan.get("_director_opening_blocking") or "").strip()
         if blocking and blocking.lower() not in prompt.lower():

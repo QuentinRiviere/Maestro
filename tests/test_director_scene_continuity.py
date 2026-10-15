@@ -425,6 +425,15 @@ class StagingTests(unittest.TestCase):
         _, prompt = pipeline.director_shot_layout("p", 0, plan, "Hands hold a tool roll.", "m", "/tmp")
         self.assertIn("Only the hands of Mina", prompt)
 
+    def test_a_shot_without_people_keeps_its_own_place_not_the_episode_anchor(self):
+        request = pipeline.director_shot_image_request(
+            "qwen_image_21_7B_turbo_8step", {"_director_scene_type": "insert"}, "Hands hold a mug.",
+            scene_master="/o/cafe_master.png", anchor="/o/studio_first_shot.png",
+            scene_location="/o/cafe_empty.png", subject_refs=[])
+        refs = [request["source"], *request["supplemental"]]
+        self.assertNotIn("/o/studio_first_shot.png", refs)
+        self.assertEqual(refs, ["/o/cafe_empty.png"])
+
     def test_people_facing_each_other_get_their_profile_angle(self):
         from services.director.blocking_map import parse_blocking_map, subject_view
 
