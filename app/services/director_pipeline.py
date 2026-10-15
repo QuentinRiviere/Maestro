@@ -54,6 +54,7 @@ from services.director_video_strategy import (
     video_strategy,
 )
 from services.h3_window_planner import compute_h3_window_boundaries
+from services.generation_provenance import read_output_provenance
 from services.director.h3_dialogue import H3DialogueContractError
 from services.director.h3_sequences import (
     SEQUENCE_KEY,
@@ -1518,6 +1519,15 @@ def _save_pipeline_state_locked(pid: str) -> bool:
             "image_gen_time_sec": clip_timings.get(f"image_{i}"),
             "video_gen_time_sec": clip_timings.get(f"video_{i}"),
         }
+        # What rendered the start image and the clip (model, runtime, GPU,
+        # timing), read from their gallery sidecars; omitted when unknown.
+        for media_key, provenance_key in (
+            ("start_image_filename", "image_provenance"),
+            ("video_filename", "video_provenance"),
+        ):
+            provenance = read_output_provenance(out_dir, clip_state.get(media_key))
+            if provenance:
+                clip_state[provenance_key] = provenance
         if (
             not (i < len(clip_videos) and clip_videos[i])
             and i < len(live_videos) and live_videos[i]

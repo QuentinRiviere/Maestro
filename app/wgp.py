@@ -8189,6 +8189,8 @@ def generate_video(
             f"{loaded_model_files or 'unknown'} -> {job_model_files}; reloading the model."
         )
         reload_needed = True
+    _model_load_seconds = None
+    _model_reloaded = False
     if model_type != transformer_type or reload_needed or profile != loaded_profile:
         release_model()
         # Pre-flight: detect first-use download so the UI can show
@@ -8224,6 +8226,7 @@ def generate_video(
             send_cmd("status", f"Downloading model {_model_label} (first use, may take several minutes)...")
         else:
             send_cmd("status", f"Loading model {_model_label}...")
+        _model_load_started = time.time()
         wan_model, offloadobj = load_models_for_job(
             model_type,
             override_profile,
@@ -8233,6 +8236,8 @@ def generate_video(
             precision_overrides=job_precision_overrides,
             **model_kwargs,
         )
+        _model_load_seconds = time.time() - _model_load_started
+        _model_reloaded = True
         send_cmd("status", "Model loaded")
         send_cmd("refresh_models", get_unique_id())
         reload_needed=  False
@@ -8302,6 +8307,32 @@ def generate_video(
         send_cmd("exit")
         return True
     
+    # Generation provenance (services/generation_provenance.py): what this
+    # job really runs with, reported once the model and attention are final.
+    try:
+        send_cmd("runtime_metadata", {
+            "model_type": model_type,
+            "model_name": get_model_name(model_type),
+            "architecture": model_def.get("architecture"),
+            "files": job_model_files or {},
+            "precision_overrides": job_precision_overrides,
+            "configured_quantization": precision_overrides_lib.effective_transformer_quantization(transformer_quantization),
+            "transformer_dtype": transformer_dtype_policy or None,
+            "text_encoder_variant": model_kwargs.get("minimax_h3_text_encoder"),
+            "video_vae_precision": job_precision_overrides.get("video_vae_precision"),
+            # The H3 video VAE file names its own precision.
+            "vae_precision": None if (job_model_files or {}).get("video_vae") else (
+                "fp32" if server_config.get("vae_precision", "16") == "32" else "fp16"),
+            "attention": attn,
+            "compile": bool(compile),
+            "profile": profile,
+            "num_inference_steps": num_inference_steps,
+            "model_reloaded": _model_reloaded,
+            "model_load_seconds": _model_load_seconds,
+        })
+    except Exception as provenance_error:
+        print(f"[Provenance] Could not report the runtime of {model_type}: {provenance_error}")
+
     # Track whether user selected auto aspect (resolution was "auto*") vs fixed (e.g. "1280x720")
     _auto_aspect = not resolution or "x" not in resolution or resolution.startswith("auto")
 

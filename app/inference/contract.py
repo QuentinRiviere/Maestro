@@ -36,6 +36,9 @@ CMD_INFO = "info"
 CMD_PREVIEW = "preview"
 CMD_OUTPUT = "output"
 CMD_GENERATION_TIME = "generation_time"
+# Optional: the model, files, precision and attention the task really ran
+# with, for the job's provenance record (services/generation_provenance.py).
+CMD_RUNTIME_METADATA = "runtime_metadata"
 
 
 @dataclass(frozen=True)

@@ -79,6 +79,7 @@ from services.checkpoint_compatibility import (
     validate_checkpoint_file,
 )
 from services.generation_eta import AdaptiveGenerationEta, GenerationEtaHistory
+from services import generation_provenance
 from services.remote_access import TailscaleManager
 from services.remote_worker import (
     DstackError,
@@ -177,7 +178,7 @@ from models.minimax_h3.turbo import (
 )
 print(f"[Maestro] WanGP loaded: {len(wgp.displayed_model_types)} models available")
 
-from inference import BackendRegistry, LocalWgpBackend, TaskRequest
+from inference import BackendRegistry, LocalWgpBackend, TaskRequest, resolve_backend_name
 
 # Where each validated task runs. Routing is read from
 # wgp.server_config["inference"]; see inference/registry.py.
@@ -24305,6 +24306,30 @@ def _get_cached_hardware() -> dict:
     return _cached_hardware
 
 
+def _turbo_preset_label(preset_id: str) -> str | None:
+    from models.minimax_h3.turbo import minimax_h3_turbo_preset
+
+    return minimax_h3_turbo_preset(preset_id).get("label")
+
+
+def _build_job_provenance(params: dict, **observed) -> dict:
+    """Provenance of a job that ran on this machine (see generation_provenance)."""
+    model_type = str((params or {}).get("model_type") or "")
+    model_def = (wgp.get_model_def(model_type) or {}) if model_type else {}
+    try:
+        model_name = wgp.get_model_name(model_type) if model_def else None
+    except Exception:
+        model_name = None
+    hardware = generation_provenance.hardware_from_probe(
+        _get_cached_hardware(),
+        location="remote" if _is_remote_worker_process else "local",
+    )
+    return generation_provenance.build_provenance(
+        params, model_name=model_name, model_def=model_def, hardware=hardware,
+        turbo_label=_turbo_preset_label, **observed,
+    )
+
+
 def _get_generation_eta_history() -> GenerationEtaHistory | None:
     """Return the process-wide, hardware-scoped local ETA learner."""
 
@@ -25375,6 +25400,25 @@ def _write_tool_sidecar(
             before=probe_media(source_path or params.get("media_path")),
             after=probe_media(os.path.join(out_dir, filename)), elapsed=elapsed,
             completed_at=sidecar["created_at"], options=params)
+    try:
+        # Tools run no generation model: provenance names the tool, the
+        # processing it applied, this machine's GPU and the elapsed time.
+        tool_params = dict(params)
+        if tool == "upscale" and not tool_params.get("spatial_upsampling"):
+            tool_params["spatial_upsampling"] = params.get("method") or ""
+        record = generation_provenance.build_provenance(
+            {k: tool_params.get(k) for k in (
+                "spatial_upsampling", "temporal_upsampling",
+                "film_grain_intensity", "film_grain_saturation",
+            )},
+            model_name=str(tool).replace("_", " ").title(),
+            hardware=generation_provenance.hardware_from_probe(_get_cached_hardware()),
+            total_seconds=elapsed,
+        )
+        record.setdefault("model", {})["type"] = f"tool:{tool}"
+        sidecar["provenance"] = record
+    except Exception as error:
+        print(f"[Provenance] Could not record the {tool} tool's provenance: {error}")
     meta_path = os.path.join(out_dir, os.path.splitext(filename)[0] + ".meta.json")
     try:
         with open(meta_path, "w", encoding="utf-8") as f:
@@ -26826,6 +26870,7 @@ def _run_remote_generation(job: dict, raw_params: dict, *, finalize: bool) -> bo
     defer_output_publication = bool(raw_params.get("_defer_output_publication"))
     out_dir = job.get("out_dir") or wgp.save_path
     job_id = str(job.get("id") or "")
+    remote_started_at = time.time()
     # The worker renders previews in this controller's mode; they are relayed
     # into the local preview cache so the UI shows them as for a local job.
     remote_preview_mode = configured_preview_mode(wgp.server_config.get("generation_preview"))
@@ -26860,6 +26905,9 @@ def _run_remote_generation(job: dict, raw_params: dict, *, finalize: bool) -> bo
     if is_cancel_requested(job):
         return False
     _record_director_cost(raw_params, "gpu", **result.billing)
+    _publish_remote_provenance(job, result, out_dir=out_dir,
+                               total_seconds=time.time() - remote_started_at,
+                               stamp_sidecars=not defer_output_publication)
     finalizing = {"progress": 99, "step": 0, "total_steps": 0, "phase": "Finalizing", "message": "Finalizing..."}
     if defer_output_publication and not finalize:
         return update_job(
@@ -26879,6 +26927,36 @@ def _run_remote_generation(job: dict, raw_params: dict, *, finalize: bool) -> bo
         return update_job(job, **finalizing)
     finish_job(job, "completed", progress=100, step=0, total_steps=0, phase="", message="Done")
     return job.get("status") == "completed"
+
+
+def _publish_remote_provenance(job: dict, result, *, out_dir: str, total_seconds: float,
+                               stamp_sidecars: bool) -> None:
+    """Carry the worker's provenance back, with the pod's GPU offer and cost.
+
+    Stored on the job and in each local output's ``.meta.json``; the sidecar
+    names the controller's job id and file name, not the worker's.
+    """
+    try:
+        record = generation_provenance.merge_remote(
+            result.provenance, result.billing, total_seconds=total_seconds,
+        )
+        if not record:
+            return
+        update_job(job, provenance=record)
+        if not stamp_sidecars:
+            return
+        names = list(result.output_files) + list((result.clip_output_files or {}).values())
+        if result.join_output_file:
+            names.append(result.join_output_file)
+        for name in dict.fromkeys(os.path.basename(str(n)) for n in names if n):
+            if os.path.splitext(name)[1].lower() not in GENERATED_MEDIA_EXTENSIONS:
+                continue
+            generation_provenance.stamp_sidecar(
+                os.path.join(out_dir, os.path.splitext(name)[0] + ".meta.json"),
+                record, job_id=str(job.get("id") or "") or None, output_filename=name,
+            )
+    except Exception as error:
+        print(f"[Provenance] Could not record the remote job's provenance: {error}")
 
 
 # ── Worker-only routes (process started with --worker) ─────────────────────
@@ -27027,9 +27105,10 @@ def _worker_job_files(job: dict) -> tuple[list[str], list[str]]:
             names.append(os.path.basename(name))
     out_dir = job.get("out_dir") or wgp.save_path
     sidecars = [
-        f"{os.path.splitext(name)[0]}.json"
+        f"{os.path.splitext(name)[0]}{suffix}"
         for name in names
-        if os.path.isfile(os.path.join(out_dir, f"{os.path.splitext(name)[0]}.json"))
+        for suffix in (".json", ".meta.json")
+        if os.path.isfile(os.path.join(out_dir, f"{os.path.splitext(name)[0]}{suffix}"))
     ]
     return names, sidecars
 
@@ -27124,6 +27203,8 @@ def _run_generation(job_id: str, *, finalize: bool = True, _slot_owned: bool = F
                     return False
             elif not try_start(job, message="Preparing..."):
                 return False
+            # Provenance wall time starts once this job owns its slot.
+            provenance_started_at = time.time()
 
             # Automatic H3/LTX window planners are intentionally part of the
             # queued job. They must never load before this worker owns the
@@ -27951,6 +28032,10 @@ def _run_generation(job_id: str, *, finalize: bool = True, _slot_owned: bool = F
             active_generation_seconds_by_output: dict[str, int] = {}
             model_metadata_by_output: dict[str, dict] = {}
             processing_by_output: dict[str, dict] = {}
+            # Generation provenance: the engine's runtime report and a clock
+            # splitting wall time into download/load/encode/denoise/decode.
+            provenance_clock = generation_provenance.PhaseClock()
+            runtime_metadata: dict = {}
             active_generation_seconds_by_task: dict[int, int] = {}
             multi_window_timing_by_output: dict[str, dict] = {}
             multi_window_timing_by_task: dict[int, dict] = {}
@@ -28083,6 +28168,20 @@ def _run_generation(job_id: str, *, finalize: bool = True, _slot_owned: bool = F
                     "total_generation_seconds": total_generation_seconds,
                 }
 
+            def _job_provenance():
+                """This job's provenance record (best effort, never raises)."""
+                try:
+                    return _build_job_provenance(
+                        job["params"],
+                        runtime_metadata=runtime_metadata,
+                        phases=provenance_clock.seconds(),
+                        total_seconds=time.time() - provenance_started_at,
+                        generation_seconds=sum(active_generation_seconds_by_task.values()) or None,
+                    )
+                except Exception as provenance_error:
+                    print(f"[Provenance] Could not build the record of {job_id}: {provenance_error}")
+                    return None
+
             def _write_output_sidecars(file_names):
                 """Stamp every produced media file, including abort leftovers.
 
@@ -28147,6 +28246,7 @@ def _run_generation(job_id: str, *, finalize: bool = True, _slot_owned: bool = F
                 dpid = job["params"].get("_director_pipeline_id")
                 if dpid:
                     sidecar["director_pipeline_id"] = dpid
+                job_provenance = _job_provenance()
                 clip_index_by_filename = {
                     filename: index
                     for index, filename in clip_output_files.items()
@@ -28289,6 +28389,12 @@ def _run_generation(job_id: str, *, finalize: bool = True, _slot_owned: bool = F
                                     timing_total_seconds
                                 ),
                             }
+                    if job_provenance:
+                        file_sidecar["provenance"] = (
+                            generation_provenance.with_output_timing(
+                                job_provenance, file_sidecar,
+                            )
+                        )
                     try:
                         with open(meta_path, "w", encoding="utf-8") as f:
                             json.dump(file_sidecar, f, indent=2)
@@ -28475,6 +28581,7 @@ def _run_generation(job_id: str, *, finalize: bool = True, _slot_owned: bool = F
                                             now=time.monotonic(),
                                         )
                                     ))
+                            provenance_clock.observe(msg)
                             progress_updates.update(message=msg, phase=msg)
                             if not update_job(job, **progress_updates):
                                 continue
@@ -28483,6 +28590,7 @@ def _run_generation(job_id: str, *, finalize: bool = True, _slot_owned: bool = F
                             last_msg_len = len(status_line)
                             in_status_line = True
                     elif cmd == "status":
+                        provenance_clock.observe(data)
                         status_updates = {
                             "message": str(data),
                             "phase": str(data),
@@ -28518,6 +28626,20 @@ def _run_generation(job_id: str, *, finalize: bool = True, _slot_owned: bool = F
                         _generation_previews.set_notice(job_id, data)
                     elif cmd == "preview":
                         _consume_generation_preview(job_id, data, params.get("model_type"))
+                    elif cmd == "runtime_metadata":
+                        if isinstance(data, dict):
+                            # Multi-task jobs keep the first task's runtime
+                            # and add what later tasks reveal.
+                            for key, value in data.items():
+                                if runtime_metadata.get(key) in (None, "", {}):
+                                    runtime_metadata[key] = value
+                            runtime_metadata["inference_backend"] = (
+                                runtime_metadata.get("inference_backend")
+                                or resolve_backend_name(
+                                    str(params.get("model_type") or ""),
+                                    wgp.server_config,
+                                )
+                            )
                     elif cmd == "artifact_metadata":
                         if isinstance(data, dict) and isinstance(data.get("metadata"), dict):
                             for output_path in data.get("outputs") or []:
@@ -28979,6 +29101,16 @@ def _run_generation(job_id: str, *, finalize: bool = True, _slot_owned: bool = F
                         "inputs and the terminal log before retrying."
                     )
                     update_job(job, error=output_error, message=output_error)
+
+            # Everything after the engine finished is post-processing time.
+            if success and (
+                pp_spatial_upsampling or pp_media_spatial or pp_media_temporal
+                or pp_film_grain_intensity > 0 or pp_face_refiner.get("enabled")
+                or pp_voice_clone_enabled
+            ):
+                provenance_clock.enter("postprocess")
+            else:
+                provenance_clock.stop()
 
             if os.path.isdir(out_dir):
                 # Post-generation outpaint cleanup: combines two operations
@@ -29574,8 +29706,14 @@ def _run_generation(job_id: str, *, finalize: bool = True, _slot_owned: bool = F
                 # Refresh sidecars after post-processing/renames. Internal
                 # shot clips are deleted after shot-aware edit assembly and
                 # therefore must never be published as gallery artifacts.
+                provenance_clock.stop()
                 if not defer_output_publication:
                     _write_output_sidecars(new_files)
+
+            if success:
+                final_provenance = _job_provenance()
+                if final_provenance:
+                    update_job(job, provenance=final_provenance)
 
             if success and not finalize:
                 deferred_updates = {}
