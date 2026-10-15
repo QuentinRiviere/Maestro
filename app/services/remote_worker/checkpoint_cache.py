@@ -24,6 +24,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import subprocess
 import tempfile
 import threading
@@ -61,6 +62,13 @@ PROGRESS_INTERVAL_SECONDS = 2.0
 # time, and a stalled upload must never hold a generation hostage.
 _MIN_UPLOAD_BYTES_PER_S = 15_000_000
 _MIN_UPLOAD_TIMEOUT_S = 300
+# R2 answers a fresh or briefly unrecognised per-pod key with 401 and drops
+# multipart uploads now and then; a failed upload batch is retried, only for
+# the copies that failed, after these pauses.
+_UPLOAD_RETRY_DELAYS_S = (20, 60)
+_RETRYABLE_UPLOAD_ERRORS = ("Unauthorized", "MultipartUpload", "InternalError", "SlowDown",
+                            "ServiceUnavailable", "RequestTimeout", "connection reset", "EOF")
+_FAILED_COPY = re.compile(r'ERROR "cp (?:\S+ )*?(\S+) (s3://\S+)"')
 
 
 class CheckpointCacheError(RuntimeError):
@@ -117,6 +125,7 @@ class R2CheckpointCache:
         self._roots = {name: os.path.abspath(path) for name, path in roots.items()}
         self._s5cmd = s5cmd
         self._runner = runner
+        self._sleep = time.sleep
         # A test runner cannot stream; files are then verified after the batch.
         self._stream = runner is subprocess.run
 
@@ -178,6 +187,24 @@ class R2CheckpointCache:
             self._s5("run", batch, timeout=timeout)
         finally:
             os.unlink(batch)
+
+    def _upload_batch(self, lines: list[str], timeout: float | None = None) -> None:
+        """``_run_batch`` for uploads, retrying the copies R2 transiently refused."""
+        pending = list(lines)
+        for attempt, delay in enumerate((*_UPLOAD_RETRY_DELAYS_S, None)):
+            try:
+                self._run_batch(pending, timeout=timeout)
+                return
+            except CheckpointCacheError as exc:
+                message = str(exc)
+                if delay is None or not any(marker in message for marker in _RETRYABLE_UPLOAD_ERRORS):
+                    raise
+                failed = {destination for _source, destination in _FAILED_COPY.findall(message)}
+                retry = [line for line in pending if any(f'"{d}"' in line for d in failed)]
+                pending = retry or pending
+                log.warning("R2 upload attempt %d failed for %d file(s), retrying in %ds: %s",
+                            attempt + 1, len(pending), delay, message[-300:])
+                self._sleep(delay)
 
     def _stream_batch(self, lines: list[str], on_line: Callable[[str], None]) -> None:
         """``s5cmd run`` reporting each finished command as it completes."""
@@ -529,7 +556,7 @@ class R2CheckpointCache:
             if (root, path) not in before_links
         ]
         upload_bytes = sum(entry.size for entry in new_files)
-        self._run_batch([
+        self._upload_batch([
             f'cp {_CP_FLAGS} "{self._local(entry.root, entry.path)}" "{self._remote(entry.root, entry.path)}"'
             for entry in new_files
         ], timeout=max(_MIN_UPLOAD_TIMEOUT_S, upload_bytes / _MIN_UPLOAD_BYTES_PER_S))

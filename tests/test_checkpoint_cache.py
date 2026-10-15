@@ -30,6 +30,7 @@ class FakeS5:
         self.commands = []
         self.timeouts = []
         self.drop_on_run = set()  # remote paths silently not copied (exit 0)
+        self.refuse_uploads = 0  # next N upload batches: first copy refused with 401
         self.copied = []  # (source, destination) of every copy
 
     def _path(self, url):
@@ -65,10 +66,17 @@ class FakeS5:
                 self._cp(args[0], args[1])
             elif command == "run":
                 with open(args[0]) as handle:
-                    for line in handle:
-                        parts = shlex.split(line)
-                        if parts:
-                            self._cp(parts[-2], parts[-1])
+                    lines = [shlex.split(line) for line in handle if line.strip()]
+                if self.refuse_uploads and lines and lines[0][-1].startswith("s3://"):
+                    self.refuse_uploads -= 1
+                    for parts in lines[1:]:
+                        self._cp(parts[-2], parts[-1])
+                    src, dst = lines[0][-2], lines[0][-1]
+                    return subprocess.CompletedProcess(argv, 1, "", (
+                        f'ERROR "cp {src} {dst}": MultipartUpload: upload multipart failed '
+                        "upload id: X caused by: Unauthorized: Unauthorized status code: 401"))
+                for parts in lines:
+                    self._cp(parts[-2], parts[-1])
         except FileNotFoundError as exc:
             return subprocess.CompletedProcess(argv, 1, "", f"ERROR: {exc}")
         return subprocess.CompletedProcess(argv, 0, "", "")
@@ -233,6 +241,28 @@ class UntrustedCacheTests(CheckpointCacheTests):
         cache, roots = self._pod(name)
         cache.readonly = cache.require_hashes = True
         return cache, roots
+
+    def test_publish_retries_only_the_uploads_r2_refused(self):
+        cache, roots = self._pod("pod1")
+        cache._sleep = lambda _seconds: None
+        before = cache.snapshot()
+        self._download(roots)
+        self.s5.refuse_uploads = 1
+        self.assertEqual(cache.publish("minimax_h3", before), 3)
+        uploads = [dst for _src, dst in self.s5.copied if dst.startswith("s3://") and "manifests" not in dst]
+        self.assertEqual(len(uploads), 3)  # the refused file once more, the others not re-sent
+
+        second, other = self._pod("pod2")
+        self.assertEqual(second.hydrate("minimax_h3"), 3)
+
+    def test_publish_gives_up_after_the_retries(self):
+        cache, roots = self._pod("pod1")
+        cache._sleep = lambda _seconds: None
+        before = cache.snapshot()
+        self._download(roots)
+        self.s5.refuse_uploads = 10
+        with self.assertRaises(CheckpointCacheError):
+            cache.publish("minimax_h3", before)
 
     def test_publish_records_hashes_and_untrusted_pods_verify_them(self):
         trusted, _ = self._publish_from("trusted")
