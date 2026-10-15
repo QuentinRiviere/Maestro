@@ -295,10 +295,17 @@ export function buildRunShots(
     const next = shots.find(shot => shot.imageStatus === 'pending')
     if (next) next.imageStatus = 'running'
   } else if (VIDEO_PHASES.has(phase)) {
-    const clip = live?.progress?.current_clip
-    const target = typeof clip === 'number' && clip > 0
+    const clip = liveClipNumber(live?.progress)
+    const target = clip > 0
       ? shots[clip - 1]
       : shots.find(shot => shot.videoStatus === 'pending')
+    // Per-shot renders land in the saved run only when the phase ends, so the
+    // shots before the live clip are already rendered.
+    if (clip > 0 && !shots.some(shot => shot.sequence)) {
+      for (const shot of shots.slice(0, clip - 1)) {
+        if (shot.videoStatus === 'pending') shot.videoStatus = 'done'
+      }
+    }
     const members = target?.sequence ? target.sequence.members : target ? [target.index] : []
     for (const member of members) {
       const shot = shots[member]
@@ -306,6 +313,17 @@ export function buildRunShots(
     }
   }
   return shots
+}
+
+/**
+ * The 1-based clip the worker renders: ``current_clip`` when the backend sends
+ * it, else the "Clip N/M" prefix of the progress message.
+ */
+export function liveClipNumber(progress?: { current_clip?: number, message?: string } | null): number {
+  const clip = progress?.current_clip
+  if (typeof clip === 'number' && clip > 0) return clip
+  const match = /\bClip (\d+)\s*\/\s*\d+/.exec(progress?.message ?? '')
+  return match ? Number(match[1]) : 0
 }
 
 /**

@@ -373,3 +373,11 @@ test('director hash routes round-trip', () => {
   assert.equal(formatDirectorHash({ pid: null, view: 'canvas' }), '#/director')
   assert.deepEqual(parseDirectorHash(formatDirectorHash({ pid: 'a/b', view: 'canvas' })), { pid: 'a/b', view: 'canvas' })
 })
+
+test('live clip number falls back to the progress message', async () => {
+  const { liveClipNumber } = await import('../src/lib/directorRun.ts')
+  assert.equal(liveClipNumber({ current_clip: 3, message: 'Clip 5/10' }), 3)
+  assert.equal(liveClipNumber({ message: 'Clip 4/10: Prompt 4/10 - Denoising | 18.0s' }), 4)
+  assert.equal(liveClipNumber({ message: 'Review images' }), 0)
+  assert.equal(liveClipNumber(null), 0)
+})
