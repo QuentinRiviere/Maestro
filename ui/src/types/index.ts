@@ -2153,4 +2153,7 @@ export interface PipelineListItem {
   workspace: string
   thumbnail_url?: string | null
   repair_status?: PipelineRepairStatus | null
+  completed_at?: number | null
+  /** Wall-clock seconds from start to completion (or to the last save). */
+  duration_sec?: number | null
 }

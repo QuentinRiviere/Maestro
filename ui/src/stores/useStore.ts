@@ -7,6 +7,7 @@ import { vigglePreparationKey, viggleTimeline } from '../lib/viggle'
 import { DEFAULT_AVATAR_SPEAKER_LOCATIONS, isLongCatAvatarModel, isMultiSpeakerAvatarModel, parseAvatarSpeakerRegions } from '../lib/avatarWorkflow'
 import type { GenerateParams, OutputFile, MediaFilter, AspectRatio, ResolutionPreset, ScailResolutionProfile, GenerationJob, ModelFamily, ModelDef, GenerationMode, StudioVideoWorkflow, StudioVideoCreateRoute, StudioVideoEffectiveCreateRoute, StudioImageWorkflow, ModelOptions, SystemConfig, SettingsTab, OutputMetadata, MultiClip, ServicesConfig, LlmStatus, LlmModelOption, AudioAnalysisResult, PlannedClip, ClipPlan, DirectorClipImage, DirectorImageGenProgress, SpeakerMapping, DirectorSkill, DirectorShotImageGuidance, DirectorBibleSelection, ShortFilmCharacter, ShortFilmPath, ViralPlatform, ViralStyle, CivitAIModel, CivitAIDownload, PipelineListItem, PipelineClipState, PipelineRepairState, SavedPipelineState, DirectorQueueState, SystemDetectResponse, SystemStats, RecastCharacterMapping, RepaintRegionMapping, H3WindowPlan, MiniMaxH3Reference, AppMode } from '../types'
 import * as api from '../api/client'
+import type { DirectorView } from '../lib/directorRoute'
 import { applyThemePrefs, getStoredPrefs, type FamilyId, type ThemeMode, type ThemePrefs } from '../lib/theme'
 import {
   effectiveH3OmniSequenceFrames,
@@ -1722,7 +1723,12 @@ interface AppState {
   dashboardPipelineList: PipelineListItem[]
   dashboardSelectedPipeline: SavedPipelineState | null
   dashboardLoading: boolean
+  /** Which Director page view is shown: runs list, storyboard, canvas or details. */
+  dashboardView: DirectorView
   setDashboardOpen: (open: boolean) => void
+  setDashboardView: (view: DirectorView) => void
+  /** Re-read the selected run from disk without the loading overlay (live polling). */
+  refreshSavedPipeline: (pid: string) => Promise<void>
   loadPipelineList: () => Promise<void>
   loadSavedPipeline: (pid: string) => Promise<void>
   tagClip: (pid: string, clipIndex: number, tag: string | null) => Promise<void>
@@ -4384,6 +4390,7 @@ export const useStore = create<AppState>((set, get) => ({
   dashboardPipelineList: [],
   dashboardSelectedPipeline: null,
   dashboardLoading: false,
+  dashboardView: 'storyboard',
   directorQueue: null,
   directorQueueLoading: false,
   directorQueueEditingEntryId: null,
@@ -4459,6 +4466,19 @@ export const useStore = create<AppState>((set, get) => ({
     } catch (e) {
       if (loadToken !== _dashboardPipelineListLoadToken) return
       console.error('Failed to load pipeline list:', e)
+    }
+  },
+  setDashboardView: (view) => set({ dashboardView: view }),
+  refreshSavedPipeline: async (pid) => {
+    const loadToken = _dashboardPipelineLoadToken
+    try {
+      const pipeline = await api.fetchSavedPipeline(pid)
+      // A newer explicit load (another run picked) wins over this refresh.
+      if (loadToken !== _dashboardPipelineLoadToken) return
+      if (get().dashboardSelectedPipeline?.pipeline_id !== pid) return
+      set({ dashboardSelectedPipeline: pipeline })
+    } catch (e) {
+      console.warn(`Failed to refresh pipeline ${pid}:`, e)
     }
   },
   loadSavedPipeline: async (pid) => {
