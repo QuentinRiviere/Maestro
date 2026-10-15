@@ -7,11 +7,15 @@ the Dashboard keep seeing one clip per shot.
 
 Only base H3 (T2VA/I2VA/FL2VA) story runs without driving audio are grouped.
 Ref2VA/Omni and shots chained with ``extend_previous`` keep rendering one shot
-per generation. Everything here is pure except :func:`split_sequence_video`.
+per generation. H3 does not cut exactly where the prompt asks (the drift grows
+along the sequence and it sometimes adds cuts), so the split snaps each planned
+cut to the nearest cut found by scene detection on the render. Everything here
+is pure except :func:`detect_scene_cuts` and :func:`split_sequence_video`.
 """
 
 from __future__ import annotations
 
+import itertools
 import re
 from typing import Any, Mapping, MutableMapping, Sequence
 
@@ -30,6 +34,13 @@ SEQUENCE_KEY = "_director_sequence"
 # H3 drifts off the asked cut times more with every cut (up to ~1 s by the
 # fourth shot), so a sequence holds at most three shots.
 MAX_SEQUENCE_SHOTS = 3
+# ffmpeg ``scene`` score above which a frame counts as a hard cut.
+SCENE_CUT_THRESHOLD = 0.27
+# A planned cut snaps to a detected cut at most this far away.
+CUT_SNAP_TOLERANCE_SEC = 1.2
+# No snapped cut may leave a shot shorter than this.
+MIN_SEQUENCE_SHOT_SEC = 0.5
+_SNAP_CANDIDATES = 4
 _SEQUENCE_MODES = {"t2va", "i2va", "fl2va", "l2va"}
 _OFF = {"off", "false", "0", "no"}
 _ON = {"on", "true", "1", "yes"}
@@ -367,3 +378,124 @@ def split_sequence_video(
                     "-movflags", "+faststart", output]
         subprocess.run(command, check=True, capture_output=True, timeout=600)
     return list(output_paths)
+
+
+_PTS_TIME_RE = re.compile(r"pts_time:\s*(-?\d+(?:\.\d+)?)")
+
+
+def detect_scene_cuts(source: str, *, threshold: float = SCENE_CUT_THRESHOLD, timeout: float = 300) -> list[float]:
+    """Times (seconds) of the hard cuts ffmpeg's scene detection finds in ``source``.
+
+    One decode pass, video only. Raises when ffmpeg fails, so the caller can
+    fall back to the planned cuts.
+    """
+    import subprocess
+
+    command = [
+        "ffmpeg", "-hide_banner", "-nostats", "-i", source, "-an", "-sn", "-dn",
+        "-vf", f"select='gt(scene,{float(threshold)})',showinfo", "-f", "null", "-",
+    ]
+    result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg scene detection failed: {result.stderr.strip()[-300:]}")
+    times = {
+        round(float(match.group(1)), 3)
+        for line in result.stderr.splitlines() if "showinfo" in line
+        for match in [_PTS_TIME_RE.search(line)] if match
+    }
+    return sorted(time for time in times if time > 0)
+
+
+def snap_sequence_cuts(
+    planned_cuts: Sequence[int],
+    detected_sec: Sequence[float],
+    *,
+    fps: float,
+    total_frames: int,
+    tolerance_sec: float = CUT_SNAP_TOLERANCE_SEC,
+    min_shot_sec: float = MIN_SEQUENCE_SHOT_SEC,
+) -> tuple[list[int], list[float]]:
+    """Snap each planned cut frame to the nearest detected cut.
+
+    A planned cut matches a detected cut at most ``tolerance_sec`` away; each
+    detected cut matches at most one planned cut. The result keeps the cuts
+    strictly increasing with every shot at least ``min_shot_sec`` long, between
+    0 and ``total_frames``. Among valid assignments the one matching the most
+    cuts wins, then the one closest to the plan. Unmatched planned cuts keep
+    their planned frame. Returns the cut frames and the detected cuts (seconds)
+    that matched no planned cut.
+    """
+    fps = float(fps)
+    planned = [int(cut) for cut in planned_cuts]
+    detected = sorted({float(time) for time in detected_sec})
+    if not planned or fps <= 0:
+        return planned, detected
+    min_frames = max(1, int(round(min_shot_sec * fps)))
+    tolerance = float(tolerance_sec) * fps
+    total = int(total_frames)
+
+    def valid(cuts: Sequence[int]) -> bool:
+        bounds = [0, *cuts, total]
+        return all(b - a >= min_frames for a, b in zip(bounds, bounds[1:]))
+
+    options: list[list[int | None]] = []
+    for cut in planned:
+        near = sorted(
+            (index for index, time in enumerate(detected) if abs(time * fps - cut) <= tolerance),
+            key=lambda index: abs(detected[index] * fps - cut),
+        )
+        options.append([None, *near[:_SNAP_CANDIDATES]])
+    best: tuple[int, float] | None = None
+    best_cuts: list[int] | None = None
+    best_used: set[int] = set()
+    for choice in itertools.product(*options):
+        used = [index for index in choice if index is not None]
+        if len(set(used)) != len(used):
+            continue
+        cuts = [
+            cut if index is None else int(round(detected[index] * fps))
+            for cut, index in zip(planned, choice)
+        ]
+        if not valid(cuts):
+            continue
+        score = (-len(used), sum(abs(a - b) for a, b in zip(cuts, planned)))
+        if best is None or score < best:
+            best, best_cuts, best_used = score, cuts, set(used)
+    if best_cuts is None:
+        return planned, detected
+    return best_cuts, [time for index, time in enumerate(detected) if index not in best_used]
+
+
+def sequence_frame_ranges(
+    records: Sequence[Mapping[str, Any]],
+    detected_sec: Sequence[float] | None,
+    *,
+    tolerance_sec: float = CUT_SNAP_TOLERANCE_SEC,
+    min_shot_sec: float = MIN_SEQUENCE_SHOT_SEC,
+) -> tuple[list[tuple[int, int]], list[float]]:
+    """The frame range of each member in the render, snapped to real cuts.
+
+    ``records`` are the members' sequence records in order. Without detected
+    cuts (``None``: detection failed) the planned ranges are returned. The
+    first shot starts at frame 0; the last keeps its planned length from its
+    actual start, within the rendered length.
+    """
+    if not records:
+        return [], []
+    fps = float(records[0]["fps"])
+    total = int(records[0].get("total_frames") or 0) or sum(int(r["frames"]) for r in records)
+    planned_cuts = [int(record["start_frame"]) for record in records[1:]]
+    if detected_sec is None:
+        cuts, ignored = planned_cuts, []
+    else:
+        cuts, ignored = snap_sequence_cuts(
+            planned_cuts, detected_sec, fps=fps, total_frames=total,
+            tolerance_sec=tolerance_sec, min_shot_sec=min_shot_sec,
+        )
+    starts = [0, *cuts]
+    last = records[-1]
+    end = min(total, starts[-1] + int(last["frames"]))
+    if detected_sec is None:
+        end = int(last["start_frame"]) + int(last["frames"])
+    ends = [*cuts, max(end, starts[-1] + 1)]
+    return list(zip(starts, ends)), ignored
