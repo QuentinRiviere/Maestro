@@ -2322,21 +2322,34 @@ class family_handler:
         choice. Ordinary H3 definitions leave it automatic so an INT8
         transformer can use the matching compact ConvRot decoder while FP8,
         BF16, and unset runtime modes retain the established FP16 decoder.
+
+        A job-level ``video_vae_precision`` (``int8`` or ``fp16``) wins over
+        both, so a single generation can compare decoders.
         """
 
         if not isinstance(model_def, dict):
             return model_def
-        if model_def.get("minimax_h3_video_vae_auto") is not True:
-            return model_def
         context = runtime_context if isinstance(runtime_context, dict) else {}
-        quantization = str(
-            context.get("transformer_quantization") or ""
-        ).strip().lower()
-        filename = (
-            _VIDEO_VAE_INT8_CONVROT
-            if quantization == "int8"
-            else _VIDEO_VAE
-        )
+        forced = str(context.get("video_vae_precision") or "").strip().lower()
+        if forced:
+            if "minimax_h3_video_vae_filename" not in model_def:
+                return model_def
+            filename = (
+                _VIDEO_VAE_INT8_CONVROT
+                if forced in ("int8", "int8_convrot")
+                else _VIDEO_VAE
+            )
+        else:
+            if model_def.get("minimax_h3_video_vae_auto") is not True:
+                return model_def
+            quantization = str(
+                context.get("transformer_quantization") or ""
+            ).strip().lower()
+            filename = (
+                _VIDEO_VAE_INT8_CONVROT
+                if quantization == "int8"
+                else _VIDEO_VAE
+            )
         if model_def.get("minimax_h3_video_vae_filename") == filename:
             return model_def
         resolved = dict(model_def)
