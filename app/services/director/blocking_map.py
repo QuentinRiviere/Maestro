@@ -9,6 +9,7 @@ surfaces and light from the scene's photos. Geometry apart from texture.
 from __future__ import annotations
 
 import math
+import re
 from typing import Any, Optional
 
 FRAMINGS = ("wide", "medium", "close-up")
@@ -200,8 +201,13 @@ def _facing_words(blocking: dict, facing: Optional[float]) -> str:
     return "facing frame right" if relative < 180 else "facing frame left"
 
 
-def framing_line(blocking: Optional[dict]) -> str:
-    """The diagram in words, for editors that do not read images."""
+def framing_line(blocking: Optional[dict], foreground: str = "") -> str:
+    """The diagram in words, for editors that do not read images.
+
+    ``foreground`` names the person whose back fills an over-the-shoulder
+    shot (see ``ots_foreground``): they are described as a cropped,
+    faceless shoulder rather than listed with the others.
+    """
     if not blocking:
         return ""
     placed = []
@@ -214,12 +220,21 @@ def framing_line(blocking: Optional[dict]) -> str:
         return f"Framing: {framing} shot."
     # Perspective: a point's place across the frame is its lateral offset over its depth.
     placed.sort(key=lambda item: item[0] / item[1])
+    back = _name_key(foreground)
     people = []
     for _lateral, _depth, subject in placed:
+        if back and _name_key(subject["name"]) == back:
+            continue
         facing = _facing_words(blocking, subject["facing_deg"])
         people.append(f"{subject['name']} ({facing})" if facing else subject["name"])
-    order = " In frame, left to right: " + ", ".join(people) + "." if len(people) > 1 else (
-        f" In frame: {people[0]}.")
+    order = ""
+    if len(people) > 1:
+        order = " In frame, left to right: " + ", ".join(people) + "."
+    elif people:
+        order = f" In frame: {people[0]}."
+    if back and len(people) < len(placed):
+        name = next(s["name"] for _l, _d, s in placed if _name_key(s["name"]) == back)
+        order += " " + ots_foreground_line(name, _foreground_side(blocking, name))
     return f"Framing: {framing} shot.{order}"
 
 
@@ -252,6 +267,58 @@ def subject_view(blocking: Optional[dict], name: str) -> str:
     if angle < 125:
         return "face_profile"
     return "back"
+
+
+_OTS_RE = re.compile(r"over[\s-]*(?:the[\s-]*)?shoulders?|\bo\.?t\.?s\b", re.IGNORECASE)
+# A person turned at least this far from the camera shows it their back.
+_BACK_ANGLE = 135.0
+
+
+def is_over_the_shoulder(framing: Any) -> bool:
+    """Whether a framing text names an over-the-shoulder shot ("OTS", "over-the-shoulder")."""
+    return bool(_OTS_RE.search(str(framing or "")))
+
+
+def ots_foreground(blocking: Optional[dict], framing: Any = "") -> str:
+    """The person whose back fills the foreground of an over-the-shoulder shot ("" when none).
+
+    An OTS framing names one; a medium or close shot whose nearest person
+    has their back to the camera (and someone else in frame) is one too.
+    That person must not get a front portrait as reference: the editor
+    redraws the face and the shot shows them twice.
+    """
+    if not blocking:
+        return ""
+    placed = []
+    for subject in blocking["subjects"]:
+        _lateral, depth = _to_camera(blocking, subject["x"], subject["y"])
+        if depth > 0.02:
+            placed.append((depth, subject))
+    if len(placed) < 2:
+        return ""
+    placed.sort(key=lambda item: item[0])
+    nearest = placed[0][1]
+    facing = nearest.get("facing_deg")
+    back = facing is not None and _angle_from_camera(blocking, facing) >= _BACK_ANGLE
+    if is_over_the_shoulder(framing) or (back and blocking["camera"]["framing"] != "wide"):
+        return nearest["name"]
+    return ""
+
+
+def ots_foreground_line(name: str, side: str) -> str:
+    """The OTS foreground person in words: their back, cropped, no face."""
+    side = side if side in ("left", "right") else "left"
+    return (f"Foreground: the out-of-focus back of {name}'s head and shoulder in the {side} third, "
+            "cropped by the frame edge, face not visible.")
+
+
+def _foreground_side(blocking: dict, name: str) -> str:
+    sides = screen_sides(blocking)
+    side = sides.get(name, "left")
+    if side == "center":
+        others = [s for n, s in sides.items() if n != name and s in ("left", "right")]
+        side = "right" if others and others[0] == "left" else "left"
+    return side
 
 
 def gaze_targets(blocking: Optional[dict]) -> dict[str, str]:
@@ -288,13 +355,16 @@ def insert_line(framing: str, names: list[str]) -> str:
             "seen from close; no face, no head and no shoulders in frame.")
 
 
-def staging_line(blocking: Optional[dict]) -> str:
+def staging_line(blocking: Optional[dict], framing: Any = "") -> str:
     """The layout in words plus who is in frame, once each, and where they look.
 
     Image editors given a portrait add a second copy of the person or turn
     them to the lens; naming the count and the eyelines prevents both.
+    ``framing`` is the shot's framing text: an over-the-shoulder shot
+    describes its foreground person by their back only (``ots_foreground``).
     """
-    line = framing_line(blocking)
+    foreground = ots_foreground(blocking, framing)
+    line = framing_line(blocking, foreground)
     if not line:
         return ""
     placed = [s for s in blocking["subjects"] if _to_camera(blocking, s["x"], s["y"])[1] > 0.02]
@@ -302,11 +372,13 @@ def staging_line(blocking: Optional[dict]) -> str:
         count = len(placed)
         line += (f" Exactly {count} {'person' if count == 1 else 'people'} in frame, each shown once"
                  " and never duplicated.")
+        if foreground:
+            line += f" {foreground} is seen only from behind."
     names = {s["name"] for s in placed}
     people = {p["name"]: p for p in [*blocking["subjects"], *blocking.get("offscreen", [])]}
     looks = []
     for who, whom in gaze_targets(blocking).items():
-        if who not in names:
+        if who not in names or who == foreground:
             continue
         if whom in names:
             looks.append(f"{who} looks at {whom}")

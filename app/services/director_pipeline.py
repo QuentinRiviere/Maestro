@@ -2379,7 +2379,8 @@ def _rerun_clip_image_impl(out_dir: str, pid: str, clip_index: int, prompt_overr
         first_scene=group == first_group, scene_sets=bool(group and location_by_name),
         subject_refs=shot_identity_refs(snapshot, shot_plan, shot_subject_refs(
             clip, prompt, character_needles, prop_needles, valid_character_refs)),
-        extra_refs=valid_character_refs + valid_location_refs, layout=bool(layout_ref),
+        extra_refs=without_ots_front_refs(snapshot, shot_plan, valid_character_refs + valid_location_refs),
+        layout=bool(layout_ref),
         scene_location_reverse=location_reverse_view(snapshot, scene_location),
     )
 
@@ -5620,6 +5621,10 @@ def shot_identity_refs(params: dict, plan: dict, refs: list[str]) -> list[str]:
     The angle comes from the shot's blocking (where the person faces against
     the camera); a person without that angle keeps their look image. An
     insert (hands, an object) gets no portrait at all.
+
+    The foreground person of an over-the-shoulder shot (``director_ots_foreground``)
+    never gets a front-facing portrait: the editor would redraw their face
+    and show them twice. They get the bible's back view, or no reference.
     """
     from services.director.blocking_map import parse_blocking_map, subject_view
 
@@ -5631,14 +5636,74 @@ def shot_identity_refs(params: dict, plan: dict, refs: list[str]) -> list[str]:
         # A hands-or-object insert drawn from a person's portrait comes out as a portrait.
         return [ref for ref in refs if ref not in names]
     views = params.get("_director_image_views") or {}
+    views = views if isinstance(views, dict) else {}
+    back = director_ots_foreground(plan).casefold()
     blocking = parse_blocking_map(plan.get("_director_blocking_map")) if views else None
-    if not blocking:
-        return list(refs)
     out = []
     for ref in refs:
-        view = subject_view(blocking, names.get(ref, ""))
+        name = str(names.get(ref, "") or "")
+        if back and name.strip().casefold() == back:
+            back_view = (views.get(ref) or {}).get("back")
+            if back_view:
+                out.append(back_view)
+            continue
+        view = subject_view(blocking, name) if blocking else ""
         out.append((views.get(ref) or {}).get(view) or ref if view else ref)
     return out
+
+
+def without_ots_front_refs(params: dict, plan: dict, refs: list[str]) -> list[str]:
+    """``refs`` minus the look images of an OTS shot's foreground person (see ``shot_identity_refs``)."""
+    back = director_ots_foreground(plan).casefold()
+    if not back:
+        return list(refs)
+    front = set()
+    for label, path in zip(params.get("character_ref_labels") or [], params.get("character_ref_paths") or []):
+        if str(label or "").strip().casefold() == back:
+            front.update({path, image_stage_ref(params, path)})
+    return [ref for ref in refs if ref not in front]
+
+
+_OTS_FOREGROUND_RE = re.compile(
+    r"\bforeground\b|\bback to (?:the )?camera\b|\bfrom behind\b|\bseen from the back\b|\bback turned\b",
+    re.IGNORECASE,
+)
+
+
+def director_ots_foreground(plan: dict) -> str:
+    """The person whose back fills this over-the-shoulder shot's foreground ("" when none).
+
+    The blocking map decides when the shot has one (see ``ots_foreground``);
+    without a map, an OTS framing takes the subject the planner places in
+    the foreground or with their back to the camera.
+    """
+    from services.director.blocking_map import is_over_the_shoulder, ots_foreground, parse_blocking_map
+
+    framing = str(plan.get("_director_camera_framing") or "")
+    blocking = parse_blocking_map(plan.get("_director_blocking_map"))
+    if blocking:
+        return ots_foreground(blocking, framing)
+    subjects = [s for s in plan.get("_director_subjects_on_screen") or [] if isinstance(s, dict)]
+    if not is_over_the_shoulder(framing) or len(subjects) < 2:
+        return ""
+    for subject in subjects:
+        if _OTS_FOREGROUND_RE.search(str(subject.get("position_or_relation") or "")):
+            return str(subject.get("speaker_name") or subject.get("name")
+                       or subject.get("character_id") or "").strip()
+    return ""
+
+
+def _ots_text_side(plan: dict, name: str) -> str:
+    """Frame side of the OTS foreground person from the planner's words (left by default)."""
+    for subject in plan.get("_director_subjects_on_screen") or []:
+        if not isinstance(subject, dict):
+            continue
+        who = str(subject.get("speaker_name") or subject.get("name") or subject.get("character_id") or "")
+        if who.strip().casefold() == name.casefold():
+            relation = str(subject.get("position_or_relation") or "").lower()
+            if "right" in relation and "left" not in relation:
+                return "right"
+    return "left"
 
 
 def director_scene_locks(plans: list[dict]) -> list[Optional[dict]]:
@@ -8607,11 +8672,15 @@ def _render_shot_layout(pid: str, index: int, blocking_map: dict, out_dir: str) 
         return ""
 
 
-def blocking_framing_line(blocking_map: dict) -> str:
-    """The shot's layout in words: framing, who is in frame once each, and their eyelines."""
+def blocking_framing_line(blocking_map: dict, framing: str = "") -> str:
+    """The shot's layout in words: framing, who is in frame once each, and their eyelines.
+
+    ``framing`` is the shot's framing text, so an over-the-shoulder shot
+    describes its foreground person by their back only.
+    """
     from services.director.blocking_map import parse_blocking_map, staging_line
 
-    return staging_line(parse_blocking_map(blocking_map))
+    return staging_line(parse_blocking_map(blocking_map), framing)
 
 
 def director_shot_layout(pid: str, index: int, plan: dict, prompt: str, image_model: str,
@@ -8637,13 +8706,19 @@ def director_shot_layout(pid: str, index: int, plan: dict, prompt: str, image_mo
         if not names:
             return "", prompt
         count = len(names)
-        return "", (f"{prompt.rstrip()} Exactly {count} {'person' if count == 1 else 'people'} in frame "
-                    f"({', '.join(names)}), each shown once and never duplicated. Nobody looks into the camera.")
+        text = (f"{prompt.rstrip()} Exactly {count} {'person' if count == 1 else 'people'} in frame "
+                f"({', '.join(names)}), each shown once and never duplicated.")
+        back = director_ots_foreground(plan)
+        if back:
+            from services.director.blocking_map import ots_foreground_line
+
+            text += " " + ots_foreground_line(back, _ots_text_side(plan, back))
+        return "", f"{text} Nobody looks into the camera."
     # The diagram is drawn for the Dashboard only: image editors reproduce
     # their references, so a diagram sent to them was painted into the shot.
     # Every model reads the layout as a sentence.
     _render_shot_layout(pid, index, blocking_map, out_dir)
-    layout_text = blocking_framing_line(blocking_map)
+    layout_text = blocking_framing_line(blocking_map, framing)
     return "", f"{prompt.rstrip()} {layout_text}".strip() if layout_text else prompt
 
 
@@ -9025,7 +9100,7 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
                     scene_sets=bool(group and location_by_name),
                     subject_refs=shot_identity_refs(params, shot_plan, shot_subject_refs(
                         plan, prompt, character_needles, prop_needles, valid_character_refs)),
-                    extra_refs=extra_refs, layout=bool(layout_ref),
+                    extra_refs=without_ots_front_refs(params, shot_plan, extra_refs), layout=bool(layout_ref),
                     scene_location_reverse=location_reverse_view(params, scene_location or ""),
                 )
                 if scene_master and shot_plan.get("_director_camera_reverse"):

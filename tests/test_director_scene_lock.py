@@ -12,8 +12,8 @@ if _APP_DIR not in sys.path:
 
 from services import director_pipeline as pipeline  # noqa: E402
 from services.director.blocking_map import (  # noqa: E402
-    camera_faces_reverse, framing_line, lock_scene_blockings, parse_blocking_map, scene_floor_layout,
-    screen_sides, staging_line,
+    camera_faces_reverse, framing_line, is_over_the_shoulder, lock_scene_blockings, ots_foreground,
+    parse_blocking_map, scene_floor_layout, screen_sides, staging_line,
 )
 
 # Two people face to face across a table, along the room's depth: the man at
@@ -270,7 +270,81 @@ class ReverseAngleTests(unittest.TestCase):
         plan = pipeline.scene_locked_plan(plans[1], pipeline.director_scene_locks(plans)[1])
         with tempfile.TemporaryDirectory() as folder:
             _, prompt = pipeline.director_shot_layout("p", 1, plan, "They talk.", "cloud_fal_seedream_4", folder)
-        self.assertIn("In frame, left to right: Woman", prompt)
+        # Over the man's shoulder: he is the cropped back on the right, she is in frame.
+        self.assertIn("In frame: Woman (facing camera).", prompt)
+        self.assertIn("the out-of-focus back of Man's head and shoulder in the right third", prompt)
+        self.assertIn("Exactly 2 people in frame", prompt)
+
+
+class OverTheShoulderTests(unittest.TestCase):
+    """The foreground back of an OTS shot: no front portrait, no face, same people count."""
+
+    PARAMS = {"character_ref_labels": ["Man", "Woman"], "character_ref_paths": ["/p/man.png", "/p/woman.png"]}
+
+    def test_the_nearest_back_to_camera_person_is_the_foreground(self):
+        self.assertEqual(ots_foreground(parse_blocking_map(OVER_MAN)), "Man")
+        self.assertEqual(ots_foreground(parse_blocking_map(OVER_WOMAN)), "Woman")
+        # A wide master is not an OTS, and one person alone is not either.
+        self.assertEqual(ots_foreground(parse_blocking_map(MASTER)), "")
+        self.assertEqual(ots_foreground(parse_blocking_map({**OVER_MAN, "subjects": [WOMAN]})), "")
+
+    def test_an_ots_framing_names_the_nearest_person(self):
+        # Both face the camera in this map, but the framing says over-the-shoulder.
+        facing = {"camera": {"x": 0.5, "y": 0.95, "facing_deg": 0, "framing": "medium"},
+                  "subjects": [{"name": "Man", "x": 0.4, "y": 0.75, "facing_deg": 180},
+                               {"name": "Woman", "x": 0.55, "y": 0.4, "facing_deg": 180}]}
+        blocking = parse_blocking_map(facing)
+        self.assertEqual(ots_foreground(blocking), "")
+        self.assertEqual(ots_foreground(blocking, "OTS on Woman"), "Man")
+        self.assertEqual(ots_foreground(blocking, "medium over-the-shoulder"), "Man")
+        self.assertTrue(is_over_the_shoulder("Over the shoulder, eye level"))
+        self.assertFalse(is_over_the_shoulder("medium shot of the shoulders and hands"))
+
+    def test_the_layout_describes_the_back_and_keeps_the_count(self):
+        line = staging_line(parse_blocking_map(OVER_MAN))
+        self.assertIn("In frame: Woman (facing camera).", line)
+        self.assertIn("Foreground: the out-of-focus back of Man's head and shoulder in the right third, "
+                      "cropped by the frame edge, face not visible.", line)
+        self.assertIn("Exactly 2 people in frame", line)
+        self.assertNotIn("Man (back to camera)", line)
+        self.assertNotIn("Man looks at", line)
+
+    def test_the_foreground_person_gets_the_back_view_or_nothing(self):
+        plan = {"_director_blocking_map": OVER_MAN}
+        views = {"/p/man.png": {"face_front": "/p/man_face.png", "back": "/p/man_back.png"},
+                 "/p/woman.png": {"face_front": "/p/woman_face.png"}}
+        refs = pipeline.shot_identity_refs({**self.PARAMS, "_director_image_views": views}, plan,
+                                           ["/p/man.png", "/p/woman.png"])
+        self.assertEqual(refs, ["/p/man_back.png", "/p/woman_face.png"])
+        no_back = {"/p/man.png": {"face_front": "/p/man_face.png"}}
+        refs = pipeline.shot_identity_refs({**self.PARAMS, "_director_image_views": no_back}, plan,
+                                           ["/p/man.png", "/p/woman.png"])
+        self.assertEqual(refs, ["/p/woman.png"])
+        # Without any bible views, the front portrait is still dropped.
+        self.assertEqual(pipeline.shot_identity_refs(self.PARAMS, plan, ["/p/man.png", "/p/woman.png"]),
+                         ["/p/woman.png"])
+        # The fallback references (no scene set) drop the front portrait too.
+        self.assertEqual(pipeline.without_ots_front_refs(self.PARAMS, plan, ["/p/man.png", "/p/woman.png", "/p/bar.png"]),
+                         ["/p/woman.png", "/p/bar.png"])
+        # A shot that is not an OTS keeps both people.
+        self.assertEqual(pipeline.shot_identity_refs(self.PARAMS, {"_director_blocking_map": MASTER},
+                                                     ["/p/man.png", "/p/woman.png"]),
+                         ["/p/man.png", "/p/woman.png"])
+
+    def test_without_a_map_the_planner_words_name_the_foreground(self):
+        plan = {"_director_camera_framing": "Over-the-shoulder medium shot",
+                "_director_subjects_on_screen": [
+                    {"speaker_name": "Man", "visual_description": "a man",
+                     "position_or_relation": "foreground right, back to camera"},
+                    {"speaker_name": "Woman", "visual_description": "a woman"}]}
+        self.assertEqual(pipeline.director_ots_foreground(plan), "Man")
+        self.assertEqual(pipeline.shot_identity_refs(self.PARAMS, plan, ["/p/man.png", "/p/woman.png"]),
+                         ["/p/woman.png"])
+        _, prompt = pipeline.director_shot_layout("p", 0, plan, "They talk.", "flux2_klein_9b", "/tmp")
+        self.assertIn("Exactly 2 people in frame (Man, Woman)", prompt)
+        self.assertIn("the out-of-focus back of Man's head and shoulder in the right third", prompt)
+        plan["_director_camera_framing"] = "medium two-shot"
+        self.assertEqual(pipeline.director_ots_foreground(plan), "")
 
 
 if __name__ == "__main__":
