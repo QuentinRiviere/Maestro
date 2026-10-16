@@ -7,6 +7,11 @@ image. Nothing changes in how Maestro routes jobs, caches checkpoints in R2 or
 records provenance. The hourly price is $0, so jobs show `$0.00/h` and an
 estimated cost of $0.
 
+A dstack run takes the whole Spark. To keep the worker running next to other
+inference servers (LLMs through llama.cpp, TTS...) with llama-swap deciding
+who holds the GPU memory, run it as a **static worker** instead: see
+[Remote-worker-static-and-llama-swap.md](Remote-worker-static-and-llama-swap.md).
+
 | | |
 |---|---|
 | Hardware | GB10 Grace Blackwell superchip, 20 Arm cores, 128 GB unified CPU/GPU memory |
