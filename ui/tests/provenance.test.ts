@@ -78,3 +78,15 @@ test('labels and formatting', () => {
   assert.equal(formatUsd(0.0004), '<$0.001')
   assert.equal(formatUsd(2.5), '$2.50')
 })
+
+test('a sampler profile and its added LoRA show in the rows', () => {
+  const qwen: GenerationProvenance = {
+    model: { type: 'qwen_image_21_7B', name: 'Qwen Image 2.1 7B' },
+    loras: [{ name: 'Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r256.safetensors', multiplier: 1 }],
+    acceleration: { steps: 6, sampler: 'viggle_v021' },
+  }
+  const rows = Object.fromEntries(provenanceRows(qwen).map(row => [row.label, row.value]))
+  assert.equal(rows.Acceleration, 'Viggle Turbo v0.2.1 6-step')
+  assert.equal(rows.LoRAs, 'Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r256.safetensors (1x)')
+  assert.equal(accelerationLabel({ steps: 20, sampler: 'unipc' }), 'unipc 20-step')
+})

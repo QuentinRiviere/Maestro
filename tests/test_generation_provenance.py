@@ -162,6 +162,28 @@ class BuildTests(unittest.TestCase):
             "model": {"type": "flux"}, "hardware": {"location": "local"},
         })
 
+    def test_engine_loras_include_the_acceleration_profile_adapter(self):
+        # A Director Qwen 2.1 job names the Viggle profile, not its LoRA:
+        # the handler adds it, and the engine reports what it loaded.
+        params = {"model_type": "qwen_image_21_7B", "num_inference_steps": 40,
+                  "sample_solver": "viggle_v021", "activated_loras": ["style.safetensors"],
+                  "loras_multipliers": "0.7"}
+        runtime = {"model_type": "qwen_image_21_7B", "num_inference_steps": 6, "sample_solver": "viggle_v021",
+                   "activated_loras": ["style.safetensors",
+                                       "https://huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo/resolve/main/"
+                                       "Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r256.safetensors"],
+                   "loras_multipliers": "0.7 1"}
+        record = gp.build_provenance(params, runtime_metadata=runtime, captured_at=1.0)
+        self.assertEqual(record["loras"], [
+            {"name": "style.safetensors", "multiplier": 0.7},
+            {"name": "Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r256.safetensors", "multiplier": 1.0},
+        ])
+        self.assertEqual(record["acceleration"], {"steps": 6, "sampler": "viggle_v021"})
+        # Without an engine report the request's LoRAs stand; a default sampler is not shown.
+        record = gp.build_provenance({**params, "sample_solver": "default"}, captured_at=1.0)
+        self.assertEqual(record["loras"], [{"name": "style.safetensors", "multiplier": 0.7}])
+        self.assertEqual(record["acceleration"], {"steps": 40})
+
     def test_phased_lora_multipliers_stay_verbatim(self):
         loras = gp.parse_loras({"activated_loras": ["a.safetensors", "b.safetensors"],
                                 "loras_multipliers": "1;0.5 0.8"})

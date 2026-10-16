@@ -6,9 +6,10 @@ One ``provenance`` record per job answers, for every generated asset:
 * ``runtime``        transformer quantization read from the loaded file name,
                      text encoder / video VAE, attention backend, compile,
                      inference backend and per-job precision overrides
-* ``loras``          name + multiplier of every active LoRA
-* ``acceleration``   step count, Turbo preset, fused Turbo checkpoint,
-                     step caching, sparse attention
+* ``loras``          name + multiplier of every active LoRA, as the engine
+                     loaded them (a profile's own adapter included)
+* ``acceleration``   step count, sampler / acceleration profile, Turbo preset,
+                     fused Turbo checkpoint, step caching, sparse attention
 * ``postprocessing`` spatial / temporal upsampling, film grain
 * ``hardware``       GPU name and VRAM; for remote workers also the dstack
                      backend, region, instance type and $/h
@@ -232,6 +233,10 @@ def acceleration_from_params(
     steps = _positive(params.get("num_inference_steps"))
     if steps is not None:
         acceleration["steps"] = int(steps)
+    solver = str(params.get("sample_solver") or "").strip()
+    if solver and solver.lower() not in {"default", "euler"}:
+        # A named sampler or acceleration profile (Qwen 2.1 "viggle_v021").
+        acceleration["sampler"] = solver
     # The H3 Turbo preset is stored even while Turbo is off: only report it
     # when Turbo is on, as the gallery search does.
     preset = str(params.get("minimax_h3_turbo_preset") or "").strip()
@@ -370,7 +375,7 @@ def build_provenance(
         "captured_at": captured_at if captured_at is not None else time.time(),
         "model": model,
         "runtime": runtime,
-        "loras": parse_loras(params),
+        "loras": parse_loras(_with_engine_loras(params, runtime_metadata)),
         "acceleration": acceleration_from_params(
             _with_engine_steps(params, runtime_metadata), model_def=model_def, turbo_label=turbo_label,
         ),
@@ -382,10 +387,25 @@ def build_provenance(
 
 
 def _with_engine_steps(params: Mapping[str, Any], meta: Mapping[str, Any] | None) -> Mapping[str, Any]:
-    """Prefer the step count the engine ran over the requested one."""
-    steps = _positive((meta or {}).get("num_inference_steps"))
-    return {**params, "num_inference_steps": int(steps)} if steps is not None else params
+    """Prefer the step count and sampler the engine ran over the requested ones."""
+    meta = meta or {}
+    steps = _positive(meta.get("num_inference_steps"))
+    params = {**params, "num_inference_steps": int(steps)} if steps is not None else params
+    solver = str(meta.get("sample_solver") or "").strip()
+    return {**params, "sample_solver": solver} if solver else params
 
+
+def _with_engine_loras(params: Mapping[str, Any], meta: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    """Prefer the LoRAs the engine loaded over the requested ones.
+
+    A model's acceleration profile adds its own adapter (Qwen 2.1's Viggle
+    Turbo LoRA): the request does not name it, the engine reports it.
+    """
+    meta = meta or {}
+    if "activated_loras" not in meta:
+        return params
+    return {**params, "activated_loras": meta.get("activated_loras") or [],
+            "loras_multipliers": meta.get("loras_multipliers") or ""}
 
 def _round(value: Any) -> float | None:
     number = _number(value)

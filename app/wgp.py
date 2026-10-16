@@ -8327,6 +8327,11 @@ def generate_video(
             "compile": bool(compile),
             "profile": profile,
             "num_inference_steps": num_inference_steps,
+            # After the model's acceleration profile: a Turbo LoRA the
+            # handler adds (Qwen 2.1 Viggle) is not in the request.
+            "sample_solver": sample_solver,
+            "activated_loras": list(activated_loras or []),
+            "loras_multipliers": loras_multipliers,
             "model_reloaded": _model_reloaded,
             "model_load_seconds": _model_load_seconds,
         })

@@ -38,6 +38,8 @@ export interface GenerationProvenance {
   loras?: ProvenanceLora[]
   acceleration?: {
     steps?: number
+    /** A named sampler or acceleration profile, e.g. Qwen 2.1 "viggle_v021". */
+    sampler?: string
     turbo?: boolean
     turbo_preset?: string
     turbo_preset_label?: string
@@ -154,6 +156,16 @@ export function gpuLabel(hardware: GenerationProvenance['hardware']): string {
   return hardware.gpu_count && hardware.gpu_count > 1 ? `${hardware.gpu_count}x ${name}` : name
 }
 
+const SAMPLER_LABELS: Record<string, string> = {
+  viggle_v01: 'Viggle Turbo v0.1', viggle_v02: 'Viggle Turbo v0.2', viggle_v021: 'Viggle Turbo v0.2.1',
+  qwen_turbo_8step: 'Qwen Turbo',
+}
+
+export function samplerLabel(value: string | undefined): string {
+  if (!value) return ''
+  return SAMPLER_LABELS[value.toLowerCase()] ?? value
+}
+
 /** Turbo/distillation in a few words, or '' when the job ran at full steps. */
 export function accelerationLabel(acceleration: GenerationProvenance['acceleration']): string {
   if (!acceleration) return ''
@@ -164,6 +176,7 @@ export function accelerationLabel(acceleration: GenerationProvenance['accelerati
   }
   if (acceleration.fused_turbo) return `Fused Turbo${steps ? ` ${steps}` : ''}`
   if (acceleration.baked_turbo) return `Baked Turbo${steps ? ` ${steps}` : ''}`
+  if (acceleration.sampler) return `${samplerLabel(acceleration.sampler)}${steps ? ` ${steps}` : ''}`
   return steps ? `${acceleration.steps} steps` : ''
 }
 
