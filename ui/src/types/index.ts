@@ -1313,7 +1313,19 @@ export interface MultiClip {
 
 export type SettingsTab = 'performance' | 'integrations' | 'notifications' | 'remote'
 
+export type RemoteWorkerProvider = 'dstack' | 'static'
+
 export interface RemoteWorkerSettings {
+  /** dstack starts and stops runs; static talks to an always-on worker. */
+  provider: RemoteWorkerProvider
+  /** Static worker base URL, e.g. http://spark.tailnet:7860. */
+  static_url: string
+  /** Masked by the server: the worker's MAESTRO_WORKER_TOKEN. */
+  static_token: string
+  static_token_set: boolean
+  /** Optional URL that resumes a paused static worker (llama-swap /upstream/...). */
+  static_wake_url: string
+  dstack_configured: boolean
   server_url: string
   project: string
   /** Masked by the server; send it back unchanged to keep the stored token. */
@@ -1379,6 +1391,10 @@ export type RemoteWorkerState =
   | 'booting'
   | 'ready'
   | 'stopping'
+  /** Static worker states. */
+  | 'busy'
+  | 'paused'
+  | 'unreachable'
 
 export interface RemoteWorkerStatus {
   state: RemoteWorkerState
@@ -1445,8 +1461,11 @@ export interface RemoteWorkerBoot {
 }
 
 export interface RemoteWorkerConnectionTest {
-  server_version: string
+  server_version: string | null
   fleets: string[]
+  /** Static worker: its state when probed. */
+  state?: RemoteWorkerState
+  message?: string
 }
 
 export interface R2CachedModel {

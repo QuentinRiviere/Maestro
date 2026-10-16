@@ -16,6 +16,7 @@ import * as api from '../../api/client'
 import type {
   RemoteWorkerConnectionTest,
   RemoteWorkerLogLine,
+  RemoteWorkerProvider,
   RemoteWorkerSettings,
   RemoteWorkerState,
   RemoteWorkerStatus,
@@ -32,6 +33,9 @@ const STATE_LABEL: Record<RemoteWorkerState, string> = {
   booting: 'Booting Maestro',
   ready: 'Ready',
   stopping: 'Stopping',
+  busy: 'Ready · rendering',
+  paused: 'Paused · GPU lent to another service',
+  unreachable: 'Unreachable · retrying',
 }
 
 const STATE_DOT: Record<RemoteWorkerState, string> = {
@@ -42,6 +46,9 @@ const STATE_DOT: Record<RemoteWorkerState, string> = {
   booting: 'bg-amber-400 animate-pulse',
   ready: 'bg-emerald-400',
   stopping: 'bg-amber-400',
+  busy: 'bg-emerald-400 animate-pulse',
+  paused: 'bg-amber-400',
+  unreachable: 'bg-red-400',
 }
 
 const ACTIVE_STATES: RemoteWorkerState[] = ['starting', 'booting', 'ready', 'stopping']
@@ -116,10 +123,12 @@ function ActionButton({
 }
 
 /**
- * Remote GPU worker: a headless Maestro running on a dstack/RunPod service.
+ * Remote GPU worker: a headless Maestro running on a dstack/RunPod service,
+ * or an always-on (static) worker such as a DGX Spark under llama-swap.
  *
- * Generations routed here start the worker automatically when needed; the
- * worker stops itself after the idle TTL, and can be stopped right away.
+ * dstack: generations routed here start the worker automatically when needed;
+ * the worker stops itself after the idle TTL, and can be stopped right away.
+ * Static: never started or stopped from here; jobs wait while it is paused.
  */
 export function RemoteWorkerPanel() {
   const models = useStore(s => s.models)
@@ -229,7 +238,12 @@ export function RemoteWorkerPanel() {
   const testConnection = () => run('test', async () => {
     const result = await api.testRemoteWorkerConnection()
     setConnection(result)
-    setMessage({ tone: 'info', text: `Connected to dstack ${result.server_version}.` })
+    setMessage({
+      tone: 'info',
+      text: result.state
+        ? `Worker ${STATE_LABEL[result.state].toLowerCase()}.${result.message ? ` ${result.message}` : ''}`
+        : `Connected to dstack ${result.server_version}.`,
+    })
   })
 
   const start = () => run('start', async () => {
@@ -260,6 +274,7 @@ export function RemoteWorkerPanel() {
       placeholder={stored ? `Stored (${settings?.[key]}) · type to replace` : ''}
     />
   )
+  const isStatic = merged.provider === 'static'
   const canStart = merged.configured && !dirty && !ACTIVE_STATES.includes(state) && busy === null
   const canStop = merged.configured && (state === 'starting' || state === 'booting' || state === 'ready') && busy === null
 
@@ -282,7 +297,9 @@ export function RemoteWorkerPanel() {
             <Cloud size={15} className="text-accent-blue" />
             <div>
               <div className="text-xs font-medium text-text-primary">Remote GPU worker</div>
-              <div className="text-[10px] text-text-muted">Headless Maestro on RunPod via dstack</div>
+              <div className="text-[10px] text-text-muted">
+                {isStatic ? 'Always-on Maestro worker (e.g. a DGX Spark)' : 'Headless Maestro on RunPod via dstack'}
+              </div>
             </div>
           </div>
           <button
@@ -304,7 +321,7 @@ export function RemoteWorkerPanel() {
             )}
           </div>
           {status?.message && <div className="text-[10px] leading-relaxed text-text-muted">{status.message}</div>}
-          {ACTIVE_STATES.includes(state) && (
+          {!isStatic && ACTIVE_STATES.includes(state) && (
             <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[10px] text-text-secondary">
               {status?.model_type && <span className="col-span-2 truncate">Model · {status.model_type}</span>}
               {status?.price_per_hour != null && <span>${status.price_per_hour.toFixed(2)}/h</span>}
@@ -330,6 +347,7 @@ export function RemoteWorkerPanel() {
           {state === 'ready' && <WorkerDownloads downloads={status?.worker_downloads} />}
         </div>
 
+        {!isStatic && (<>
         <label className="block space-y-1">
           <span className="text-[10px] text-text-secondary">Model to preload</span>
           <select
@@ -366,6 +384,47 @@ export function RemoteWorkerPanel() {
             {logs.length ? logs.map(line => line.message).join('') : 'Logs appear while the worker is starting.'}
           </pre>
         )}
+        </>)}
+      </section>
+
+      {/* ── Worker provider ──────────────────────────────────────── */}
+      <section className="space-y-3 rounded-lg border border-border bg-bg-tertiary p-3">
+        <label className="block space-y-1">
+          <span className="text-[10px] text-text-secondary">Worker</span>
+          <select
+            value={merged.provider}
+            disabled={isLocked('provider')}
+            onChange={event => update('provider', event.target.value as RemoteWorkerProvider)}
+            className="w-full rounded-md border border-border bg-bg-primary px-2 py-1.5 text-[11px] text-text-primary focus:border-accent-blue focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <option value="dstack">dstack run (started and stopped on demand)</option>
+            <option value="static">Static worker (always on, at a fixed URL)</option>
+          </select>
+          {isLocked('provider') && <span className="block text-[9px] leading-relaxed text-amber-200">Set by environment</span>}
+        </label>
+        {isStatic && (
+          <>
+            <Field locked={isLocked('static_url')} label="Worker URL" value={merged.static_url} onChange={value => update('static_url', value)} placeholder="http://spark.tailnet:7860" />
+            <Field locked={isLocked('static_token')}
+              label="Worker token"
+              type="password"
+              value={draft.static_token ?? ''}
+              onChange={value => update('static_token', value)}
+              placeholder={settings?.static_token_set ? `Stored (${settings.static_token}) · type to replace` : 'MAESTRO_WORKER_TOKEN of the worker'}
+              hint="Stored on this computer only, in app/settings."
+            />
+            <Field locked={isLocked('static_wake_url')}
+              label="Wake URL (optional)"
+              value={merged.static_wake_url}
+              onChange={value => update('static_wake_url', value)}
+              placeholder="http://spark.tailnet:8080/upstream/maestro-worker/readyz"
+              hint="Requested when jobs wait for a paused worker, e.g. llama-swap's maestro-worker model. Empty: jobs wait until it is resumed."
+            />
+            <ActionButton onClick={testConnection} disabled={busy !== null || !merged.configured || dirty}>
+              <PlugZap size={11} /> {busy === 'test' ? 'Testing…' : 'Test worker'}
+            </ActionButton>
+          </>
+        )}
       </section>
 
       {/* ── Generation routing ───────────────────────────────────── */}
@@ -377,6 +436,7 @@ export function RemoteWorkerPanel() {
           description={isLocked('route_generations') ? 'Set by environment.' : "Studio and Director jobs execute on the remote GPU; outputs come back to this computer's gallery."}
           disabled={!merged.configured || isLocked('route_generations')}
         />
+        {!isStatic && (<>
         <Toggle
           checked={merged.auto_start}
           onChange={checked => update('auto_start', checked)}
@@ -398,8 +458,10 @@ export function RemoteWorkerPanel() {
           onChange={value => update('idle_ttl_minutes', Number(value) || 1)}
           hint="The idle clock starts once the worker is ready and pauses while a generation runs."
         />
+        </>)}
       </section>
 
+      {!isStatic && (<>
       {/* ── dstack connection ────────────────────────────────────── */}
       <section className="space-y-3 rounded-lg border border-border bg-bg-tertiary p-3">
         <div className="flex items-center gap-2">
@@ -522,6 +584,8 @@ export function RemoteWorkerPanel() {
           </div>
         )}
       </section>
+
+      </>)}
 
       {/* ── R2 checkpoint cache ──────────────────────────────────── */}
       <section className="space-y-3 rounded-lg border border-border bg-bg-tertiary p-3">
