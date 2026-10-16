@@ -56,6 +56,7 @@ from services.director_video_strategy import (
 from services.h3_window_planner import compute_h3_window_boundaries
 from services.generation_provenance import read_output_provenance
 from services.director.h3_dialogue import H3DialogueContractError
+from services.director.prompt_polish import IDENTITY_SENTENCE_RE, apply_photographic_identity_ending
 from services.director.h3_sequences import (
     SEQUENCE_KEY,
     annotate_h3_sequences,
@@ -1330,6 +1331,33 @@ def _style_prefix_for(style: str) -> str:
     """The exact lead sentence validated to hold Klein to a medium."""
     style = (style or "").strip()
     return f"Maintain the same {style} art style. " if style else ""
+
+
+def director_references_photographic(params: dict) -> bool:
+    """Whether the run's references are photographs (no art style to hold).
+
+    A detected reference style phrase means stylized. Otherwise the style
+    contract's medium (else the bible look's first sentence) decides; with
+    neither, an empty detected style ("" = photographic) does. Unknown runs
+    count as stylized and keep the art-style ending.
+    """
+    from services.director import casting
+
+    if str(params.get("_reference_style") or "").strip():
+        return False
+    contract = params.get("_director_style_contract")
+    medium = str((contract or {}).get("medium") or "").strip() if isinstance(contract, dict) else ""
+    if medium.lower() == "unspecified":
+        medium = ""
+    medium = medium or casting.asset_medium(None, str(params.get("_director_bible_look") or ""))
+    if medium:
+        return casting.is_photographic_medium(medium)
+    return "_reference_style" in params
+
+
+def _finish_identity_ending(prompt: str, photographic: bool) -> str:
+    """Photographic references keep identity only; stylized ones keep the art-style sentence."""
+    return apply_photographic_identity_ending(prompt) if photographic else prompt
 
 
 # Motion-photography effects have no place in a START-FRAME prompt — the
@@ -2750,6 +2778,7 @@ def _rerun_clip_image_impl(out_dir: str, pid: str, clip_index: int, prompt_overr
     # image_prompt does not carry it). Motion-effect strip mirrors
     # _gen_image for the same reason.
     prompt = _strip_motion_effects(request["prompt"])
+    prompt = _finish_identity_ending(prompt, director_references_photographic(snapshot))
     _style_prefix = _style_prefix_for(snapshot.get("_reference_style") or "")
     if _style_prefix and not prompt.lower().startswith("maintain the same"):
         prompt = _style_prefix + prompt
@@ -7096,6 +7125,7 @@ def _run_pipeline(pid: str, resume: bool = False):
                     False, image_loras=(params.get("image_loras") or {}).get("activated_loras", []),
                     characters=params.get("characters", []) or [],
                     polish_video_prompts=False, polish_image_prompts=True,
+                    photographic_references=director_references_photographic(params),
                 )
                 print(f"[Pipeline {pid}] Rewrote {len(clip_plans)} image prompt(s) for {params.get('image_model')}")
             except Exception as e:
@@ -7177,6 +7207,7 @@ def _run_pipeline(pid: str, resume: bool = False):
                         ),
                         polish_video_prompts=polish_video_prompts,
                         polish_image_prompts=polish_image_prompts,
+                        photographic_references=director_references_photographic(params),
                     )
                     _capture_llm_pass(pid, "third_pass_polish")
                     print(
@@ -9355,7 +9386,7 @@ def blocking_framing_line(blocking_map: dict, framing: str = "") -> str:
     return staging_line(parse_blocking_map(blocking_map), framing)
 
 
-_INSERT_IDENTITY_RE = re.compile(r"\s*Preserve character identity[^.]*\.?", re.IGNORECASE)
+_INSERT_IDENTITY_RE = IDENTITY_SENTENCE_RE
 
 
 def director_shot_layout(pid: str, index: int, plan: dict, prompt: str, image_model: str,
@@ -9550,6 +9581,7 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
     # images, keyframes, anchor) at generation time — after polish, and
     # regardless of whether the planner remembered to name the medium.
     _style_prefix = _style_prefix_for(params.get("_reference_style") or "")
+    _photographic_refs = director_references_photographic(params)
     _bible_look = str(params.get("_director_bible_look") or "").strip()
 
     def _gen_image(
@@ -9576,6 +9608,7 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
         prompt = _strip_motion_effects(prompt or "")
         if prompt != _pre_strip:
             print(f"[Pipeline {pid}] Stripped motion-effect language from image prompt")
+        prompt = _finish_identity_ending(prompt, _photographic_refs)
         if _style_prefix and not prompt.lower().startswith("maintain the same"):
             prompt = _style_prefix + prompt
         # Last, so a scene lead naming reference 1 stays at the start.

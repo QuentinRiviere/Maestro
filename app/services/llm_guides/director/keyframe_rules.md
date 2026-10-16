@@ -50,7 +50,8 @@ HARD RULES FOR EVERY KEYFRAME (break any of these and the result is wrong):
 - Do NOT use "close-up shot of the reference image" or similar re-framing
   preambles. Use "same scene, close-up of..." instead.
 - Do NOT end with "Preserve character identity, attire, and body attributes
-  from the reference image." — that ending is for image_prompts ONLY. A
+  from the reference image." or "Keep each person's face, hair, body and
+  clothes..." — those endings are for image_prompts ONLY. A
   keyframe is not an image_prompt and must NEVER include it.
 - Do NOT re-describe the setting, lighting, clothing, or character appearance
   the previous frame already shows.

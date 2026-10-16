@@ -333,9 +333,14 @@ def asset_medium(contract: dict | None, look: str = "") -> str:
     return medium
 
 
+def is_photographic_medium(medium: str) -> bool:
+    """Whether a medium names live action or photography."""
+    return bool(_PHOTOGRAPHIC.search(medium or ""))
+
+
 def realism_clause(kind: str, medium: str) -> str:
     """For a photographic medium, say the subject is real, with real proportions."""
-    if not _PHOTOGRAPHIC.search(medium or ""):
+    if not is_photographic_medium(medium):
         return ""
     return {"character": " A real person photographed in live action, natural adult human proportions.",
             "prop": " A real object photographed.",

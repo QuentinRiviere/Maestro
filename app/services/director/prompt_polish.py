@@ -796,9 +796,57 @@ def _strip_motion_sentences(text: str) -> tuple[str, int]:
 # everything between the last sentence-ending punctuation and the
 # boilerplate suffix.
 _PRESERVE_BOILERPLATE_RE = re.compile(
-    r"(.*?)(\s*Preserve character identity[^.]*\.?)\s*$",
+    r"(.*?)(\s*(?:Preserve character identity|Keep each person's face)[^.]*\.?)\s*$",
     re.DOTALL | re.IGNORECASE,
 )
+
+
+# ── Reference identity ending ───────────────────────────────────────
+# Every reference-edit image prompt ends with one identity sentence. For
+# stylized references (pencil, anime, watercolor...) it also holds the art
+# style. For photographic references (studio portraits on a plain backdrop,
+# a daytime location photo) "the art style of the reference image" makes the
+# editor copy their flat studio light and daylight, so the sentence keeps
+# identity and layout only and takes the light from the prompt.
+ART_STYLE_IDENTITY_ENDING = (
+    "Preserve character identity, attire, body attributes, and the art style of the reference image."
+)
+PHOTOGRAPHIC_IDENTITY_ENDING = (
+    "Keep each person's face, hair, body and clothes and the set's layout from the reference images; "
+    "take the lighting, colour and mood from this text, not from the references."
+)
+# Either identity sentence (and the older "...from the reference image." form).
+IDENTITY_SENTENCE_RE = re.compile(
+    r"\s*(?:Preserve character identity|Keep each person's face)[^.]*\.?", re.IGNORECASE,
+)
+# "Use lighting and color temp from reference image." copies a photographic
+# reference's light just the same.
+_REFERENCE_LIGHTING_RE = re.compile(
+    r"\s*use (?:the )?lighting and colou?r temp(?:erature)? from (?:the )?reference images?\.?",
+    re.IGNORECASE,
+)
+
+
+def identity_ending(photographic: bool) -> str:
+    """The identity sentence an image prompt ends with."""
+    return PHOTOGRAPHIC_IDENTITY_ENDING if photographic else ART_STYLE_IDENTITY_ENDING
+
+
+def apply_photographic_identity_ending(prompt: str) -> str:
+    """Photographic references: identity and layout from them, light from the text.
+
+    Drops "use lighting and color temp from reference image" and replaces an
+    identity sentence (the art-style one included) with
+    PHOTOGRAPHIC_IDENTITY_ENDING at the end. A prompt without an identity
+    sentence (an insert) gets none.
+    """
+    if not prompt:
+        return prompt
+    text = _REFERENCE_LIGHTING_RE.sub("", prompt)
+    if IDENTITY_SENTENCE_RE.search(text):
+        text = IDENTITY_SENTENCE_RE.sub("", text).strip()
+        text = f"{text} {PHOTOGRAPHIC_IDENTITY_ENDING}".strip()
+    return re.sub(r"[ \t]{2,}", " ", text).strip()
 
 
 def _strip_orphan_before_boilerplate(text: str) -> tuple[str, int]:
@@ -1213,6 +1261,7 @@ def polish_prompts_third_pass(
     preserve_video_character_names: bool = False,
     polish_video_prompts: Optional[bool] = None,
     polish_image_prompts: bool = True,
+    photographic_references: bool = False,
 ) -> list[dict]:
     """Post-process clip plans through the enhance LLM pipeline (third pass).
 
@@ -1253,6 +1302,10 @@ def polish_prompts_third_pass(
             keyframe prompts. Prompt-only/direct-reference H3 projects retain
             the planner's visual notes for the Dashboard but do not generate
             those artifacts, so polishing them is unnecessary.
+        photographic_references: The run's references are photographs (no
+            art-style phrase). Image prompts then end with
+            PHOTOGRAPHIC_IDENTITY_ENDING instead of the art-style sentence,
+            so the editor takes the light from the prompt, not the photos.
 
     Returns:
         clip_plans with polished prompts (modified in-place).
@@ -1659,7 +1712,15 @@ def polish_prompts_third_pass(
         "YOUR JOB:\n"
         + _image_lora_line +
         "- Fix any awkward phrasing in NARRATIVE PROSE ONLY (never inside quotes)\n"
-        "- Ensure the prompt ends with: 'Preserve character identity, attire, body attributes, and the art style of the reference image.'\n"
+        f"- Ensure the prompt ends with: '{identity_ending(photographic_references)}'\n"
+        + (
+            "- Replace any 'Preserve character identity ... art style of the reference image' sentence with "
+            "that ending, and drop 'use lighting and color temp from reference image': the references are "
+            "photographs and only give identity and layout\n"
+            if photographic_references else ""
+        ) +
+        "- Keep the lighting description complete: its named light sources, where the shadows fall, the "
+        "darkness and the contrast; never soften it into 'balanced', 'even' or 'natural' light\n"
         "- When a character name listed in the CHARACTER NAME REPLACEMENT block below appears in the input, replace it with the matching descriptor IN NARRATIVE PROSE ONLY; never default to generic 'the woman' / 'the man' for non-human characters\n\n"
         "DO NOT:\n"
         "- Invent character names that aren't in the input or in the mapping block\n"
@@ -2064,6 +2125,8 @@ def polish_prompts_third_pass(
             cleaned = sanitize_image_prompt(
                 cleaned, name_to_desc, log_prefix="[PromptPolish Pass3 image sanitize]"
             )
+            if photographic_references:
+                cleaned = apply_photographic_identity_ending(cleaned)
             return cleaned
         return out
 

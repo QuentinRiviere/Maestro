@@ -56,8 +56,10 @@ LIGHTING — Klein responds strongly to specific lighting cues. Always describe:
 - direction: side-lit, backlit, overhead
 - color: warm/cool, golden, blue, amber
 
-End every image_prompt with: "Use lighting and color temp from reference image."
-This preserves visual continuity across scenes.
+For a stylized reference, end with: "Use lighting and color temp from reference image."
+This preserves visual continuity across scenes. For a photographic reference, never write it.
+
+LIVE-ACTION LIGHTING — for a photographic / live-action look the light is motivated and contrasted, consistent with the time of day: name the visible light sources (lamps, pendants, windows, neon, streetlights, screens) and where the shadows fall on the faces. Night and interior drama scenes are low-key: most of the frame dark, deep shadows, faces partly in shadow. Never "balanced", "even", "soft natural lighting" or "natural skin tones" as the whole description.
 
 ANCHOR CONTACT POINTS TO ANATOMY, NOT SCENERY:
 When characters lean toward, reach for, or come close to another, name the
@@ -116,4 +118,7 @@ BAD EXAMPLES:
 - "cartoon style illustration of..." (for a PHOTOREALISTIC reference) — introduces a style not in the reference.
 - "photorealistic, 8k detailed photo of..." (for a HAND-DRAWN reference) — same mistake in the other direction.
 
-ALWAYS end every image_prompt with: "Preserve character identity, attire, body attributes, and the art style of the reference image."
+ALWAYS end every image_prompt with ONE identity sentence:
+- Stylized reference (drawn, painted, animated): "Preserve character identity, attire, body attributes, and the art style of the reference image."
+- Photographic / live-action reference: "Keep each person's face, hair, body and clothes and the set's layout from the reference images; take the lighting, colour and mood from this text, not from the references."
+  Never the art-style sentence, and never "use lighting and color temp from reference image": the photos give identity and layout only, the light comes from your prompt.

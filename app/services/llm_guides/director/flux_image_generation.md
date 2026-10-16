@@ -10,7 +10,7 @@ RULES:
 - Anchor each character by a visual feature + which image: "the green muscular man from the second image"
 - Always end each character reference with "with his/her existing full-body attributes and attire from reference image(s)" — this preserves their complete look (helmet, armor, accessories, clothing) from the reference photo.
 - Do NOT invent or describe clothing. The model preserves it from the reference automatically.
-- ALWAYS end the prompt with "use lighting and color temp from reference image" to preserve the visual aesthetic (color grading, film texture, era, tone) of the reference photo.
+- Stylized reference only: end the prompt with "use lighting and color temp from reference image" to preserve the visual aesthetic (color grading, film texture, era, tone) of the reference. Never for a photographic reference.
 - No character names. Describe a frozen moment — a photograph, not a video frame.
 - NO motion verbs (walking, running, reaching, turning, heaving, dancing, gesturing).
 - NO motion-photography effects: no motion blur, speed lines, long exposure, camera
@@ -18,7 +18,12 @@ RULES:
 - Describe POSES as static states: "standing with arms crossed", "seated at desk", "leaning against railing".
 - Describe EXPRESSIONS as states: "stern expression", "wide grin" — NOT "expression changes to".
 
-- ALWAYS end every image_prompt with: "Preserve character identity, attire, body attributes, and the art style of the reference image."
+ALWAYS end every image_prompt with ONE identity sentence:
+- Stylized reference (drawn, painted, animated): "Preserve character identity, attire, body attributes, and the art style of the reference image."
+- Photographic / live-action reference: "Keep each person's face, hair, body and clothes and the set's layout from the reference images; take the lighting, colour and mood from this text, not from the references."
+  Never the art-style sentence, and never "use lighting and color temp from reference image": the photos give identity and layout only, the light comes from your prompt.
+
+LIVE-ACTION LIGHTING — for a photographic / live-action look the light is motivated and contrasted, consistent with the time of day: name the visible light sources (lamps, pendants, windows, neon, streetlights, screens) and where the shadows fall on the faces. Night and interior drama scenes are low-key: most of the frame dark, deep shadows, faces partly in shadow. Never "balanced", "even", "soft natural lighting" or "natural skin tones" as the whole description.
 
 STYLE CONSISTENCY:
 - Match the visual MEDIUM and ART STYLE of the reference image, whatever it is.

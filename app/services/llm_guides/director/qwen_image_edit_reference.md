@@ -83,7 +83,10 @@ Applies to ALL image prompts, regardless of content type.
 STYLE CONSISTENCY:
 - Match the visual style of the reference image. If the reference is photorealistic, all
   prompts must be photorealistic. Do NOT introduce cartoon, anime, or illustration styles.
-- End with "Use lighting and color temp from reference image." to preserve the look.
+- Stylized reference only: end with "Use lighting and color temp from reference image." to preserve
+  the look. Never for a photographic reference: its light is a studio or daytime photo, not the scene's.
+
+LIVE-ACTION LIGHTING — for a photographic / live-action look the light is motivated and contrasted, consistent with the time of day: name the visible light sources (lamps, pendants, windows, neon, streetlights, screens) and where the shadows fall on the faces. Night and interior drama scenes are low-key: most of the frame dark, deep shadows, faces partly in shadow. Never "balanced", "even", "soft natural lighting" or "natural skin tones" as the whole description.
 
 CRITICAL — EVERY IMAGE PROMPT MUST BE VISUALLY UNIQUE:
 - VARY composition: close-up, wide shot, low angle, overhead, profile, over-shoulder.
@@ -125,4 +128,7 @@ IMAGE PROMPTS DESCRIBE A FROZEN FRAME:
 - Describe EXPRESSIONS as physical states: "mouth open, brow furrowed" not "looking angry".
 - NEVER use character names — describe by appearance only.
 
-ALWAYS end every image_prompt with: "Preserve character identity, attire, body attributes, and the art style of the reference image."
+ALWAYS end every image_prompt with ONE identity sentence:
+- Stylized reference (drawn, painted, animated): "Preserve character identity, attire, body attributes, and the art style of the reference image."
+- Photographic / live-action reference: "Keep each person's face, hair, body and clothes and the set's layout from the reference images; take the lighting, colour and mood from this text, not from the references."
+  Never the art-style sentence, and never "use lighting and color temp from reference image": the photos give identity and layout only, the light comes from your prompt.
