@@ -231,6 +231,10 @@ curl -H "Authorization: Bearer $LLAMA_SWAP_API_KEY" http://100.64.0.2:8080/upstr
 curl -H "Authorization: Bearer $LLAMA_SWAP_API_KEY" http://100.64.0.2:8080/running
 ```
 
+To download GGUF models and generate the llama-swap models from a web UI
+(the lease model and the peer stay hand-written in a base file), add the
+model hub: [Spark-model-hub.md](Spark-model-hub.md#with-the-maestro-stack).
+
 ### llama-swap image on the Spark
 
 No custom image is needed: `ghcr.io/mostlygeek/llama-swap:unified-cuda13` is a

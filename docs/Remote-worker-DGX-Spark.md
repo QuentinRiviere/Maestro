@@ -11,6 +11,8 @@ A dstack run takes the whole Spark. To keep the worker running next to other
 inference servers (LLMs through llama.cpp, TTS...) with llama-swap deciding
 who holds the GPU memory, run it as a **static worker** instead: see
 [Remote-worker-static-and-llama-swap.md](Remote-worker-static-and-llama-swap.md).
+To browse, download (hash-verified) and map GGUF models into llama-swap from
+a web page, with or without Maestro, see [Spark-model-hub.md](Spark-model-hub.md).
 
 | | |
 |---|---|
