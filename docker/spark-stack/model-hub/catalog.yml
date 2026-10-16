@@ -1,0 +1,213 @@
+# Hand-curated GGUF models for the DGX Spark (128 GB unified memory).
+#
+# Every entry was checked through the Hub API on 2026-10-16
+# (GET /api/models/<repo>/revision/<revision>?blobs=true): the repo exists,
+# `revision` is the commit the API returned, `include` matches the listed
+# files, and `size_gb` is the sum of their sizes. tests/test_spark_model_hub.py
+# re-checks this online (skipped offline).
+#
+# Fields:
+#   name, repo, revision (40-hex commit), category (general | abliterated |
+#   vision | code | small), include (fnmatch globs, case-sensitive), size_gb,
+#   notes, serve (default llama-swap settings; see models.yml for the keys;
+#   `group` defaults to MODEL_HUB_DEFAULT_GROUP).
+# Only trusted publishers: ggml-org (llama.cpp), unsloth, Qwen, huihui-ai.
+
+- name: Qwen3.6 35B-A3B abliterated (MTP, vision)
+  repo: huihui-ai/Huihui-Qwen3.6-35B-A3B-abliterated-MTP-GGUF
+  revision: acd5abe0c5ebd064f3863ca7d4bba2d924ec6544
+  category: abliterated
+  include:
+    - Huihui-Qwen3.6-35B-A3B-abliterated-ggml-model-Q4_K.gguf   # 21.71 GB
+    - mmproj-model-f16.gguf                                    # 0.90 GB
+  size_gb: 22.61
+  notes: >-
+    MoE 35B / 3B active with MTP heads (the model card runs
+    --spec-type draft-mtp --spec-draft-n-max 6). Refusal behaviour removed:
+    no safety filtering. Good always-on model (fast, ~23 GB).
+  serve:
+    id: qwen36-35b-abliterated
+    name: Qwen3.6 35B-A3B abliterated (MTP)
+    model: Huihui-Qwen3.6-35B-A3B-abliterated-ggml-model-Q4_K.gguf
+    mmproj: mmproj-model-f16.gguf
+    ctx_size: 65536
+    parallel: 1
+    mtp: true
+    mtp_draft_n_max: 6
+    ttl: 0
+    group: resident
+    preload: true
+
+- name: Qwen3.6 27B abliterated (MTP, vision)
+  repo: huihui-ai/Huihui-Qwen3.6-27B-abliterated-MTP-GGUF
+  revision: 2da8c0432f0a42c25c14cbc99f90028a90d3dcd3
+  category: abliterated
+  include:
+    - Huihui-Qwen3.6-27B-abliterated-ggml-model-Q4_K.gguf   # 16.81 GB
+    - mmproj-model-f16.gguf                                # 0.93 GB
+  size_gb: 17.74
+  notes: >-
+    Dense 27B with MTP heads (model card: --spec-draft-n-max 6). Slower than
+    the 35B-A3B MoE on the Spark's memory bandwidth, stronger per token.
+    No safety filtering.
+  serve:
+    id: qwen36-27b-abliterated
+    model: Huihui-Qwen3.6-27B-abliterated-ggml-model-Q4_K.gguf
+    mmproj: mmproj-model-f16.gguf
+    ctx_size: 32768
+    parallel: 1
+    mtp: true
+    mtp_draft_n_max: 6
+    ttl: 600
+
+- name: Qwen3.6 35B-A3B (MTP)
+  repo: unsloth/Qwen3.6-35B-A3B-MTP-GGUF
+  revision: 5bc3e238d916f48a861bac2f8a1990a0e9b7e98d
+  category: general
+  include:
+    - Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf   # 22.85 GB
+  size_gb: 22.85
+  notes: >-
+    Unsloth dynamic quant with MTP heads. The model card runs
+    --spec-type draft-mtp --spec-draft-n-max 2 and says --mmproj and
+    -np > 1 were not supported with MTP yet (May 2026).
+  serve:
+    id: qwen36-35b
+    model: Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf
+    ctx_size: 65536
+    parallel: 1
+    mtp: true
+    mtp_draft_n_max: 2
+    ttl: 600
+
+- name: Qwen3.8 27B (vision)
+  repo: ggml-org/Qwen3.8-27B-GGUF
+  revision: 71bc7b627595dc8a91039addd9c791ae548d6747
+  category: general
+  include:
+    - Qwen3.8-27B-Q4_K_M.gguf          # 18.97 GB
+    - mmproj-Qwen3.8-27B-Q8_0.gguf     # 0.63 GB
+  size_gb: 19.60
+  notes: >-
+    Newest Qwen dense model, converted by llama.cpp's own org. The repo also
+    ships mtp-* and dflash-* draft files, not wired here.
+  serve:
+    id: qwen38-27b
+    model: Qwen3.8-27B-Q4_K_M.gguf
+    mmproj: mmproj-Qwen3.8-27B-Q8_0.gguf
+    ctx_size: 32768
+    parallel: 1
+    ttl: 600
+
+- name: gpt-oss 20B
+  repo: ggml-org/gpt-oss-20b-GGUF
+  revision: ef9b12f2ff56c69cf32153a02784e7a3c88bf524
+  category: general
+  include:
+    - gpt-oss-20b-MXFP4.gguf   # 12.11 GB
+  size_gb: 12.11
+  notes: OpenAI open-weight MoE (21B / 3.6B active), native MXFP4. Needs --jinja (in the llama-server macro).
+  serve:
+    id: gpt-oss-20b
+    model: gpt-oss-20b-MXFP4.gguf
+    ctx_size: 65536
+    parallel: 2
+    ttl: 600
+
+- name: gpt-oss 120B
+  repo: ggml-org/gpt-oss-120b-GGUF
+  revision: 238abdd290bb874b90a5da1b4549881b7d05c091
+  category: general
+  include:
+    - gpt-oss-120b-MXFP4.gguf   # 63.39 GB
+  size_gb: 63.39
+  notes: >-
+    OpenAI open-weight MoE (117B / 5.1B active), native MXFP4. The largest
+    model that fits next to a ~23 GB resident model; keep it on demand.
+  serve:
+    id: gpt-oss-120b
+    model: gpt-oss-120b-MXFP4.gguf
+    ctx_size: 65536
+    parallel: 1
+    ttl: 600
+
+- name: Gemma 4 26B-A4B (vision)
+  repo: unsloth/gemma-4-26B-A4B-it-GGUF
+  revision: c099eb48e663fd284577b04978a94ffccb261841
+  category: vision
+  include:
+    - gemma-4-26B-A4B-it-UD-Q4_K_XL.gguf   # 17.01 GB
+    - mmproj-F16.gguf                      # 1.19 GB
+  size_gb: 18.20
+  notes: Google Gemma 4 MoE with image input. The repo also has MTP draft files (not wired here).
+  serve:
+    id: gemma4-26b
+    model: gemma-4-26B-A4B-it-UD-Q4_K_XL.gguf
+    mmproj: mmproj-F16.gguf
+    ctx_size: 32768
+    parallel: 1
+    ttl: 600
+
+- name: Qwen3-VL 8B Instruct (vision)
+  repo: Qwen/Qwen3-VL-8B-Instruct-GGUF
+  revision: f982a07559d4a2f6c8744d840bf6fccab30eea96
+  category: vision
+  include:
+    - Qwen3VL-8B-Instruct-Q4_K_M.gguf          # 5.03 GB
+    - mmproj-Qwen3VL-8B-Instruct-F16.gguf      # 1.16 GB
+  size_gb: 6.19
+  notes: Official Qwen GGUF; small vision-language model for captions and image prompts.
+  serve:
+    id: qwen3-vl-8b
+    model: Qwen3VL-8B-Instruct-Q4_K_M.gguf
+    mmproj: mmproj-Qwen3VL-8B-Instruct-F16.gguf
+    ctx_size: 32768
+    parallel: 1
+    ttl: 600
+
+- name: Qwen3-Coder 30B-A3B Instruct
+  repo: unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF
+  revision: b17cb02dd882d5b6ab62fc777ad2995f19668350
+  category: code
+  include:
+    - Qwen3-Coder-30B-A3B-Instruct-UD-Q4_K_XL.gguf   # 17.67 GB
+  size_gb: 17.67
+  notes: Coding MoE (30B / 3B active) with tool calling.
+  serve:
+    id: qwen3-coder-30b
+    model: Qwen3-Coder-30B-A3B-Instruct-UD-Q4_K_XL.gguf
+    ctx_size: 65536
+    parallel: 1
+    ttl: 600
+
+- name: Gemma 4 E4B (small, vision)
+  repo: ggml-org/gemma-4-E4B-it-GGUF
+  revision: b8093469224f83f5c38f691eb906c380e9e63114
+  category: small
+  include:
+    - gemma-4-E4B-it-Q4_0.gguf              # 4.59 GB
+    - mmproj-gemma-4-E4B-it-Q8_0.gguf       # 0.56 GB
+  size_gb: 5.15
+  notes: Small multimodal Gemma 4, quick helper model.
+  serve:
+    id: gemma4-e4b
+    model: gemma-4-E4B-it-Q4_0.gguf
+    mmproj: mmproj-gemma-4-E4B-it-Q8_0.gguf
+    ctx_size: 32768
+    parallel: 2
+    ttl: 600
+
+- name: Qwen3 1.7B (small test model)
+  repo: ggml-org/Qwen3-1.7B-GGUF
+  revision: daeb8e2d528a760970442092f6bf1e55c3b659eb
+  category: small
+  include:
+    - Qwen3-1.7B-Q4_K_M.gguf   # 1.28 GB
+  size_gb: 1.28
+  notes: Tiny and quick to download; use it to test the hub and llama-swap end to end.
+  serve:
+    id: qwen3-1.7b
+    model: Qwen3-1.7B-Q4_K_M.gguf
+    ctx_size: 8192
+    parallel: 1
+    ttl: 300
