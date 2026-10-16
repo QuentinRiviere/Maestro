@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import os
+import platform
 import subprocess
 import sys
 import tarfile
@@ -54,13 +55,24 @@ def _compute_capability() -> str:
     return "sm_" + first.replace(".", "") if first else ""
 
 
-def cache_key(capability: str | None = None) -> str:
+def _host_arch_suffix(machine: str | None = None) -> str:
+    """``-aarch64`` on non-x86 hosts, "" on x86_64 (keeps the existing keys).
+
+    Triton caches host-native launcher stubs next to the GPU cubins, so an
+    archive built on an arm64 host (DGX Spark) must never reach an amd64 pod.
+    """
+    machine = (platform.machine() if machine is None else machine).lower()
+    return "" if machine in ("x86_64", "amd64", "") else f"-{machine}"
+
+
+def cache_key(capability: str | None = None, machine: str | None = None) -> str:
     """The archive name for this card and environment ("" without a GPU)."""
     capability = _compute_capability() if capability is None else capability
     if not capability:
         return ""
     python = f"py{sys.version_info.major}{sys.version_info.minor}"
-    return f"{capability}-torch{_version('torch')}-triton{_version('triton')}-{python}"
+    return (f"{capability}-torch{_version('torch')}-triton{_version('triton')}-{python}"
+            f"{_host_arch_suffix(machine)}")
 
 
 def _file_count(root: str) -> int:

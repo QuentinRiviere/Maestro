@@ -42,8 +42,20 @@ class RemoteWorkerSettings:
     # dstack 0.20 provisions inside fleets only, so a run without its own
     # fleet inherits the price/GPU caps of whatever fleet the project has.
     # Maestro therefore keeps a dedicated fleet mirroring the limits below.
+    # An existing SSH fleet (machines you own, e.g. a DGX Spark, see
+    # docs/Remote-worker-DGX-Spark.md) is targeted with manage_fleet off,
+    # backends ["remote"] and a GPU name filter: Maestro then never applies
+    # (and so never overwrites) that fleet.
     fleet: str = "maestro"
     manage_fleet: bool = True
+    # Backends the R2 cache warmer may rent its CPU pod on; empty uses
+    # ``backends``. Needed when the GPU worker only runs on an SSH fleet.
+    cache_warm_backends: list[str] = field(default_factory=list)
+    # Absolute host directory mounted as the worker's data root (a dstack
+    # instance volume), so weights, the HF cache and compiled kernels survive
+    # between runs. Only for hosts that keep their disk (SSH fleets); empty
+    # keeps the pod-local data root.
+    host_data_path: str = ""
     gpu: str = "48GB.."
     disk: str = "200GB.."
     # System RAM and vCPUs: marketplace GPUs can ship with 8-16 GB of RAM,

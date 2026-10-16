@@ -570,7 +570,9 @@ def _billing(manager: Any, ready: Mapping[str, Any], *, waited: float, worked: f
         "pod": getattr(manager, "run_name", ""),
         "run": str(ended.get("job_submission_id") or ready.get("job_submission_id") or ""),
         "submitted_at": ready.get("submitted_at"),
-        "price_per_hour": ended.get("price_per_hour") or ready.get("price_per_hour"),
+        # 0 is a real price (an owned host on an SSH fleet), not a missing one.
+        "price_per_hour": (ended.get("price_per_hour") if ended.get("price_per_hour") is not None
+                           else ready.get("price_per_hour")),
         "cost_start": ready.get("cost"),
         "cost_end": ended.get("cost"),
         "wait_seconds": round(waited, 1),

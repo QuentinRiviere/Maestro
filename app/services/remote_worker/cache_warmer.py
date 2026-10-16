@@ -46,6 +46,8 @@ CPU_IMAGE_TAG = "cpu"
 # Backends with a ``community_cloud`` switch; they rent third-party hosts
 # unless it is explicitly off in the dstack server config.
 COMMUNITY_BACKENDS = {"runpod", "vastai"}
+# dstack's backend for SSH fleets (machines the user owns, e.g. a DGX Spark).
+OWNED_BACKENDS = {"remote"}
 MAX_PRICE_PER_HOUR = 0.5
 MAX_DURATION = "2h"
 FLEET_IDLE_SECONDS = 60
@@ -92,9 +94,16 @@ def warm_image(image: str) -> str:
 
 
 def trusted_backends(settings: RemoteWorkerSettings, config_path: str = DSTACK_SERVER_CONFIG) -> list[str]:
-    """The worker's backends that only rent datacenter hosts."""
+    """The backends the warmer may rent: datacenter hosts only.
+
+    ``cache_warm_backends`` when set, else the GPU worker's backends. SSH
+    fleets (``remote``, e.g. a DGX Spark) are never used: dstack cannot
+    provision a CPU pod there, and the CPU image is amd64 only.
+    """
     trusted = []
-    for backend in settings.backends:
+    for backend in settings.cache_warm_backends or settings.backends:
+        if backend in OWNED_BACKENDS:
+            continue
         if backend in COMMUNITY_BACKENDS:
             config = dstack_backend_config(backend, config_path)
             if not config or config.get("community_cloud") is not False:
@@ -205,8 +214,9 @@ class CacheWarmer:
         # datacenter hosts, whatever the GPU worker is allowed to use.
         backends = trusted_backends(settings, self._config_path)
         if not backends:
-            raise CacheWarmerError("Cache warming writes the shared model cache and needs a backend without "
-                                   "community hosts: set community_cloud: false for it in the dstack server config")
+            raise CacheWarmerError("Cache warming writes the shared model cache and needs a cloud backend without "
+                                   "community hosts: set community_cloud: false for it in the dstack server config, "
+                                   "and set cache_warm_backends when the GPU worker runs on an SSH fleet")
         client = self._client()
         with self._lock:
             run = client.get_run(RUN_NAME)

@@ -9,6 +9,8 @@ from services.remote_worker.settings import RemoteWorkerSettings
 
 WORKER_PORT = 7860
 SOURCE_DIR = "/workspace/maestro"
+# MAESTRO_DATA default of app/scripts/remote_worker_boot.sh.
+WORKER_DATA_DIR = "/workspace/data"
 # Cheap endpoint that answers once launch.py has finished importing wgp.
 HEALTH_PATH = "/api/v1/system-stats"
 
@@ -157,6 +159,12 @@ def build_run_spec(settings: RemoteWorkerSettings, output_scope: str = "",
         }
     if settings.fleet:
         configuration["fleets"] = [settings.fleet]
+    host_data = settings.host_data_path.rstrip("/")
+    if host_data.startswith("/") and ":" not in host_data:
+        # dstack instance volume: the host keeps the data root between runs.
+        # Optional, so a backend without instance volumes (RunPod, Vast.ai)
+        # still runs the worker, on its pod-local data root.
+        configuration["volumes"] = [{"instance_path": host_data, "path": WORKER_DATA_DIR, "optional": True}]
     return {"run_name": run_name or settings.run_name, "configuration": configuration}
 
 

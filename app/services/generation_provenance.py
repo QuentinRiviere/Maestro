@@ -163,6 +163,12 @@ def _positive(value: Any) -> float | None:
     return number if number is not None and number > 0 else None
 
 
+def _price(value: Any) -> float | None:
+    """An hourly price; 0 is a real price (an owned machine on an SSH fleet)."""
+    number = _number(value)
+    return number if number is not None and number >= 0 else None
+
+
 def _basename(value: Any) -> str:
     text = str(value or "").replace("\\", "/").strip()
     return os.path.basename(text) if text else ""
@@ -398,7 +404,7 @@ def remote_hardware(billing: Mapping[str, Any] | None) -> dict[str, Any]:
         "region": billing.get("gpu_region"),
         "instance_type": billing.get("instance_type"),
         "spot": billing.get("spot"),
-        "price_per_hour": _positive(billing.get("price_per_hour")),
+        "price_per_hour": _price(billing.get("price_per_hour")),
         "pod": billing.get("pod"),
     }
     return prune(hardware)
@@ -431,7 +437,7 @@ def merge_remote(
     timing["remote_wait_seconds"] = _round(billing.get("wait_seconds"))
     timing["remote_work_seconds"] = _round(billing.get("work_seconds"))
     record["timing"] = timing
-    price = _positive(billing.get("price_per_hour"))
+    price = _price(billing.get("price_per_hour"))
     work = _positive(billing.get("work_seconds"))
     if price is not None and work is not None:
         record["cost"] = {

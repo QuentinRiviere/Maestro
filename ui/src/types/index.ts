@@ -1332,6 +1332,10 @@ export interface RemoteWorkerSettings {
   backends: string[]
   fleet: string
   manage_fleet: boolean
+  /** Backends of the R2 cache warmer's CPU pod; empty uses `backends`. */
+  cache_warm_backends: string[]
+  /** Host directory mounted as the worker's data root (SSH fleets). */
+  host_data_path: string
   gpu: string
   disk: string
   memory: string

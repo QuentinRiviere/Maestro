@@ -503,6 +503,21 @@ export function RemoteWorkerPanel() {
               label="Backends"
               value={merged.backends.join(', ')}
               onChange={value => update('backends', value.split(',').map(part => part.trim()).filter(Boolean))}
+              hint="remote targets an SSH fleet (machines you own, e.g. a DGX Spark)."
+            />
+            <Field locked={isLocked('cache_warm_backends')}
+              label="Cache warmer backends"
+              value={(merged.cache_warm_backends ?? []).join(', ')}
+              onChange={value => update('cache_warm_backends', value.split(',').map(part => part.trim()).filter(Boolean))}
+              placeholder="Same as backends"
+              hint="Cloud backends for the CPU pod that fills the R2 cache; needed when the worker runs on an SSH fleet."
+            />
+            <Field locked={isLocked('host_data_path')}
+              label="Host data path"
+              value={merged.host_data_path ?? ''}
+              onChange={value => update('host_data_path', value)}
+              placeholder="/var/lib/maestro-worker"
+              hint="SSH fleets only: keeps weights and compiled kernels on the host between runs."
             />
           </div>
         )}
