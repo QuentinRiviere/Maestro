@@ -62,13 +62,17 @@ gradio_rangeslider==0.0.8
 opencv-python==4.13.0.92
 ultralytics==8.3.228  # H3 Face Refiner detector; keep the existing Torch stack
 segment-anything==1.0
-rembg[gpu]==2.0.65; sys_platform != "darwin"
-# macOS (controller host driving a remote GPU worker): CPU builds.
-rembg==2.0.65; sys_platform == "darwin"
-onnxruntime-gpu==1.22.0; python_version < "3.11" and sys_platform != "darwin"
-onnxruntime-gpu==1.25.0.dev20260210001; python_version >= "3.11" and sys_platform != "darwin"
-onnxruntime==1.22.1; sys_platform == "darwin"
-decord==0.6.0; sys_platform != "darwin"
+rembg[gpu]==2.0.65; sys_platform != "darwin" and platform_machine != "aarch64"
+# macOS (controller host driving a remote GPU worker) and linux/aarch64 (DGX
+# Spark worker, docker/remote-worker-spark): onnxruntime-gpu ships no cp310
+# aarch64 wheel, so ONNX models (rembg, DWPose, face detectors) run on CPU.
+rembg==2.0.65; sys_platform == "darwin" or platform_machine == "aarch64"
+onnxruntime-gpu==1.22.0; python_version < "3.11" and sys_platform != "darwin" and platform_machine != "aarch64"
+onnxruntime-gpu==1.25.0.dev20260210001; python_version >= "3.11" and sys_platform != "darwin" and platform_machine != "aarch64"
+onnxruntime==1.22.1; sys_platform == "darwin" or platform_machine == "aarch64"
+# decord has no linux/aarch64 wheel: the Spark image installs the OpenCV-backed
+# shim from docker/controller/decord_shim instead.
+decord==0.6.0; sys_platform != "darwin" and platform_machine != "aarch64"
 # decord has no macOS arm64 wheels; eva-decord ships the same module.
 eva-decord==0.6.1; sys_platform == "darwin"
 timm==1.0.24
@@ -81,7 +85,8 @@ insightface @ https://github.com/deepbeepmeep/insightface/releases/download/insi
 insightface @ https://github.com/deepbeepmeep/insightface/releases/download/insightface/insightface-0.7.3-cp312-cp312-win_amd64.whl ; sys_platform == "win32" and python_version == "3.12"
 insightface==0.7.3 ; sys_platform == "linux"
 facexlib==0.3.0
-taichi==1.7.4
+# No linux/aarch64 wheel; only imported lazily by the SCAIL pose renderer.
+taichi==1.7.4; platform_machine != "aarch64"
 vector_quantize_pytorch==1.27.19
 
 

@@ -67,15 +67,36 @@ from typing import Any, List, Literal, Optional, Tuple, Union
 import warnings
 import os
 
+from .sage2_archs import dispatch_arch, extra_archs, supported_archs
+
 # Architectures the worker image compiles kernels for; others (sm_100, sm_120)
-# would raise at run time, so they stay on sage (Triton) or sdpa.
-_SAGE2_ARCHS = {(8, 0), (8, 6), (8, 9)}
+# would raise at run time, so they stay on sage (Triton) or sdpa. An image
+# that compiles more (the DGX Spark image: sm_120, also run on sm_121) lists
+# them in MAESTRO_SAGE2_EXTRA_ARCHS; see shared/sage2_archs.py.
+_SAGE2_ARCHS = supported_archs()
+_SAGE2_EXTRA_ARCHS = extra_archs()
+
+
+def _sage2_kernel_probe(device_index):
+    """Run one tiny sage2 call on a GPU whose kernels the image only declares."""
+    try:
+        q = torch.zeros(1, 128, 1, 64, dtype=torch.float16, device=f"cuda:{device_index}")
+        sageattn([q, q.clone(), q.clone()], tensor_layout="NHD")
+        torch.cuda.synchronize(device_index)
+        return True
+    except Exception as exc:
+        print(f"[Attention] SageAttention 2 kernel probe failed on cuda:{device_index}, "
+              f"falling back: {exc}")
+        return False
 
 
 def is_sage2_supported():
     device_count = torch.cuda.device_count()
     for i in range(device_count):
-        if tuple(torch.cuda.get_device_capability(i)) not in _SAGE2_ARCHS:
+        capability = tuple(torch.cuda.get_device_capability(i))
+        if capability not in _SAGE2_ARCHS:
+            return False
+        if capability in _SAGE2_EXTRA_ARCHS and not _sage2_kernel_probe(i):
             return False
     return True
 
@@ -115,8 +136,8 @@ def _get_device_index(device: torch.device) -> int:
 def _get_cuda_arch(device: torch.device) -> str:
     idx = _get_device_index(device)
     if idx < len(_CUDA_ARCHS):
-        return _CUDA_ARCHS[idx]
-    return get_cuda_arch_versions()[idx]
+        return dispatch_arch(_CUDA_ARCHS[idx])
+    return dispatch_arch(get_cuda_arch_versions()[idx])
 
 
 def _maybe_set_device(device: torch.device):
