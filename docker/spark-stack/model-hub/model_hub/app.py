@@ -599,6 +599,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     try:
         if os.path.exists(settings.base_yaml):
             hub.render_entries(hub.entries(), write=True)
+        else:
+            print(f"model hub: {settings.base_yaml} is missing, nothing rendered", flush=True)
     except (render.RenderError, registry.ConfigError) as exc:
         print(f"model hub: initial render failed: {exc}", flush=True)
     return app

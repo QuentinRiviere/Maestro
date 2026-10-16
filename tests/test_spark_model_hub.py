@@ -556,5 +556,23 @@ class CatalogNetworkTests(unittest.TestCase):
                     self.assertIn(serve["mmproj"], names)
 
 
+
+class BundledExampleTests(unittest.TestCase):
+    def test_bundled_examples_match_the_standalone_stack(self):
+        for _, example in registry.EXAMPLES:
+            with open(os.path.join(registry.BUNDLED_EXAMPLES_DIR, example), encoding="utf-8") as bundled, \
+                    open(os.path.join(_STANDALONE, "config", example), encoding="utf-8") as standalone:
+                self.assertEqual(bundled.read(), standalone.read(), example)
+
+    def test_seed_falls_back_to_bundled_examples(self):
+        with tempfile.TemporaryDirectory() as config_dir:
+            with open(os.path.join(config_dir, "models.yml"), "w", encoding="utf-8") as handle:
+                handle.write("[]\n")
+            created = registry.seed_config(config_dir)
+            self.assertEqual(created, ["llama-swap.base.yaml"])
+            with open(os.path.join(config_dir, "models.yml"), encoding="utf-8") as handle:
+                self.assertEqual(handle.read(), "[]\n")
+
+
 if __name__ == "__main__":
     unittest.main()

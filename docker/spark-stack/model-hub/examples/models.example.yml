@@ -1,0 +1,32 @@
+# Models fetched into $MODELS_DIR/<owner>/<repo>/<file>, verified against the
+# Hub hashes. Written by the model hub (and readable by `fetch`); hand edits
+# are fine while the hub is not saving. Entries with a `serve:` section are
+# rendered into llama-swap.yaml (see docs/Spark-model-hub.md).
+#
+# Example: the model hub copies this file to config/models.yml on its first
+# start (git ignores the copy). The entry below maps the abliterated
+# Qwen3.6 35B-A3B as the always-on model once its files are downloaded
+# (hub catalog, or `docker compose run --rm fetch`).
+
+- repo: huihui-ai/Huihui-Qwen3.6-35B-A3B-abliterated-MTP-GGUF
+  revision: acd5abe0c5ebd064f3863ca7d4bba2d924ec6544
+  include:
+  - Huihui-Qwen3.6-35B-A3B-abliterated-ggml-model-Q4_K.gguf
+  - mmproj-model-f16.gguf
+  serve:
+    id: qwen36-35b-abliterated
+    name: Qwen3.6 35B-A3B abliterated (MTP)
+    model: Huihui-Qwen3.6-35B-A3B-abliterated-ggml-model-Q4_K.gguf
+    mmproj: mmproj-model-f16.gguf
+    ctx_size: 65536
+    parallel: 1
+    mtp: true
+    mtp_draft_n_max: 6
+    extra_args: []
+    ttl: 0
+    group: resident
+    preload: true
+    aliases:
+    - small-llm
+    enabled: true
+    unlisted: false

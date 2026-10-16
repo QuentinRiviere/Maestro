@@ -14,6 +14,7 @@ COPY requirements.txt .
 RUN pip install --no-deps -r requirements.txt && pip check
 
 COPY catalog.yml /app/catalog.yml
+COPY examples /app/examples
 COPY model_hub /app/model_hub
 
 # Runs as the compose `user:` (the owner of MODELS_DIR); 1000:1000 by default.

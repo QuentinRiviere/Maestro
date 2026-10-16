@@ -96,13 +96,21 @@ def _write_replace(path: str, text: str, directory: str) -> None:
 
 
 EXAMPLES = (("models.yml", "models.example.yml"), ("llama-swap.base.yaml", "llama-swap.base.example.yaml"))
+# Copies of the standalone stack's examples shipped in the image, used when the
+# config directory has none (a stack laid out outside this repository).
+BUNDLED_EXAMPLES_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "examples")
 
 
 def seed_config(config_dir: str) -> list[str]:
-    """Copy config/*.example.* to the user-owned names when those are missing."""
+    """Copy config/*.example.* to the user-owned names when those are missing.
+
+    Falls back to the examples bundled with the hub when config_dir has none.
+    """
     created = []
     for name, example in EXAMPLES:
         target, source = os.path.join(config_dir, name), os.path.join(config_dir, example)
+        if not os.path.exists(source):
+            source = os.path.join(BUNDLED_EXAMPLES_DIR, example)
         if not os.path.exists(target) and os.path.exists(source):
             with open(source, encoding="utf-8") as handle:
                 text = handle.read()
