@@ -106,12 +106,33 @@ def shot_reach(framing: str) -> str:
     return "full"
 
 
+# What a hands insert cannot show: the head, the face and the neck.
+_HEAD_NECK_RE = re.compile(
+    r"\b(?:glasses|spectacles|sunglasses|eyeglasses|goggles|monocle|earrings?|ear\s*cuffs?|studs?|"
+    r"piercings?|hats?|caps?|beanies?|berets?|fedoras?|hoods?|helmets?|headbands?|bandanas?|"
+    r"headscarf|headscarves|turbans?|hair\s*(?:clips?|pins?|ties?|bands?|bows?)|hairpins?|barrettes?|"
+    r"scrunchies?|tiaras?|crowns?|veils?|necklaces?|pendants?|chokers?|lockets?|chains?|scarf|scarves|"
+    r"neckties?|ties|bow\s*ties?|cravats?|lanyards?|masks?|makeup|lipstick|eyeliner|mascara)\b",
+    re.IGNORECASE,
+)
+# A wrist or hand item named with a chain ("a chain bracelet") stays.
+_HAND_RE = re.compile(r"\b(?:bracelets?|bangles?|watch(?:es)?|rings?|gloves?|cuffs?|sleeves?|wristbands?|"
+                      r"mittens?|nails?|manicure)\b", re.IGNORECASE)
+
+
 def visible_wardrobe(wardrobe: str, reach: str) -> str:
-    """The garments a framing can see: no legs or shoes closer than a full figure."""
+    """The garments a framing can see: no legs or shoes closer than a full figure.
+
+    A ``detail`` reach (a hands insert) keeps what hands and forearms show:
+    sleeves, cuffs, gloves, rings, bracelets, a watch. Head, face and neck
+    items (glasses, earrings, hats, necklaces, scarves, masks) are dropped.
+    """
     if reach == "full" or not wardrobe:
         return wardrobe
-    items = re.split(r",\s*(?:and\s+)?|\s+and\s+", wardrobe.strip().rstrip("."))
-    kept = [item for item in items if item.strip() and not _LOWER_BODY_RE.search(item)]
+    items = re.split(r"\.\s+|,\s*(?:and\s+)?|\s+and\s+", wardrobe.strip().rstrip("."))
+    kept = [item.strip() for item in items if item.strip() and not _LOWER_BODY_RE.search(item)]
+    if reach == "detail":
+        kept = [item for item in kept if not _HEAD_NECK_RE.search(item) or _HAND_RE.search(item)]
     return ", ".join(kept)
 
 

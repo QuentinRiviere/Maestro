@@ -205,10 +205,13 @@ def framing_line(blocking: Optional[dict], foreground: str = "", faces: bool = F
     """The diagram in words, for editors that do not read images.
 
     ``foreground`` names the person whose back fills an over-the-shoulder
-    shot (see ``ots_foreground``): they are described as a cropped,
-    faceless shoulder rather than listed with the others. ``faces`` is set
-    when the shot's framing asks to see the faces (see ``faces_wanted``):
-    a person the blocking turns away is then turned three quarters instead.
+    shot (see ``ots_foreground``): they stay in the left-to-right list, so
+    the list matches the people count, described there as a cropped,
+    faceless shoulder. Listing them apart ("In frame: B. Foreground: A's
+    shoulder") made editors draw A twice: once as the shoulder, once whole.
+    ``faces`` is set when the shot's framing asks to see the faces (see
+    ``faces_wanted``): a person the blocking turns away is then turned three
+    quarters instead.
     """
     if not blocking:
         return ""
@@ -226,19 +229,18 @@ def framing_line(blocking: Optional[dict], foreground: str = "", faces: bool = F
     people = []
     for _lateral, _depth, subject in placed:
         if back and _name_key(subject["name"]) == back:
+            side = _foreground_side(blocking, subject["name"])
+            people.append(f"{subject['name']} (back to camera, the out-of-focus back of the head and shoulder "
+                          f"in the {side} foreground, cropped by the frame edge, face not visible)")
             continue
         facing = _facing_words(blocking, subject["facing_deg"])
         if faces and facing == "back to camera":
             facing = "turned three quarters away, face visible"
         people.append(f"{subject['name']} ({facing})" if facing else subject["name"])
-    order = ""
     if len(people) > 1:
         order = " In frame, left to right: " + ", ".join(people) + "."
-    elif people:
+    else:
         order = f" In frame: {people[0]}."
-    if back and len(people) < len(placed):
-        name = next(s["name"] for _l, _d, s in placed if _name_key(s["name"]) == back)
-        order += " " + ots_foreground_line(name, _foreground_side(blocking, name))
     return f"Framing: {framing} shot.{order}"
 
 
@@ -366,30 +368,67 @@ def _foreground_side(blocking: dict, name: str) -> str:
     return side
 
 
+def _look_angle(person: dict, other: dict) -> Optional[float]:
+    """Degrees between where ``person`` faces and the direction of ``other`` (None without a facing)."""
+    if person.get("facing_deg") is None:
+        return None
+    dx, dy = other["x"] - person["x"], other["y"] - person["y"]
+    length = math.hypot(dx, dy)
+    if length < 1e-6:
+        return None
+    theta = math.radians(person["facing_deg"])
+    # Facing 0 looks toward -y and 90 toward +x.
+    cosine = (math.sin(theta) * dx - math.cos(theta) * dy) / length
+    return math.degrees(math.acos(max(-1.0, min(1.0, cosine))))
+
+
+# A look reaches the person within this angle of where one faces.
+_GAZE_CONE = 45.0
+# Wider cone for someone in frame who looks back: the scene lock keeps a
+# person's facing toward their seat's partner while the shot's action turns
+# them to the one in frame (shot 18 of run fcd1e37f looked "out of frame").
+_MUTUAL_GAZE_CONE = 90.0
+
+
+def _looks_at(person: dict, other: dict) -> bool:
+    angle = _look_angle(person, other)
+    return angle is not None and angle < _GAZE_CONE
+
+
 def gaze_targets(blocking: Optional[dict]) -> dict[str, str]:
-    """Who looks at whom: the person each subject faces, within 45 degrees."""
+    """Who looks at whom: the person each subject faces, within 45 degrees.
+
+    People of the scene out of this shot still draw a look (a reverse's
+    eyeline), but someone in frame wins over them: within the same cone, or
+    within the half the subject faces when that person looks back at the subject.
+    """
     if not blocking:
         return {}
+    in_shot = blocking["subjects"]
+    offscreen = blocking.get("offscreen", [])
     targets: dict[str, str] = {}
-    for subject in blocking["subjects"]:
+    for subject in in_shot:
         if subject.get("facing_deg") is None:
             continue
-        theta = math.radians(subject["facing_deg"])
-        fx, fy = math.sin(theta), -math.cos(theta)
-        best, best_angle = None, 45.0
-        # People of the scene out of this shot still draw a look (a reverse's eyeline).
-        for other in [*blocking["subjects"], *blocking.get("offscreen", [])]:
+        seen = []
+        for other in [*in_shot, *offscreen]:
             if other is subject:
                 continue
-            dx, dy = other["x"] - subject["x"], other["y"] - subject["y"]
-            length = math.hypot(dx, dy)
-            if length < 1e-6:
-                continue
-            angle = math.degrees(math.acos(max(-1.0, min(1.0, (fx * dx + fy * dy) / length))))
-            if angle < best_angle:
-                best, best_angle = other, angle
+            angle = _look_angle(subject, other)
+            if angle is not None:
+                seen.append((angle, any(other is person for person in in_shot), other))
+        in_cone = [item for item in seen if item[0] < _GAZE_CONE]
+        best = None
+        if in_cone:
+            # In frame first, then the smallest angle.
+            best = min(in_cone, key=lambda item: (not item[1], item[0]))
+        if best is None or not best[1]:
+            looking_back = [item for item in seen if item[1] and item[0] < _MUTUAL_GAZE_CONE
+                            and _looks_at(item[2], subject)]
+            if looking_back:
+                best = min(looking_back, key=lambda item: item[0])
         if best is not None:
-            targets[subject["name"]] = best["name"]
+            targets[subject["name"]] = best[2]["name"]
     return targets
 
 
@@ -406,7 +445,8 @@ def staging_line(blocking: Optional[dict], framing: Any = "") -> str:
     Image editors given a portrait add a second copy of the person or turn
     them to the lens; naming the count and the eyelines prevents both.
     ``framing`` is the shot's framing text: an over-the-shoulder shot
-    describes its foreground person by their back only (``ots_foreground``).
+    describes its foreground person by their back only (``ots_foreground``),
+    in the same list as the others.
     """
     foreground = ots_foreground(blocking, framing)
     line = framing_line(blocking, foreground, faces=faces_wanted(framing))
@@ -423,10 +463,13 @@ def staging_line(blocking: Optional[dict], framing: Any = "") -> str:
     people = {p["name"]: p for p in [*blocking["subjects"], *blocking.get("offscreen", [])]}
     looks = []
     for who, whom in gaze_targets(blocking).items():
-        if who not in names or who == foreground:
+        if who not in names:
             continue
         if whom in names:
+            # The foreground person's look too: it turns their back to the camera, toward the other.
             looks.append(f"{who} looks at {whom}")
+            continue
+        if who == foreground:
             continue
         # The person looked at is out of frame: the eyeline gives the screen direction.
         side = screen_side(blocking, people[whom]["x"], people[whom]["y"])

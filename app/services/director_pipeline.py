@@ -2659,6 +2659,10 @@ def _rerun_clip_image_impl(out_dir: str, pid: str, clip_index: int, prompt_overr
             break
     # The scene's one floor plan, as in the run (see director_scene_locks).
     shot_plan = scene_locked_plan(clip, director_scene_locks(clips)[clip_index])
+    # The saved prompt was written at planning time: an insert gets its
+    # hands-only SUBJECT back, whatever that planning wrote.
+    cast = snapshot.get("_director_cast") if isinstance(snapshot.get("_director_cast"), dict) else state.get("cast")
+    prompt = director_insert_prompt(shot_plan, prompt, cast if isinstance(cast, dict) else None)
     layout_ref, prompt = director_shot_layout(pid, clip_index, shot_plan, prompt, image_model, clip_out_dir)
     character_needles, prop_needles = cast_ref_needles(
         {**snapshot, "character_ref_paths": character_ref_paths}, clip_out_dir,
@@ -5942,6 +5946,10 @@ def shot_identity_refs(params: dict, plan: dict, refs: list[str]) -> list[str]:
     if director_is_insert(plan):
         # A hands-or-object insert drawn from a person's portrait comes out as a portrait.
         return [ref for ref in refs if ref not in names]
+    # A person the shot only names as out of frame (an eyeline's target) gets
+    # no reference: the editor draws everyone it is shown.
+    away = director_out_of_frame(plan)
+    refs = [ref for ref in refs if str(names.get(ref, "") or "").strip().casefold() not in away]
     views = params.get("_director_image_views") or {}
     views = views if isinstance(views, dict) else {}
     back = director_ots_foreground(plan).casefold()
@@ -5959,12 +5967,106 @@ def shot_identity_refs(params: dict, plan: dict, refs: list[str]) -> list[str]:
     return out
 
 
+def director_out_of_frame(plan: dict) -> set[str]:
+    """Casefolded names of the people a shot's blocking keeps out of frame.
+
+    The scene lock lists the scene's other people as ``offscreen`` so an
+    eyeline can name them ("looks toward frame right at B, who is out of
+    frame"); a person behind the camera is out of frame too. Matching the
+    prompt's words against the cast then picked their portrait as well,
+    and the editor drew them into the shot.
+    """
+    from services.director.blocking_map import _to_camera, parse_blocking_map
+
+    blocking = parse_blocking_map(plan.get("_director_blocking_map"))
+    if not blocking:
+        return set()
+    shown = {s["name"].strip().casefold() for s in blocking["subjects"]
+             if _to_camera(blocking, s["x"], s["y"])[1] > 0.02}
+    every = {p["name"].strip().casefold() for p in [*blocking["subjects"], *blocking.get("offscreen", [])]}
+    return every - shown - {""}
+
+
 def director_is_insert(plan: dict) -> bool:
     """Whether a shot is an insert (hands, an object): by scene type or by its framing words."""
     from services.director.policies import shot_reach
 
     return (str(plan.get("_director_scene_type") or "").lower() == "insert"
             or shot_reach(str(plan.get("_director_camera_framing") or "")) == "detail")
+
+
+# The SUBJECT field of a structured image prompt, up to the next field or the end.
+_SUBJECT_FIELD_RE = re.compile(
+    r"(SUBJECTS?:\s*)(.*?)(?=\s*(?:\|\s*)?\b(?:MOOD|STYLE|SETTING|LIGHTING|SHOT|REFRAME|CAMERA|ACTION):|$)",
+    re.DOTALL,
+)
+# Sentences of a free-form prompt that describe a face or a body.
+_PORTRAIT_SENTENCE_RE = re.compile(
+    r"\b(?:face|faces|facial|eyes?|eyebrows?|lashes|hair|haired|jaw(?:line)?|cheeks?|lips|skin|"
+    r"complexion|years? old|\d+-year-old|build|tall|cm\b)", re.IGNORECASE,
+)
+
+
+def director_insert_subject(plan: dict, cast: Optional[dict]) -> str:
+    """An insert's SUBJECT as the planner's structured data gives it: hands, sleeves, the action.
+
+    Built like the image renderer's draft (``resolve_subjects_text`` then the
+    opening blocking), without the LLM polish, so it never carries a face.
+    """
+    from types import SimpleNamespace
+
+    from services.director.policies import resolve_subjects_text
+
+    subjects = [s for s in plan.get("_director_subjects_on_screen") or [] if isinstance(s, dict)]
+    characters = [c for c in (cast or {}).get("characters") or [] if isinstance(c, dict)]
+    by_name = {str(c.get("name") or "").strip().casefold(): c for c in characters}
+    profiles = {}
+    for index, character in enumerate(characters):
+        profile = SimpleNamespace(physical_description=str(character.get("description") or ""),
+                                  wardrobe=str(character.get("wardrobe") or ""))
+        profiles[f"char_{index}"] = profile
+        profiles[str(character.get("name") or "").strip().casefold()] = profile
+
+    def resolved(subject: dict) -> Optional[str]:
+        name = str(subject.get("speaker_name") or subject.get("name") or "").strip().casefold()
+        if name in by_name:
+            return name
+        return str(subject.get("character_id") or "") or None
+
+    shot = SimpleNamespace(
+        scene_type=str(plan.get("_director_scene_type") or ""),
+        camera_plan=SimpleNamespace(framing=str(plan.get("_director_camera_framing") or "")),
+        subjects_on_screen=[SimpleNamespace(visual_description=str(s.get("visual_description") or ""),
+                                            character_id=resolved(s),
+                                            position_or_relation=str(s.get("position_or_relation") or ""))
+                            for s in subjects],
+    )
+    text = resolve_subjects_text(shot, SimpleNamespace(get_character=profiles.get))
+    action = str(plan.get("_director_opening_blocking") or "").strip()
+    return ", ".join(part.rstrip(". ") for part in (text, action) if part)
+
+
+def director_insert_prompt(plan: dict, prompt: str, cast: Optional[dict]) -> str:
+    """An insert's image prompt with a hands-only SUBJECT, whatever the saved prompt says.
+
+    A shot's prompt is written (and LLM-polished) at planning time: a run
+    planned before inserts dropped the face keeps describing it, and a
+    rerun of its image redraws a portrait. The SUBJECT field is rebuilt from
+    the plan (``director_insert_subject``); a free-form prompt loses its
+    face and body sentences and gets the rebuilt SUBJECT. Other shots are
+    returned unchanged.
+    """
+    if not prompt or not director_is_insert(plan):
+        return prompt
+    subject = director_insert_subject(plan, cast)
+    if not subject:
+        return prompt
+    match = _SUBJECT_FIELD_RE.search(prompt)
+    if match:
+        return f"{prompt[:match.start(2)]}{subject}.{prompt[match.end(2):]}"
+    sentences = re.split(r"(?<=[.!?])\s+", prompt.strip())
+    kept = [sentence for sentence in sentences if not _PORTRAIT_SENTENCE_RE.search(sentence)]
+    return " ".join([*kept, f"SUBJECT: {subject}."]).strip()
 
 
 def without_ots_front_refs(params: dict, plan: dict, refs: list[str]) -> list[str]:
@@ -9600,6 +9702,8 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
         shot_plan = scene_locked_plan(plan, scene_locks[i])
         for note in (scene_locks[i] or {}).get("notes") or []:
             print(f"[Pipeline {pid}] Shot {i+1}: scene layout: {note}")
+        cast = params.get("_director_cast")
+        prompt = director_insert_prompt(shot_plan, prompt, cast if isinstance(cast, dict) else None)
         layout_ref, prompt = director_shot_layout(pid, i, shot_plan, prompt, image_model, out_dir)
         guide_path = ""
         blockout_record = None

@@ -271,8 +271,8 @@ class ReverseAngleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             _, prompt = pipeline.director_shot_layout("p", 1, plan, "They talk.", "cloud_fal_seedream_4", folder)
         # Over the man's shoulder: he is the cropped back on the right, she is in frame.
-        self.assertIn("In frame: Woman (facing camera).", prompt)
-        self.assertIn("the out-of-focus back of Man's head and shoulder in the right third", prompt)
+        self.assertIn("In frame, left to right: Woman (facing camera), Man (back to camera, the out-of-focus "
+                      "back of the head and shoulder in the right foreground", prompt)
         self.assertIn("Exactly 2 people in frame", prompt)
 
 
@@ -302,12 +302,15 @@ class OverTheShoulderTests(unittest.TestCase):
 
     def test_the_layout_describes_the_back_and_keeps_the_count(self):
         line = staging_line(parse_blocking_map(OVER_MAN))
-        self.assertIn("In frame: Woman (facing camera).", line)
-        self.assertIn("Foreground: the out-of-focus back of Man's head and shoulder in the right third, "
-                      "cropped by the frame edge, face not visible.", line)
+        # The foreground back stays in the list, so the list matches the count:
+        # listed apart, editors drew the person twice (shot 5 of run fcd1e37f).
+        self.assertIn("In frame, left to right: Woman (facing camera), Man (back to camera, the out-of-focus "
+                      "back of the head and shoulder in the right foreground, cropped by the frame edge, "
+                      "face not visible).", line)
         self.assertIn("Exactly 2 people in frame", line)
-        self.assertNotIn("Man (back to camera)", line)
-        self.assertNotIn("Man looks at", line)
+        self.assertIn("Man is seen only from behind.", line)
+        self.assertNotIn("Foreground:", line)
+        self.assertIn("Man looks at Woman", line)
 
     def test_the_foreground_person_gets_the_back_view_or_nothing(self):
         plan = {"_director_blocking_map": OVER_MAN}
