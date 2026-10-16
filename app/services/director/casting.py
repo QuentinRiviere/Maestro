@@ -164,14 +164,20 @@ def _subject_lead(description: str) -> str:
 # a few dozen pixels tall, where the eyes come out garbled.
 SHEET_RESOLUTION = "1088x1920"
 
+# Soft directional light rather than flat, even light: Director shots take
+# the people from these sheets, and an evenly lit sheet pulls the shot's own
+# (often low-key) lighting back toward a flat studio look.
+SHEET_LIGHT = ("a soft key light from the front-left with a gentle fill, the face fully readable with a soft "
+               "natural shadow on the far cheek")
+
 
 def character_sheet_prompt(character: dict, style: str = "") -> str:
     look = f" Rendered as: {style}." if style else ""
     return (
         f"Character reference photograph of {_subject_lead(character['description'])}, alone, standing in a "
-        "full-body front view from head to shoes, centered in a tall portrait frame on a plain light-grey studio "
-        "background, looking straight at the lens. The face is sharp and well lit: both eyes symmetrical and "
-        "matching, round irises with natural catchlights. Neutral expression, even soft lighting, sharp focus, "
+        "full-body front view from head to shoes, centered in a tall portrait frame on a plain mid-grey studio "
+        "background, looking straight at the lens. The face is sharp and readable: both eyes symmetrical and "
+        f"matching, round irises with natural catchlights. Neutral expression, {SHEET_LIGHT}, sharp focus, "
         f"no text, no logo.{look} Person: {character['description']}"
         + (f" Wearing: {character['wardrobe']}." if character.get("wardrobe") else "")
     )
@@ -247,7 +253,7 @@ def view_prompt(view: str, element: dict, variant: dict, style: str = "", *, ref
         wardrobe = back_view_wardrobe(wardrobe)
     return (
         f"The exact person of {label} 1, now in {_VIEW_SHOTS[view]}. Keep the same face, eyes, age, skin, "
-        "hairstyle and hair color, build and wardrobe; plain light-grey studio background, even soft lighting, "
+        f"hairstyle and hair color, build and wardrobe; plain mid-grey studio background, {SHEET_LIGHT}, "
         f"neutral expression, sharp focus, {_VIEW_EYES[view] + ', ' if _VIEW_EYES[view] else ''}"
         f"no text, no logo. Person: {element.get('description', '')}"
         + (f" Wearing: {wardrobe}." if wardrobe else "")
