@@ -27002,19 +27002,22 @@ def _worker_loaded_models() -> list[str]:
 
 def _worker_memory() -> dict:
     stats = {}
+    mem_available = None
+    try:
+        import psutil
+        mem_available = psutil.virtual_memory().available
+        stats["ram_available_gb"] = round(mem_available / 1e9, 2)
+    except Exception:
+        pass
     if torch.cuda.is_available():
         free, total = torch.cuda.mem_get_info()
+        # Unified memory (DGX Spark): see gpu_memory_stats.
+        unified = bool(getattr(torch.cuda.get_device_properties(0), "is_integrated", False))
         stats.update(
-            gpu_free_gb=round(free / 1e9, 2),
-            gpu_total_gb=round(total / 1e9, 2),
+            _gpu_memory_stats(free, total, unified=unified, mem_available=mem_available),
             torch_allocated_gb=round(torch.cuda.memory_allocated() / 1e9, 2),
             torch_reserved_gb=round(torch.cuda.memory_reserved() / 1e9, 2),
         )
-    try:
-        import psutil
-        stats["ram_available_gb"] = round(psutil.virtual_memory().available / 1e9, 2)
-    except Exception:
-        pass
     return stats
 
 
@@ -27031,6 +27034,7 @@ from services.remote_worker.worker_control import (  # noqa: E402
     PAUSED_ENV as _WORKER_PAUSED_ENV,
     WorkerControl,
     create_router as _create_worker_control_router,
+    gpu_memory_stats as _gpu_memory_stats,
 )
 
 # Pause / hand back / unload, for a worker that lends its GPU to other

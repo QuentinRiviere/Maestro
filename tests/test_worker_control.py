@@ -17,7 +17,7 @@ if _APP_DIR not in sys.path:
 from services.job_lifecycle import generation_slot, try_hand_back, try_start  # noqa: E402
 from services.remote_worker import worker_auth  # noqa: E402
 from services.remote_worker.worker_auth import BearerTokenMiddleware, authorized  # noqa: E402
-from services.remote_worker.worker_control import WorkerBusy, WorkerControl  # noqa: E402
+from services.remote_worker.worker_control import WorkerBusy, WorkerControl, gpu_memory_stats  # noqa: E402
 
 
 class Clock:
@@ -271,6 +271,29 @@ class AuthTests(unittest.TestCase):
         self.assertFalse(authorized("Basic abc", "abc"))
         self.assertFalse(authorized(None, "abc"))
         self.assertFalse(authorized("Bearer ", ""))
+
+
+class GpuMemoryStatsTest(unittest.TestCase):
+    GB = 10**9
+
+    def test_discrete_gpu_reports_cuda_free(self):
+        stats = gpu_memory_stats(30 * self.GB, 80 * self.GB, unified=False, mem_available=200 * self.GB)
+        self.assertEqual(stats, {"gpu_free_gb": 30.0, "gpu_total_gb": 80.0, "unified_memory": False})
+
+    def test_unified_memory_counts_page_cache_as_free(self):
+        # DGX Spark after loading weights: CUDA sees 21 GB, the kernel can hand out 72 GB.
+        stats = gpu_memory_stats(21 * self.GB, 130 * self.GB, unified=True, mem_available=72 * self.GB)
+        self.assertEqual(stats["gpu_free_gb"], 72.0)
+        self.assertEqual(stats["cuda_free_gb"], 21.0)
+        self.assertTrue(stats["unified_memory"])
+
+    def test_unified_memory_capped_at_cuda_total(self):
+        stats = gpu_memory_stats(100 * self.GB, 120 * self.GB, unified=True, mem_available=125 * self.GB)
+        self.assertEqual(stats["gpu_free_gb"], 120.0)
+
+    def test_unified_memory_without_meminfo_keeps_cuda_free(self):
+        stats = gpu_memory_stats(21 * self.GB, 130 * self.GB, unified=True, mem_available=None)
+        self.assertEqual(stats["gpu_free_gb"], 21.0)
 
 
 if __name__ == "__main__":

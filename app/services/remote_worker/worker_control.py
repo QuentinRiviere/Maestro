@@ -38,6 +38,35 @@ class WorkerBusy(RuntimeError):
     """A generation holds the GPU and the caller asked not to wait."""
 
 
+def gpu_memory_stats(
+    cuda_free: int,
+    cuda_total: int,
+    *,
+    unified: bool,
+    mem_available: int | None,
+) -> dict[str, Any]:
+    """GPU memory figures for the worker's state.
+
+    On a unified-memory GPU (DGX Spark GB10, Jetson) the CPU and the GPU share
+    the system RAM, and cudaMemGetInfo counts the kernel page cache as used:
+    after reading tens of GB of weights it reports far less free memory than
+    the system can actually hand out. There, ``gpu_free_gb`` is the kernel's
+    MemAvailable (page cache included), capped at the CUDA total, and the raw
+    CUDA figure stays in ``cuda_free_gb``.
+    """
+    free = cuda_free
+    if unified and mem_available is not None:
+        free = min(mem_available, cuda_total)
+    stats: dict[str, Any] = {
+        "gpu_free_gb": round(free / 1e9, 2),
+        "gpu_total_gb": round(cuda_total / 1e9, 2),
+        "unified_memory": unified,
+    }
+    if unified:
+        stats["cuda_free_gb"] = round(cuda_free / 1e9, 2)
+    return stats
+
+
 class WorkerControl:
     def __init__(
         self,
