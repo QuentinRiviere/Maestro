@@ -1,0 +1,56 @@
+# Adds the model hub to the Maestro Spark stack (compose.yaml). See
+# docs/Spark-model-hub.md, "With the Maestro stack".
+#
+#   mkdir -p config && cp llama-swap.yaml config/llama-swap.base.yaml
+#   docker compose -f compose.yaml -f compose.model-hub.yaml up -d --build
+#
+# llama-swap then reads config/llama-swap.yaml, which the hub renders from
+# config/llama-swap.base.yaml (the Maestro lease model, peers and groups stay
+# hand-written there) plus the `serve:` sections of config/models.yml.
+#
+# Config watching stays OFF here: a llama-swap reload stops every running
+# model with a 30 s grace period, the Maestro lease included, which would cut
+# a render's release short. Apply a new mapping when the worker is idle:
+#   docker compose -f compose.yaml -f compose.model-hub.yaml kill -s HUP llama-swap
+services:
+  llama-swap:
+    environment:
+      LLAMA_SWAP_CONFIG: /etc/llama-swap/config/llama-swap.yaml
+      LLAMA_SWAP_WATCH_CONFIG: "false"
+    volumes:
+      # The directory, not the file: the hub replaces llama-swap.yaml atomically.
+      - ./config:/etc/llama-swap/config:ro
+    depends_on:
+      model-hub:
+        condition: service_healthy
+
+  model-hub:
+    build: ./model-hub
+    image: spark-model-hub:local
+    user: "${UID_GID:-1000:1000}"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      MODEL_HUB_TOKEN: ${MODEL_HUB_TOKEN:?set MODEL_HUB_TOKEN}
+      MODEL_HUB_MODELS_DIR: /models
+      MODEL_HUB_CONFIG_DIR: /config
+      MODEL_HUB_MEMORY_GB: ${MODEL_HUB_MEMORY_GB:-128}
+      MODEL_HUB_RESERVED_GB: ${MODEL_HUB_RESERVED_GB:-10}
+      # On-demand models swap with the Maestro worker's lease (see llama-swap.yaml).
+      MODEL_HUB_DEFAULT_GROUP: ${MODEL_HUB_DEFAULT_GROUP:-gpu-heavy}
+      MODEL_HUB_TRUSTED_AUTHORS: ${MODEL_HUB_TRUSTED_AUTHORS:-}
+      LLAMA_SWAP_URL: http://llama-swap:8080
+      LLAMA_SWAP_API_KEY: ${LLAMA_SWAP_API_KEY:?set LLAMA_SWAP_API_KEY}
+      HF_TOKEN: ${HF_TOKEN:-}
+    ports:
+      - "${SPARK_BIND_ADDR:-127.0.0.1}:${MODEL_HUB_PORT:-8090}:8090"
+    volumes:
+      - ./config:/config
+      - ${MODELS_DIR:-/srv/models}:/models
+    tmpfs:
+      - /tmp:size=64m
+    pids_limit: 128
+    networks: [inference]
+    restart: unless-stopped

@@ -1,0 +1,105 @@
+# DGX Spark: llama-swap gateway + model hub (web UI) + one-shot verified fetcher.
+# No Maestro needed. See docs/Spark-model-hub.md.
+#
+#   cp .env.example .env              # then fill it
+#   docker compose up -d --build      # hub renders config/llama-swap.yaml, then llama-swap starts
+#   docker compose run --rm fetch --dry-run   # CLI: list what models.yml would download
+#   docker compose run --rm fetch             # CLI: download + verify models.yml
+#   docker compose run --rm fetch render      # CLI: re-render llama-swap.yaml
+#
+# Writable host paths: $MODELS_DIR and ./config, for the hub only. llama-swap
+# mounts both read-only. Nothing mounts the Docker socket.
+name: llama-swap
+
+x-hardening: &hardening
+  user: "${UID_GID:-1000:1000}"
+  read_only: true
+  cap_drop: [ALL]
+  security_opt:
+    - no-new-privileges:true
+  logging:
+    driver: json-file
+    options: {max-size: "20m", max-file: "3"}
+
+services:
+  llama-swap:
+    <<: *hardening
+    # Multi-arch (arm64 build targets the GB10, sm_121); pin a digest once tested:
+    #   docker inspect --format '{{index .RepoDigests 0}}' ghcr.io/mostlygeek/llama-swap:unified-cuda13
+    image: ghcr.io/mostlygeek/llama-swap:unified-cuda13
+    environment:
+      # The DIRECTORY is mounted, not the file: the hub replaces llama-swap.yaml
+      # atomically (rename), which a single-file bind mount would never show.
+      LLAMA_SWAP_CONFIG: /etc/llama-swap/config/llama-swap.yaml
+      LLAMA_SWAP_LISTEN: 0.0.0.0:8080
+      # Poll the config every 2 s and reload on change (llama-swap -watch-config).
+      # A reload stops every running model (30 s grace) and re-runs preloads.
+      LLAMA_SWAP_WATCH_CONFIG: "true"
+      LLAMA_SWAP_API_KEY: ${LLAMA_SWAP_API_KEY:?set LLAMA_SWAP_API_KEY}
+      HOME: /tmp
+    ports:
+      # Tailscale (or LAN) address only; 127.0.0.1 when unset, never 0.0.0.0.
+      - "${SPARK_BIND_ADDR:-127.0.0.1}:${LLAMA_SWAP_PORT:-8080}:8080"
+    volumes:
+      - ./config:/etc/llama-swap/config:ro
+      - ${MODELS_DIR:?set MODELS_DIR}:/models:ro
+    tmpfs:
+      - /tmp:size=1g,mode=1777
+    pids_limit: 512
+    ulimits:
+      memlock: -1
+    depends_on:
+      model-hub:
+        condition: service_healthy
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  model-hub:
+    <<: *hardening
+    build: ../model-hub
+    image: spark-model-hub:local
+    environment:
+      MODEL_HUB_TOKEN: ${MODEL_HUB_TOKEN:?set MODEL_HUB_TOKEN}
+      MODEL_HUB_MODELS_DIR: /models
+      MODEL_HUB_CONFIG_DIR: /config
+      MODEL_HUB_MEMORY_GB: ${MODEL_HUB_MEMORY_GB:-128}
+      MODEL_HUB_RESERVED_GB: ${MODEL_HUB_RESERVED_GB:-10}
+      MODEL_HUB_DEFAULT_GROUP: ${MODEL_HUB_DEFAULT_GROUP:-on-demand}
+      MODEL_HUB_TRUSTED_AUTHORS: ${MODEL_HUB_TRUSTED_AUTHORS:-}
+      # Read-only view of llama-swap's running models (GET /running).
+      LLAMA_SWAP_URL: http://llama-swap:8080
+      LLAMA_SWAP_API_KEY: ${LLAMA_SWAP_API_KEY:?set LLAMA_SWAP_API_KEY}
+      HF_TOKEN: ${HF_TOKEN:-}     # optional read-only token, only for this container
+    ports:
+      - "${SPARK_BIND_ADDR:-127.0.0.1}:${MODEL_HUB_PORT:-8090}:8090"
+    volumes:
+      - ./config:/config
+      - ${MODELS_DIR:?set MODELS_DIR}:/models
+    tmpfs:
+      - /tmp:size=64m
+    pids_limit: 128
+    restart: unless-stopped
+
+  fetch:
+    <<: *hardening
+    image: spark-model-hub:local
+    build: ../model-hub
+    profiles: ["tools"]          # never started by `up`
+    entrypoint: ["python", "-m", "model_hub.cli"]
+    command: ["fetch"]
+    environment:
+      MODEL_HUB_MODELS_YML: /config/models.yml
+      MODEL_HUB_MODELS_DIR: /models
+      HF_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      - ./config:/config
+      - ${MODELS_DIR:?set MODELS_DIR}:/models
+    tmpfs:
+      - /tmp:size=64m
+    pids_limit: 64
