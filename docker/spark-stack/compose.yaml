@@ -1,0 +1,92 @@
+# DGX Spark inference stack: llama-swap (with its bundled llama-server) and a
+# permanent Maestro worker. See docs/Remote-worker-static-and-llama-swap.md.
+#
+# UNTESTED on Spark hardware. Fill .env next to this file first:
+#
+#   SPARK_BIND_ADDR=100.x.y.z        # the Spark's Tailscale (or LAN) address
+#   MAESTRO_WORKER_TOKEN=...         # openssl rand -hex 32
+#   LLAMA_SWAP_API_KEY=sk-...        # printf "sk-%s\n" "$(openssl rand -hex 24)"
+#   MODELS_DIR=/srv/models           # GGUF files for llama-swap
+#   MAESTRO_DATA_DIR=/var/lib/maestro-worker
+#
+#   docker compose -f docker/spark-stack/compose.yaml up -d
+#
+# Both services use the host network so llama-swap's children (llama-server
+# on 127.0.0.1:${PORT}) and the lease shim reach the worker without NAT.
+# Everything listens on SPARK_BIND_ADDR only, never 0.0.0.0: the Maestro
+# worker requires MAESTRO_WORKER_TOKEN and llama-swap LLAMA_SWAP_API_KEY, but
+# neither should face the internet. Binding 127.0.0.1 also works when the
+# controller reaches the Spark through an SSH tunnel.
+services:
+  llama-swap:
+    # Multi-arch (arm64 for the GB10), CUDA 13, llama-server and python3 included.
+    image: ghcr.io/mostlygeek/llama-swap:unified-cuda13
+    network_mode: host
+    environment:
+      LLAMA_SWAP_CONFIG: /etc/llama-swap/llama-swap.yaml
+      LLAMA_SWAP_LISTEN: ${SPARK_BIND_ADDR:?set SPARK_BIND_ADDR}:8080
+      LLAMA_SWAP_WATCH_CONFIG: "false"
+      LLAMA_SWAP_API_KEY: ${LLAMA_SWAP_API_KEY:?set LLAMA_SWAP_API_KEY}
+      MAESTRO_WORKER_URL: http://${SPARK_BIND_ADDR}:7860
+      MAESTRO_WORKER_TOKEN: ${MAESTRO_WORKER_TOKEN:?set MAESTRO_WORKER_TOKEN}
+    volumes:
+      - ./llama-swap.yaml:/etc/llama-swap/llama-swap.yaml:ro
+      - ./maestro_worker_lease.py:/opt/maestro/maestro_worker_lease.py:ro
+      - ${MODELS_DIR:-/srv/models}:/models:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    # Stopping llama-swap stops the lease, which waits for the running render
+    # (see healthCheckTimeout in llama-swap.yaml).
+    stop_grace_period: 1h
+    restart: unless-stopped
+
+  maestro-worker:
+    image: ghcr.io/quentinriviere/maestro-worker:spark
+    network_mode: host
+    environment:
+      SERVER_NAME: ${SPARK_BIND_ADDR:?set SPARK_BIND_ADDR}
+      SERVER_PORT: "7860"
+      MAESTRO_WORKER_TOKEN: ${MAESTRO_WORKER_TOKEN:?set MAESTRO_WORKER_TOKEN}
+      # Start paused: only llama-swap's lease (maestro-worker, preloaded at
+      # llama-swap start) lets jobs load models, so a worker restart never
+      # loads one next to big-llm.
+      MAESTRO_WORKER_START_PAUSED: "1"
+      # Unload the models after 30 idle minutes even while leased (0: never).
+      MAESTRO_WORKER_IDLE_UNLOAD_SECONDS: "1800"
+      MAESTRO_DATA: /workspace/data
+      # Unified memory: pinning only duplicates weights, and moving a model
+      # "back to RAM" copies it within the same memory.
+      MAESTRO_PINNED_MEMORY: "0"
+      MAESTRO_KEEP_MODELS_IN_VRAM: "1"
+      MAESTRO_REPO_URL: ${MAESTRO_REPO_URL:-https://github.com/QuentinRiviere/Maestro.git}
+      MAESTRO_REPO_REF: ${MAESTRO_REPO_REF:-main}
+      # Optional R2 checkpoint cache (same variables as a dstack pod):
+      # R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY,
+      # MAESTRO_R2_BUCKET, MAESTRO_R2_PREFIX
+    volumes:
+      - ${MAESTRO_DATA_DIR:-/var/lib/maestro-worker}:/workspace/data
+    # Same boot as a dstack run (worker_spec.build_run_spec): clone the
+    # configured branch, then run the worker boot script.
+    entrypoint: ["bash", "-c"]
+    command:
+      - >
+        rm -rf /workspace/maestro &&
+        git clone --quiet --depth 1 --single-branch --branch "$$MAESTRO_REPO_REF"
+        "$$MAESTRO_REPO_URL" /workspace/maestro &&
+        exec bash /workspace/maestro/app/scripts/remote_worker_boot.sh
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    # docker stop kills a running render after this grace period: pause the
+    # worker first (POST /api/v1/worker/release) before stopping it.
+    stop_grace_period: 2m
+    restart: unless-stopped

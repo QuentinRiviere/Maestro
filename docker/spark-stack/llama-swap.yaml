@@ -1,0 +1,113 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/mostlygeek/llama-swap/refs/heads/main/config-schema.json
+#
+# llama-swap on a DGX Spark: one inference gateway for a small always-on LLM,
+# a large LLM loaded on demand, and the Maestro worker's GPU lease.
+# See docs/Remote-worker-static-and-llama-swap.md.
+#
+# Fields checked against llama-swap's docs/config.example.yaml and
+# config-schema.json at v265 (2026-10-14). The stack as a whole is UNTESTED
+# on Spark hardware: model files, context sizes and timeouts are examples.
+#
+# Memory budget (128 GB unified CPU/GPU memory, nothing is "VRAM"):
+#   ~10 GB  DGX OS, Docker, llama-swap, the idle Maestro process
+#   ~22 GB  small-llm: a ~30B MoE at Q4 (~18 GB weights + KV cache), resident
+#   ~70 GB  ONE of: the Maestro worker's models (maestro-worker) or big-llm
+#   ~26 GB  margin: the GB10 freezes instead of raising an out-of-memory error
+#
+# The Maestro worker container runs all the time (compose.yaml). llama-swap
+# never starts or kills it: the maestro-worker "model" below is a lease shim
+# that resumes the worker on start and, on stop, waits until the worker has
+# finished its running job and unloaded every model.
+
+# Seconds a model may take to become ready. ALSO the graceful stop timeout of
+# a swap (llama-swap's router stops the models it evicts with this timeout,
+# then SIGKILLs them). It must exceed your longest render, or a swap kills
+# the lease before the render ends (the worker then still finishes the job
+# and the unload on its own, but the big LLM starts loading next to it).
+healthCheckTimeout: 3600
+
+# Graceful timeout of manual (API/UI) and TTL unloads; per-model override below.
+unloadTimeout: 30
+
+# Inference ports llama-swap hands out through ${PORT} (llama-server binds
+# them on 127.0.0.1 only).
+startPort: 10001
+
+# Requests to llama-swap need one of these keys (Authorization: Bearer ...).
+# Keep it set whenever llama-swap listens on anything but 127.0.0.1.
+apiKeys:
+  - "${env.LLAMA_SWAP_API_KEY}"
+
+macros:
+  "llama-server": >
+    /usr/local/bin/llama-server
+    --host 127.0.0.1 --port ${PORT}
+    --n-gpu-layers 999 --flash-attn on --jinja
+  "models": "/models"
+
+models:
+  # Always loaded: prompt enhancement, Director planning, chat.
+  "small-llm":
+    name: "Small MoE LLM (always on)"
+    cmd: |
+      ${llama-server}
+      --model ${models}/Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf
+      --ctx-size 32768 --parallel 2
+    ttl: 0
+
+  # Loaded on demand; evicts the Maestro worker (same swap group).
+  "big-llm":
+    name: "Large LLM (swaps with the Maestro worker)"
+    cmd: |
+      ${llama-server}
+      --model ${models}/gpt-oss-120b-mxfp4-00001-of-00003.gguf
+      --ctx-size 65536
+    # Give the GPU back to Maestro after 10 idle minutes; the worker then
+    # stays paused until maestro-worker is requested again (the controller's
+    # static wake URL does that when jobs wait).
+    ttl: 600
+
+  # The Maestro worker's GPU lease. Never set a ttl here: the controller talks
+  # to the worker directly, so llama-swap sees no requests and would unload it.
+  "maestro-worker":
+    name: "Maestro worker (GPU lease)"
+    # Started in the llama-swap container (python3 ships in the unified
+    # image). It inherits llama-swap's environment, MAESTRO_WORKER_TOKEN
+    # included.
+    cmd: >
+      python3 /opt/maestro/maestro_worker_lease.py
+      --url ${env.MAESTRO_WORKER_URL}
+    # Requests through /upstream/maestro-worker/... go to the worker itself.
+    proxy: "${env.MAESTRO_WORKER_URL}"
+    # 200 once the lease resumed the worker, 503 while it is paused.
+    checkEndpoint: /readyz
+    ttl: 0
+    # Manual / API unloads wait this long for the running render to finish.
+    unloadTimeout: 3600
+    unlisted: true
+
+routing:
+  router:
+    use: group
+    settings:
+      groups:
+        # The small LLM is never unloaded by another group.
+        "resident":
+          persistent: true
+          swap: false
+          exclusive: false
+          members:
+            - "small-llm"
+        # Only one of these at a time; loading one leaves other groups alone.
+        "gpu-heavy":
+          swap: true
+          exclusive: false
+          members:
+            - "maestro-worker"
+            - "big-llm"
+
+hooks:
+  on_startup:
+    preload:
+      - "small-llm"
+      - "maestro-worker"
