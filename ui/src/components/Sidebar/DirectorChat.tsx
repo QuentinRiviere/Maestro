@@ -7,6 +7,7 @@ import { DirectorLiveCast, DirectorReviewGate } from './DirectorReviewGate'
 import { DirectorSkillPicker } from './DirectorSkillPicker'
 import { BiblesButton, DirectorBiblePicker } from './DirectorBible'
 import { skillIcon } from '../../lib/skillIcons'
+import { DIRECTOR_DEFAULT_IMAGE_MODEL } from '../../lib/directorImageDefaults'
 import { fetchModelOptions, getFileUrl } from '../../api/client'
 import { DirectorLoraSelector } from '../SettingsDrawer/DirectorLoraSelector'
 import { DirectorSongSetup } from './DirectorSongSetup'
@@ -2851,7 +2852,7 @@ function DirectorModelPicker({ mode, value, onChange, disabled = false }: {
   )
   const noneSelected = mode === 'image' && value === DIRECTOR_IMAGE_MODEL_NONE
   const known = noneSelected || compatibleModels.some(model => model.model_type === value)
-  const preferredId = mode === 'image' ? 'flux2_klein_9b' : 'ltx2_22B_distilled_1_1'
+  const preferredId = mode === 'image' ? DIRECTOR_DEFAULT_IMAGE_MODEL : 'ltx2_22B_distilled_1_1'
   const fallback = compatibleModels.find(model => model.model_type === preferredId)
     || compatibleModels[0]
   const selectedValue = known ? value : (fallback?.model_type || '')
@@ -2906,7 +2907,7 @@ function DirectorModelPicker({ mode, value, onChange, disabled = false }: {
 }
 
 function DirectorModelSelection({ disabled = false }: { disabled?: boolean }) {
-  const imageModel = useStore(s => s.selectedModelPerMode.image || 'flux2_klein_9b')
+  const imageModel = useStore(s => s.selectedModelPerMode.image || DIRECTOR_DEFAULT_IMAGE_MODEL)
   const videoModel = useStore(s => s.selectedModelPerMode.video || 'ltx2_22B_distilled_1_1')
   const shotImageSupport = useStore(s => s.models.find(
     model => model.model_type === videoModel,
@@ -2981,8 +2982,8 @@ function DirectorLoraAccordion() {
   // launch, that meant Director's "Image LoRAs" accordion would
   // fetch the video model's LoRA dir and display LTX loras under
   // the image header. Falling back to a known image-class default
-  // (flux2_klein_9b) instead of the active Studio model fixes that.
-  const imageModel = useStore(s => s.selectedModelPerMode.image || 'flux2_klein_9b')
+  // (DIRECTOR_DEFAULT_IMAGE_MODEL) instead of the active Studio model fixes that.
+  const imageModel = useStore(s => s.selectedModelPerMode.image || DIRECTOR_DEFAULT_IMAGE_MODEL)
   const videoModel = useStore(s => s.selectedModelPerMode.video || 'ltx2_22B_distilled_1_1')
   const videoLorasDisabled = useStore(s => s.models.find(
     model => model.model_type === videoModel,

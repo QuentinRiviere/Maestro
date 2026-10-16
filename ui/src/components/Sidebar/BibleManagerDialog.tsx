@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import { AlertTriangle, Check, ChevronLeft, ChevronRight, Clock, ImagePlus, Loader2, Plus, RefreshCw, Sparkles, Trash2, Undo2, X } from 'lucide-react'
 import { useStore } from '../../stores/useStore'
+import { DIRECTOR_DEFAULT_IMAGE_MODEL } from '../../lib/directorImageDefaults'
 import { AppModeToggle, MaestroBrand } from '../AppModeNavigation'
 import { BibleChat } from './BibleChat'
 import { BibleStyleReferences } from './BibleStyleReferences'
@@ -50,7 +51,7 @@ const readStoredModel = () => { try { return window.localStorage.getItem(BIBLE_M
 
 /** The image model bibles render with: picked on the Bibles page, apart from the Director's own model. */
 function useBibleImageModel(): [string, (model: string) => void] {
-  const directorModel = useStore(s => s.selectedModelPerMode.image || 'flux2_klein_9b')
+  const directorModel = useStore(s => s.selectedModelPerMode.image || DIRECTOR_DEFAULT_IMAGE_MODEL)
   const models = useStore(s => s.models)
   const [picked, setPicked] = useState<string | null>(readStoredModel)
   const reads = (id: string) => {
@@ -65,7 +66,7 @@ function useBibleImageModel(): [string, (model: string) => void] {
   }, [])
   return [picked && models.some(m => m.model_type === picked) ? picked : fallback, pick]
 }
-const BibleModelContext = createContext('flux2_klein_9b')
+const BibleModelContext = createContext(DIRECTOR_DEFAULT_IMAGE_MODEL)
 
 function BibleModelPicker({ value, onChange }: { value: string; onChange: (model: string) => void }) {
   const models = useStore(s => s.models)

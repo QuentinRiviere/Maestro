@@ -1,4 +1,5 @@
 import { galleryOutput, galleryOutputIsOlder, outputIdentity } from '../lib/galleryIdentity'
+import { DIRECTOR_DEFAULT_IMAGE_MODEL, directorImageParams } from '../lib/directorImageDefaults'
 import { create } from 'zustand'
 import { isKreaIdentityEdit, normalizeKreaIdentitySettings, type KreaIdentitySettings } from '../lib/kreaIdentityControls'
 import type { SavedOmniCharacter, TtsVoice } from '../types'
@@ -2905,7 +2906,7 @@ async function _directorTimelineOptions(state: AppState): Promise<api.DirectorTi
   const options = await api.fetchModelOptions(videoModel)
   return {
     video_model: videoModel,
-    image_model: state.selectedModelPerMode.image || 'flux2_klein_9b',
+    image_model: state.selectedModelPerMode.image || DIRECTOR_DEFAULT_IMAGE_MODEL,
     audio_path: state.directorAudioPath || undefined,
     director_max_shot_frames: state.directorVideoMaxShotFramesByModel[videoModel],
     ...(state.directorSkill === 'music_video' && !state.directorSeamless
@@ -11281,7 +11282,7 @@ export const useStore = create<AppState>((set, get) => ({
     if (!directorClipPlans.length) return
 
     // Use this model's defaults and only its own saved image-mode overrides.
-    const imageModel = selectedModelPerMode.image || 'flux2_klein_9b'
+    const imageModel = selectedModelPerMode.image || DIRECTOR_DEFAULT_IMAGE_MODEL
     const [imageOptions, imageDefaults] = await Promise.all([
       api.fetchModelOptions(imageModel).catch(() => null),
       api.fetchDefaults(imageModel).catch((): Record<string, unknown> => ({})),
@@ -11294,12 +11295,15 @@ export const useStore = create<AppState>((set, get) => ({
     )
     const matchingImageParams = savedParamsPerMode.image?.model_type === imageModel
       ? savedParamsPerMode.image : {}
-    const imageParams = {
+    // The Director's sampler for its default model (Qwen 2.1 + Viggle Turbo) unless one was chosen.
+    const imageParams = directorImageParams(imageModel, {
       num_inference_steps: Number(matchingImageParams.num_inference_steps
         ?? imageDefaults.num_inference_steps ?? imageOptions?.default_num_inference_steps ?? 4),
       guidance_scale: Number(matchingImageParams.guidance_scale ?? imageDefaults.guidance_scale ?? 1),
+      ...(matchingImageParams.sample_solver ? { sample_solver: matchingImageParams.sample_solver } : {}),
+      ...(matchingImageParams.custom_settings ? { custom_settings: matchingImageParams.custom_settings } : {}),
       resolution: directorRes,
-    }
+    })
     const imageLora = savedLoraPerMode.image
 
     const buildImgPostProc = (): Record<string, unknown> => {
@@ -11325,6 +11329,8 @@ export const useStore = create<AppState>((set, get) => ({
         image_mode: 1,
         num_inference_steps: imageParams.num_inference_steps,
         guidance_scale: imageParams.guidance_scale,
+        ...(imageParams.sample_solver ? { sample_solver: imageParams.sample_solver } : {}),
+        ...(imageParams.custom_settings ? { custom_settings: imageParams.custom_settings } : {}),
         // Unified editors such as Qwen 2.1 use I; older main-image editors use KI.
         video_prompt_type: imageRefs.length ? (imageCapability?.image_reference_mode ?? 'KI') : '',
         resolution: imageParams.resolution,
@@ -13881,7 +13887,7 @@ export const useStore = create<AppState>((set, get) => ({
             shortFilmPath, shortFilmCharacters, shortFilmTargetDuration,
             shortFilmNarrative } = state
 
-    const selectedImageModel = selectedModelPerMode.image || 'flux2_klein_9b'
+    const selectedImageModel = selectedModelPerMode.image || DIRECTOR_DEFAULT_IMAGE_MODEL
     const selectedVideoModel = selectedModelPerMode.video || 'ltx2_22B_distilled_1_1'
     const selectedVideoDefinition = state.models.find(
       model => model.model_type === selectedVideoModel,

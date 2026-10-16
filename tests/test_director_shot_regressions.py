@@ -109,7 +109,7 @@ class InsertRerunTest(unittest.TestCase):
         self.assertEqual(pipeline.director_insert_prompt(plan, SHOT_10["image_prompt"], CAST),
                          SHOT_10["image_prompt"])
 
-    def test_rerun_sends_the_rebuilt_subject(self):
+    def test_rerun_sends_the_rebuilt_subject_and_the_saved_sampler(self):
         with tempfile.TemporaryDirectory() as folder:
             state = {
                 "image_model": "qwen_image_21_7B",
@@ -135,6 +135,10 @@ class InsertRerunTest(unittest.TestCase):
         self.assertNotIn("almond eyes", job["prompt"])
         self.assertIn("SUBJECT: hands of a person in Oversized knitted", job["prompt"])
         self.assertNotIn("Preserve character identity", job["prompt"])
+        # The sampler the project saved reaches the job (see director_image_params).
+        self.assertEqual((job["sample_solver"], job["num_inference_steps"], job["guidance_scale"]),
+                         ("viggle_v021", 6, 1.0))
+        self.assertEqual(job["custom_settings"], {"qwen21_kv_cache": "Enabled"})
 
 
 class InsertWardrobeTest(unittest.TestCase):

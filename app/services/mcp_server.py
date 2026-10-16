@@ -36,6 +36,8 @@ MAX_WAIT_SECONDS = 55
 _TERMINAL = {"completed", "failed", "cancelled"}
 _PIPELINE_TERMINAL = {"completed", "failed", "cancelled", "stopped", "error"}
 DIRECTOR_PIPELINE_TYPES = ("short_film_story", "short_film_audio", "music_video", "viral_video")
+# services.director_pipeline.DIRECTOR_DEFAULT_IMAGE_MODEL (not imported: this server only calls the HTTP API).
+DIRECTOR_DEFAULT_IMAGE_MODEL = "qwen_image_21_7B"
 VIRAL_PLATFORMS = ("general", "tiktok", "reels", "shorts")
 # Mirror of the Director UI's resolutionMap (ui/src/stores/useStore.ts), used
 # when a model has no resolution_presets of its own.
@@ -323,7 +325,7 @@ class MaestroMcp:
                                        "default": "short_film_story"},
                      "video_model": {"type": "string", "description": "model_type of the video model"},
                      "image_model": {"type": "string", "description": "model_type for start images "
-                                                                     "(default flux2_klein_9b)"},
+                                                                     "(default qwen_image_21_7B, Viggle Turbo v0.2.1)"},
                      "target_duration": {"type": "number", "description": "Seconds (short films, viral videos)"},
                      "platform": {"type": "string", "enum": list(VIRAL_PLATFORMS),
                                   "description": "viral_video only"},
@@ -532,7 +534,7 @@ class MaestroMcp:
                             "target_duration": args.get("target_duration") or 30}
         scene_description = _required(args, "scene_description")
         video_model = _required(args, "video_model")
-        image_model = str(args.get("image_model") or "flux2_klein_9b")
+        image_model = str(args.get("image_model") or DIRECTOR_DEFAULT_IMAGE_MODEL)
         services = await self._api("GET", "/api/v1/services-config") or {}
 
         body: dict[str, Any] = {

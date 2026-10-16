@@ -931,6 +931,71 @@ def _saved_pipeline_shot_image_policy(state: dict) -> str:
     return SHOT_IMAGE_GENERATE
 
 
+# The image model a new Director project uses when the request names none.
+# Keep in step with DIRECTOR_DEFAULT_IMAGE_MODEL in ui/src/lib/directorImageDefaults.ts.
+DIRECTOR_DEFAULT_IMAGE_MODEL = "qwen_image_21_7B"
+# Saved projects without an image model ran on Klein: their reruns and resumes keep it.
+LEGACY_DIRECTOR_IMAGE_MODEL = "flux2_klein_9b"
+# The sampler the Director runs an image model with when the request chose
+# none. Qwen-Image 2.1 base: Viggle Turbo v0.2.1 (6 steps, CFG 1; the model
+# handler adds its LoRA, see models/qwen21/qwen21_handler.apply_acceleration_profile)
+# with the KV cache, which a static LoRA keeps valid.
+DIRECTOR_IMAGE_SAMPLERS = {
+    "qwen_image_21_7B": {
+        "sample_solver": "viggle_v021",
+        "num_inference_steps": 6,
+        "guidance_scale": 1.0,
+        "custom_settings": {"qwen21_kv_cache": "Enabled"},
+    },
+}
+
+
+def director_image_params(image_model: str, image_params: Optional[dict]) -> dict:
+    """``image_params`` with the Director's sampler for ``image_model`` (``DIRECTOR_IMAGE_SAMPLERS``).
+
+    A request that names a sampler keeps it, and its steps, guidance and
+    custom settings: only an unset sampler takes the Director's. Applied
+    when a project starts, so saved projects rerun with what they saved.
+    """
+    params = dict(image_params or {})
+    preset = DIRECTOR_IMAGE_SAMPLERS.get(str(image_model or ""))
+    if not preset or str(params.get("sample_solver") or "").strip():
+        return params
+    params.update({key: value for key, value in preset.items() if key != "custom_settings"})
+    custom = dict(params.get("custom_settings") or {}) if isinstance(params.get("custom_settings"), dict) else {}
+    for key, value in preset.get("custom_settings", {}).items():
+        custom.setdefault(key, value)
+    params["custom_settings"] = custom
+    return params
+
+
+def apply_director_image_defaults(params: dict) -> dict:
+    """A new project's image model and sampler: the Director's when the request names none.
+
+    Runs once when a project starts; the result is saved with the project,
+    so its reruns and resumes keep what it started with. A prompt-only
+    project (no shot images) keeps an empty image model.
+    """
+    if shot_images_required(params.get("_director_shot_image_policy") or _resolve_fresh_shot_image_policy(params)):
+        params["image_model"] = params.get("image_model") or DIRECTOR_DEFAULT_IMAGE_MODEL
+    if params.get("image_model"):
+        params["image_params"] = director_image_params(params["image_model"], params.get("image_params"))
+    return params
+
+
+def director_image_job_fields(image_params: Optional[dict]) -> dict:
+    """The sampler and custom settings an image job carries besides its steps and guidance."""
+    image_params = image_params or {}
+    fields: dict = {}
+    solver = str(image_params.get("sample_solver") or "").strip()
+    if solver:
+        fields["sample_solver"] = solver
+    custom = image_params.get("custom_settings")
+    if isinstance(custom, dict) and custom:
+        fields["custom_settings"] = dict(custom)
+    return fields
+
+
 def _validate_director_models(
     params: dict,
     *,
@@ -953,7 +1018,7 @@ def _validate_director_models(
         "video" not in stages or shot_images_required(effective_policy)
     )
     if validate_image_stage:
-        image_model = params.get("image_model") or "flux2_klein_9b"
+        image_model = params.get("image_model") or LEGACY_DIRECTOR_IMAGE_MODEL
         resolved = _director_model_assessment(image_model)
         if resolved is not None:
             model_def, assessment = resolved
@@ -2601,7 +2666,7 @@ def _rerun_clip_image_impl(out_dir: str, pid: str, clip_index: int, prompt_overr
     snapshot = state.get("_params_snapshot") or {}
 
     # Get image gen params from the saved pipeline state
-    image_model = state.get("image_model") or "flux2_klein_9b"
+    image_model = state.get("image_model") or LEGACY_DIRECTOR_IMAGE_MODEL
     image_loras = state.get("image_loras") or {}
     image_params = state.get("image_params") or {}
     validation_params = _director_params_from_saved_state(state)
@@ -2719,6 +2784,8 @@ def _rerun_clip_image_impl(out_dir: str, pid: str, clip_index: int, prompt_overr
         "loras_multipliers": " ".join(
             m.split(";")[0] for m in (image_loras.get("loras_multipliers", "") or "").split(" ") if m
         ),
+        # The sampler the project saved (see director_image_params).
+        **director_image_job_fields(image_params),
         "_director_pipeline_id": pid,
         "_director_cost_stage": "rerun_image",
         "_director_detached_operation": True,
@@ -6330,6 +6397,7 @@ def start_pipeline(params: dict) -> str:
     params["_director_shot_image_policy"] = (
         _resolve_fresh_shot_image_policy(params)
     )
+    apply_director_image_defaults(params)
     _validate_director_models(params)
     execution_profile = _create_director_video_execution_profile(params)
     if execution_profile.get("is_minimax_h3"):
@@ -7881,7 +7949,7 @@ def _render_bible_slot(bible_id: str, element_id: str, variant_id: str, slot: st
         look = (bible.get("world") or {}).get("look", "")
         if look and kind == "location":
             prompt = f"{prompt} {look}"
-        image_params = {**image_model_defaults(image_model), **(image_params or {})}
+        image_params = director_image_params(image_model, {**image_model_defaults(image_model), **(image_params or {})})
         prompt_type = _director_image_prompt_type(image_model, refs)
         if view and prompt_type == "KI":
             # The look's image is the person to show, not the frame: with "K"
@@ -7908,6 +7976,7 @@ def _render_bible_slot(bible_id: str, element_id: str, variant_id: str, slot: st
             "repeat_generation": 1,
             "negative_prompt": "",
             "video_length": 1,
+            **director_image_job_fields(image_params),
         }
         out_dir = os.path.join(_wgp.save_path, "_bible_renders")
         os.makedirs(out_dir, exist_ok=True)
@@ -7936,13 +8005,13 @@ def render_bible_image(bible_id: str, element_id: str, variant_id: str, *, image
     if not bible:
         raise bibles.BibleError("Unknown bible")
     bibles.find_variant(bibles.find_element(bible, element_id)[1], variant_id)
-    if variant_id != bibles.DEFAULT_VARIANT and image_model_reference_limit(image_model or "flux2_klein_9b") == 0:
+    if variant_id != bibles.DEFAULT_VARIANT and image_model_reference_limit(image_model or DIRECTOR_DEFAULT_IMAGE_MODEL) == 0:
         raise bibles.BibleError(_text_only_look_error(image_model))
     bible, slot = bibles.start_render(bible_id, element_id, variant_id)
     threading.Thread(
         target=_render_bible_slot, name=f"bible-render-{slot}", daemon=True,
         args=(bible_id, element_id, variant_id, slot),
-        kwargs={"image_model": image_model or "flux2_klein_9b", "image_params": image_params or {},
+        kwargs={"image_model": image_model or DIRECTOR_DEFAULT_IMAGE_MODEL, "image_params": image_params or {},
                 "chain_from": chain_from},
     ).start()
     return bible
@@ -7953,7 +8022,7 @@ def retry_bible_image(bible_id: str, element_id: str, variant_id: str, image_id:
     """Render a failed slot (a look or one of its angles) again, in the background."""
     from services.director import bibles
 
-    image_model = image_model or "flux2_klein_9b"
+    image_model = image_model or DIRECTOR_DEFAULT_IMAGE_MODEL
     bible = bibles.get_bible(bible_id)
     if not bible:
         raise bibles.BibleError("Unknown bible")
@@ -8020,7 +8089,7 @@ def render_bible_views(bible_id: str, element_id: str, variant_id: str, *, image
         raise bibles.BibleError("Unknown bible")
     kind, element = bibles.find_element(bible, element_id)
     variant = bibles.find_variant(element, variant_id)
-    image_model = image_model or "flux2_klein_9b"
+    image_model = image_model or DIRECTOR_DEFAULT_IMAGE_MODEL
     kind_views = bibles.KIND_VIEWS.get(kind)
     if not kind_views:
         raise bibles.BibleError("Angles are for characters and places")
@@ -8069,7 +8138,7 @@ def generate_bible_assets(bible_id: str, *, image_model: str = "", image_params:
     bible = bibles.get_bible(bible_id)
     if not bible:
         raise bibles.BibleError("Unknown bible")
-    image_model = image_model or "flux2_klein_9b"
+    image_model = image_model or DIRECTOR_DEFAULT_IMAGE_MODEL
     if element_id:
         bibles.find_element(bible, element_id)
     pending = bibles.missing_images(bible, every_look=every_look, element_id=element_id)
@@ -8119,7 +8188,7 @@ def _render_cast_image(pid: str, params: dict, kind: str, entry: dict, style: st
         live = _pipelines.get(pid) or {}
         out_dir = live.get("out_dir") or _wgp.save_path
         workspace = live.get("workspace")
-    image_model = params.get("image_model") or "flux2_klein_9b"
+    image_model = params.get("image_model") or LEGACY_DIRECTOR_IMAGE_MODEL
     image_params = params.get("image_params") or {}
     prompt = (
         casting.character_sheet_prompt(entry, style)
@@ -8144,6 +8213,7 @@ def _render_cast_image(pid: str, params: dict, kind: str, entry: dict, style: st
         "repeat_generation": 1,
         "negative_prompt": "",
         "video_length": 1,
+        **director_image_job_fields(image_params),
         "_director_pipeline_id": pid,
         "_director_cost_stage": "cast",
     }
@@ -9340,7 +9410,7 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
     ref_image_path = params.get("reference_image_path")
     character_ref_paths = [image_stage_ref(params, p) for p in params.get("character_ref_paths", []) or []]
     location_ref_paths = params.get("location_ref_paths", []) or []
-    image_model = params.get("image_model") or "flux2_klein_9b"
+    image_model = params.get("image_model") or LEGACY_DIRECTOR_IMAGE_MODEL
     image_params = params.get("image_params", {})
     image_loras = params.get("image_loras", {})
     video_model = params.get("video_model") or "ltx2_22B_distilled_1_1"
@@ -9538,6 +9608,7 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
             "video_length": 1,
             "activated_loras": image_loras.get("activated_loras", []),
             "loras_multipliers": image_loras.get("loras_multipliers", ""),
+            **director_image_job_fields(image_params),
             "_director_pipeline_id": pid,
             "_director_cost_stage": "image",
         }

@@ -192,6 +192,21 @@ phase. Values, including zero, are saved and carried into Director projects.
 Older empty weight arrays recover serialized strengths where available, or
 use 1.0 when no strength was saved.
 
+## Default image model
+
+Shot images, cast sheets and bible renders default to **Qwen Image 2.1 7B**
+(`qwen_image_21_7B`) with the **Viggle Turbo v0.2.1** profile: sampler
+`viggle_v021`, 6 steps, CFG 1, the KV cache on (`qwen21_kv_cache: Enabled`).
+The Qwen 2.1 handler adds the Viggle LoRA itself; it is downloaded from
+Hugging Face on first use, and a generation's provenance lists it under
+LoRAs. A chosen image model or sampler is always kept: the Turbo profile is
+only applied when Qwen 2.1 is used without a sampler choice. A project saves
+its sampler when it starts, so reruns of older projects keep theirs; a saved
+project without an image model still reruns on Flux 2 Klein 9B.
+
+The remote cache warmer does not hold LoRAs: a fresh worker downloads the
+Viggle LoRA (about 7 s) on its first Qwen 2.1 job.
+
 ## Recommended next UI pass
 
 These are proposed changes, not yet implemented:

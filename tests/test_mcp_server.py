@@ -141,7 +141,7 @@ class ProtocolTests(unittest.TestCase):
                                                        "llm_model_id": "google/gemini-3.8-flash",
                                                        "use_director_v2": True})
         self.api.on("GET", "/api/v1/defaults/minimax_h3", {"resolution": "1280x704", "num_inference_steps": 20})
-        self.api.on("GET", "/api/v1/defaults/flux2_klein_9b", {"resolution": "1024x1024"})
+        self.api.on("GET", "/api/v1/defaults/qwen_image_21_7B", {"resolution": "1024x1024"})
         self.api.on("POST", "/api/v1/director/pipeline/start", {"pipeline_id": "p1"})
         result = self.call("director_start", {
             "scene_description": "A detective in the rain",
@@ -157,7 +157,7 @@ class ProtocolTests(unittest.TestCase):
         # 16:9 with the default 720p preset, as the Director UI resolves it.
         self.assertEqual(body["video_params"], {"resolution": "1280x720", "num_inference_steps": 8})
         self.assertEqual(body["image_params"]["resolution"], "1280x720")
-        self.assertEqual(body["image_model"], "flux2_klein_9b")
+        self.assertEqual(body["image_model"], "qwen_image_21_7B")
         self.assertEqual(body["director_aspect_ratio"], "16:9")
         self.assertEqual(body["target_duration"], 30)
         self.assertTrue(body["seamless"])
@@ -172,7 +172,7 @@ class ProtocolTests(unittest.TestCase):
     def test_director_viral_video_runs_the_story_workflow_with_its_planner(self):
         self.api.on("GET", "/api/v1/services-config", {"llm_provider": "openrouter"})
         self.api.on("GET", "/api/v1/defaults/ltx2", {"resolution": "720x1280"})
-        self.api.on("GET", "/api/v1/defaults/flux2_klein_9b", {"resolution": "1024x1024"})
+        self.api.on("GET", "/api/v1/defaults/qwen_image_21_7B", {"resolution": "1024x1024"})
         self.api.on("POST", "/api/v1/director/pipeline/start", {"pipeline_id": "p2"})
         self.api.on("GET", "/api/v1/model-options/ltx2",
                      {"resolution_presets": {"720p": {"values": {"9:16": "704x1280"}}}})
