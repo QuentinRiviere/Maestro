@@ -312,13 +312,14 @@ class OverTheShoulderTests(unittest.TestCase):
         self.assertNotIn("Foreground:", line)
         self.assertIn("Man looks at Woman", line)
 
-    def test_the_foreground_person_gets_the_back_view_or_nothing(self):
+    def test_the_foreground_person_gets_no_reference(self):
         plan = {"_director_blocking_map": OVER_MAN}
         views = {"/p/man.png": {"face_front": "/p/man_face.png", "back": "/p/man_back.png"},
                  "/p/woman.png": {"face_front": "/p/woman_face.png"}}
+        # Not even the back view: given any image of the man, the editor drew him a second time.
         refs = pipeline.shot_identity_refs({**self.PARAMS, "_director_image_views": views}, plan,
                                            ["/p/man.png", "/p/woman.png"])
-        self.assertEqual(refs, ["/p/man_back.png", "/p/woman_face.png"])
+        self.assertEqual(refs, ["/p/woman_face.png"])
         no_back = {"/p/man.png": {"face_front": "/p/man_face.png"}}
         refs = pipeline.shot_identity_refs({**self.PARAMS, "_director_image_views": no_back}, plan,
                                            ["/p/man.png", "/p/woman.png"])

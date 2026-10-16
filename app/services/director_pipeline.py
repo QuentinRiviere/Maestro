@@ -2757,6 +2757,7 @@ def _rerun_clip_image_impl(out_dir: str, pid: str, clip_index: int, prompt_overr
     cast = snapshot.get("_director_cast") if isinstance(snapshot.get("_director_cast"), dict) else state.get("cast")
     prompt = director_insert_prompt(shot_plan, prompt, cast if isinstance(cast, dict) else None)
     layout_ref, prompt = director_shot_layout(pid, clip_index, shot_plan, prompt, image_model, clip_out_dir)
+    prompt = director_ots_prompt(shot_plan, prompt, cast if isinstance(cast, dict) else None)
     character_needles, prop_needles = cast_ref_needles(
         {**snapshot, "character_ref_paths": character_ref_paths}, clip_out_dir,
     )
@@ -6030,8 +6031,11 @@ def shot_identity_refs(params: dict, plan: dict, refs: list[str]) -> list[str]:
     insert (hands, an object) gets no portrait at all.
 
     The foreground person of an over-the-shoulder shot (``director_ots_foreground``)
-    never gets a front-facing portrait: the editor would redraw their face
-    and show them twice. They get the bible's back view, or no reference.
+    gets no reference at all, not even the bible's back view: given any image
+    of that person the editor drew them whole, a second time, seated in the
+    frame or turned to the camera. Only the people facing the camera keep
+    their references; the prompt describes the foreground shoulder by its
+    clothes (``director_ots_prompt``).
     """
     from services.director.blocking_map import faces_wanted, parse_blocking_map, subject_view
 
@@ -6054,9 +6058,6 @@ def shot_identity_refs(params: dict, plan: dict, refs: list[str]) -> list[str]:
     for ref in refs:
         name = str(names.get(ref, "") or "")
         if back and name.strip().casefold() == back:
-            back_view = (views.get(ref) or {}).get("back")
-            if back_view:
-                out.append(back_view)
             continue
         view = subject_view(blocking, name, faces_wanted(plan.get("_director_camera_framing"))) if blocking else ""
         out.append((views.get(ref) or {}).get(view) or ref if view else ref)
@@ -6217,6 +6218,47 @@ def _ots_text_side(plan: dict, name: str) -> str:
             if "right" in relation and "left" not in relation:
                 return "right"
     return "left"
+
+
+def _ots_foreground_clothes(cast: Optional[dict], name: str) -> str:
+    """What the OTS foreground person wears above the waist, seen from behind ("" when unknown)."""
+    from services.director.casting import back_view_wardrobe
+    from services.director.policies import visible_wardrobe
+
+    wanted = name.strip().casefold()
+    for character in (cast or {}).get("characters") or []:
+        if isinstance(character, dict) and str(character.get("name") or "").strip().casefold() == wanted:
+            wardrobe = str(character.get("wardrobe") or "").strip()
+            return visible_wardrobe(back_view_wardrobe(wardrobe), "upper").strip(" .;,")
+    return ""
+
+
+def director_ots_prompt(plan: dict, prompt: str, cast: Optional[dict]) -> str:
+    """An OTS shot's prompt with its foreground person described without identity.
+
+    The foreground person gets no reference (see ``shot_identity_refs``), so
+    the text alone says what they are: a dark, out-of-focus shoulder and the
+    back of a head at the frame edge, known only by their clothes, drawn once.
+    Planners name both people and editors drew the foreground one twice: as
+    the shoulder and again seated in frame or facing the camera.
+    Other shots are returned unchanged.
+    """
+    from services.director.blocking_map import _foreground_side, parse_blocking_map
+
+    name = director_ots_foreground(plan)
+    if not name or not prompt:
+        return prompt
+    blocking = parse_blocking_map(plan.get("_director_blocking_map"))
+    side = _foreground_side(blocking, name) if blocking else _ots_text_side(plan, name)
+    clothes = _ots_foreground_clothes(cast, name)
+    known_by = f"their clothes ({clothes})" if clothes else "the clothes on that shoulder"
+    line = (f"{name} appears only once in this shot, as that blurred foreground shape: a dark, out-of-focus "
+            f"shoulder and the back of the head at the {side} edge of the frame, recognisable only by "
+            f"{known_by}; {name}'s face is never shown and {name} is not drawn again anywhere else in the "
+            "frame, neither seated nor facing the camera.")
+    if line in prompt:
+        return prompt
+    return f"{prompt.rstrip()} {line}"
 
 
 def director_scene_locks(plans: list[dict]) -> list[Optional[dict]]:
@@ -9809,6 +9851,7 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
         cast = params.get("_director_cast")
         prompt = director_insert_prompt(shot_plan, prompt, cast if isinstance(cast, dict) else None)
         layout_ref, prompt = director_shot_layout(pid, i, shot_plan, prompt, image_model, out_dir)
+        prompt = director_ots_prompt(shot_plan, prompt, cast if isinstance(cast, dict) else None)
         guide_path = ""
         blockout_record = None
         if blockout_mode != "off":
