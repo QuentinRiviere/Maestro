@@ -118,7 +118,13 @@ class StaticManagerTests(unittest.TestCase):
                                            clock=self.clock, sleep=self.clock.sleep)
         self.probe = FakeProbe()
         self.wakes = []
-        self.manager.static_worker = StaticWorker(clock=self.clock, probe=self.probe, wake=self.wakes.append)
+        self.wake_tokens = []
+
+        def wake(url, token):
+            self.wakes.append(url)
+            self.wake_tokens.append(token)
+
+        self.manager.static_worker = StaticWorker(clock=self.clock, probe=self.probe, wake=wake)
         self.manager.update_settings({"provider": "static", "static_url": "http://spark:7860",
                                       "static_token": TOKEN, "static_wake_url": "http://spark:8080/upstream/maestro-worker/readyz"})
 
@@ -179,6 +185,7 @@ class StaticManagerTests(unittest.TestCase):
         self.assertGreater(len(self.wakes), 1)
         self.assertLessEqual(len(self.wakes), 6000 // 60 + 1)
         self.assertTrue(self.wakes[0].endswith("/upstream/maestro-worker/readyz"))
+        self.assertEqual(self.wake_tokens[0], TOKEN)
 
     def test_ensure_ready_times_out_while_unreachable(self):
         self.probe.result = (0, None, "timed out")

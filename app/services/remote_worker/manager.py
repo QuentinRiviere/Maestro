@@ -311,7 +311,7 @@ class RemoteWorkerManager:
     def wake_static(self) -> bool:
         """Ask the static worker's wake URL to resume it (throttled); True when sent."""
         settings = self.settings
-        return settings.is_static and self.static_worker.wake(settings.static_wake_url)
+        return settings.is_static and self.static_worker.wake(settings.static_wake_url, settings.worker_token)
 
     def _slow_host_status(self) -> dict[str, Any]:
         return {"slow_host_retries": self._slow_retries,

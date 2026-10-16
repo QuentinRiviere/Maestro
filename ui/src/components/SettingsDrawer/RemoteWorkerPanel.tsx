@@ -404,13 +404,13 @@ export function RemoteWorkerPanel() {
         </label>
         {isStatic && (
           <>
-            <Field locked={isLocked('static_url')} label="Worker URL" value={merged.static_url} onChange={value => update('static_url', value)} placeholder="http://spark.tailnet:7860" />
+            <Field locked={isLocked('static_url')} label="Worker URL" value={merged.static_url} onChange={value => update('static_url', value)} placeholder="http://spark.tailnet:8080/upstream/maestro-api/" />
             <Field locked={isLocked('static_token')}
               label="Worker token"
               type="password"
               value={draft.static_token ?? ''}
               onChange={value => update('static_token', value)}
-              placeholder={settings?.static_token_set ? `Stored (${settings.static_token}) · type to replace` : 'MAESTRO_WORKER_TOKEN of the worker'}
+              placeholder={settings?.static_token_set ? `Stored (${settings.static_token}) · type to replace` : "llama-swap API key, or the worker's MAESTRO_WORKER_TOKEN"}
               hint="Stored on this computer only, in app/settings."
             />
             <Field locked={isLocked('static_wake_url')}

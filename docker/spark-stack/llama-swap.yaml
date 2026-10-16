@@ -17,7 +17,9 @@
 # The Maestro worker container runs all the time (compose.yaml). llama-swap
 # never starts or kills it: the maestro-worker "model" below is a lease shim
 # that resumes the worker on start and, on stop, waits until the worker has
-# finished its running job and unloaded every model.
+# finished its running job and unloaded every model. The controller reaches
+# the worker through the "maestro" peer at the end (/upstream/maestro-api/),
+# which never triggers a swap.
 
 # Seconds a model may take to become ready. ALSO the graceful stop timeout of
 # a swap (llama-swap's router stops the models it evicts with this timeout,
@@ -30,11 +32,12 @@ healthCheckTimeout: 3600
 unloadTimeout: 30
 
 # Inference ports llama-swap hands out through ${PORT} (llama-server binds
-# them on 127.0.0.1 only).
+# them on the container loopback only).
 startPort: 10001
 
-# Requests to llama-swap need one of these keys (Authorization: Bearer ...).
-# Keep it set whenever llama-swap listens on anything but 127.0.0.1.
+# Requests to llama-swap need one of these keys (Authorization: Bearer ...,
+# Basic with the key as password, or x-api-key). The Maestro controller uses
+# it as its static worker token. Keep it set whenever llama-swap is published.
 apiKeys:
   - "${env.LLAMA_SWAP_API_KEY}"
 
@@ -111,3 +114,18 @@ hooks:
     preload:
       - "small-llm"
       - "maestro-worker"
+
+# The Maestro worker's own API, for the controller: static_url
+# http://<spark>:8080/upstream/maestro-api/ with LLAMA_SWAP_API_KEY as token.
+# A peer route only proxies (it never loads or swaps a model, so it works
+# while the worker is paused or rendering through a release) and replaces the
+# Authorization header with the worker's token, which stays inside the stack.
+peers:
+  maestro:
+    proxy: "${env.MAESTRO_WORKER_URL}"
+    apiKey: "${env.MAESTRO_WORKER_TOKEN}"
+    models:
+      - "maestro-api"
+    timeouts:
+      # Uploads, R2 publishes and output downloads can take minutes.
+      responseHeader: 0

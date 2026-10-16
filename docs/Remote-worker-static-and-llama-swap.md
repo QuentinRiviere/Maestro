@@ -5,16 +5,21 @@ serves LLMs (llama.cpp), TTS or other models, the Maestro worker instead runs
 as a **permanent process** next to them, and
 [llama-swap](https://github.com/mostlygeek/llama-swap) is the single inference
 gateway that decides who holds the GPU memory. Maestro's controller talks to
-that worker directly, in **static** mode.
+that worker in **static** mode.
 
 ```
-Mac (controller) ──HTTP + bearer token──▶ Spark :7860  Maestro worker (always running)
-                                              ▲  acquire / release
-                                              │
-clients ──▶ Spark :8080 llama-swap ── cmd ──▶ maestro_worker_lease.py   (GPU lease)
-                         │ ── cmd ──▶ llama-server small-llm            (always on)
-                         └ ── cmd ──▶ llama-server big-llm              (swaps with the lease)
+Mac (controller) ─┐                          private compose network "inference"
+clients ──────────┴▶ Spark :8080 llama-swap ─ peer /upstream/maestro-api/ ─▶ maestro-worker:7860
+                     (only published port)  │                                (always running)
+                                            ├ cmd ▶ maestro_worker_lease.py ── acquire/release ─┘
+                                            ├ cmd ▶ llama-server small-llm   (always on)
+                                            └ cmd ▶ llama-server big-llm     (swaps with the lease)
 ```
+
+Static mode itself does not need llama-swap: `static_url` can point straight
+at a worker (`http://host:7860/`, token = its `MAESTRO_WORKER_TOKEN`). The
+Spark stack below puts the worker behind llama-swap so only one port is
+published.
 
 Status: the controller mode, the worker control API and the lease shim are
 covered by unit tests. The compose stack and the llama-swap configuration
@@ -28,16 +33,18 @@ have **not been run on a Spark yet** (see [What was verified](#what-was-verified
 | Setting | Example | Meaning |
 |---|---|---|
 | `provider` | `static` | `dstack` (default, unchanged behaviour) or `static` |
-| `static_url` | `http://spark.tailnet:7860` | the worker's base URL |
-| `static_token` | `openssl rand -hex 32` | the worker's `MAESTRO_WORKER_TOKEN`. Stored in `app/settings`, returned masked |
-| `static_wake_url` | `http://x:sk-…@spark.tailnet:8080/upstream/maestro-worker/readyz` | optional, see [Waking the worker](#waking-the-worker) |
+| `static_url` | `http://spark.tailnet:8080/upstream/maestro-api/` | the worker's base URL: the llama-swap peer route of the Spark stack, or `http://host:7860/` for a worker reached directly |
+| `static_token` | `LLAMA_SWAP_API_KEY` | the bearer token of `static_url`: llama-swap's API key behind llama-swap (the peer swaps in the worker's own token), else the worker's `MAESTRO_WORKER_TOKEN`. Stored in `app/settings`, returned masked |
+| `static_wake_url` | `http://spark.tailnet:8080/upstream/maestro-worker/readyz` | optional, see [Waking the worker](#waking-the-worker) |
 | `route_generations` | `true` | send generations to the worker |
 
 ```bash
 curl -X PUT http://localhost:7860/api/v1/remote-worker/settings \
   -H 'Content-Type: application/json' \
-  -d '{"provider": "static", "static_url": "http://spark.tailnet:7860",
-       "static_token": "…", "route_generations": true}'
+  -d '{"provider": "static", "static_url": "http://spark.tailnet:8080/upstream/maestro-api/",
+       "static_token": "<LLAMA_SWAP_API_KEY>",
+       "static_wake_url": "http://spark.tailnet:8080/upstream/maestro-worker/readyz",
+       "route_generations": true}'
 ```
 
 What changes in static mode:
@@ -62,9 +69,10 @@ What changes in static mode:
   times). It is never marked failed. A job that already started on the worker
   is never handed back.
 - **File transfer:** through R2 when R2 is configured on both sides (the worker
-  needs the `R2_*` / `MAESTRO_R2_*` variables itself), else uploaded straight
-  to the worker (`/api/v1/worker/files`), the same route dstack pods use
-  through their proxy.
+  needs the `R2_*` / `MAESTRO_R2_*` variables itself), else uploaded to the
+  worker (`/api/v1/worker/files`), the same route dstack pods use through their
+  proxy (here through the llama-swap peer; large uploads through it are
+  untested, so prefer R2).
 
 ### Waking the worker
 
@@ -72,11 +80,12 @@ When jobs wait for a paused worker, the controller requests `static_wake_url`
 (in the background, at most once a minute). Point it at llama-swap's
 passthrough for the lease model: `/upstream/maestro-worker/readyz`. llama-swap
 then loads `maestro-worker`, which swaps out `big-llm` once its in-flight
-requests are done, and the worker resumes. With llama-swap `apiKeys`, put the
-key in the URL as Basic credentials (`http://any:<key>@host:8080/...`):
-llama-swap accepts a Basic password as API key. The credentials are redacted
-from the controller's logs. Leave the URL empty to let jobs wait until someone
-else loads `maestro-worker`.
+requests are done, and the worker resumes. The request carries `static_token`
+as bearer token, which behind llama-swap is its API key; a URL with its own
+credentials (`http://any:<key>@host:8080/...`, llama-swap reads a Basic
+password as API key) is sent as is, and the credentials are redacted from the
+controller's logs. Leave the URL empty to let jobs wait until someone else
+loads `maestro-worker`.
 
 ## 2. Worker: authentication and control API
 
@@ -142,11 +151,24 @@ runs `docker/spark-stack/maestro_worker_lease.py` (Python, stdlib only) as the
    `/upstream/maestro-worker/...`) swaps `big-llm` out and the shim acquires
    the worker again.
 
-`/upstream/maestro-worker/...` reaches the worker's own API through llama-swap.
-With llama-swap `apiKeys` set, the `Authorization` header carries the llama-swap
-key, which llama-swap forwards unchanged, so worker routes behind the bearer
-token cannot be called that way; the controller always talks to the worker
-directly, and `/readyz` (unauthenticated) is all the wake URL needs.
+The controller reaches the worker through a llama-swap **peer** (`peers.maestro`,
+model `maestro-api`), not through `/upstream/maestro-worker/`:
+
+- a request to `/upstream/maestro-worker/...` loads the lease model, so every
+  status probe would swap `big-llm` out, and while the lease is stopping it
+  would be refused or start another swap; a peer route only proxies (*peer
+  proxying never swaps*, `internal/server/api.go`), so the controller keeps
+  following a render through a release;
+- llama-swap checks the caller's API key, then the peer replaces
+  `Authorization` with `Bearer <peer apiKey>` (`internal/router/peer.go`), so
+  the worker token never leaves the stack and the controller only knows the
+  llama-swap key;
+- the bare peer model name is used (`maestro-api`, not `maestro/maestro-api`):
+  with a qualified name the peer router rewrites the request's model, which
+  would touch the request body.
+
+`/upstream/maestro-worker/readyz` is still the right wake URL: loading the
+lease is exactly what it is for.
 
 ### Stop timeouts: set them above your longest render
 
@@ -182,12 +204,14 @@ directly, so llama-swap sees no traffic and would unload it as idle.
 - [`docker/spark-stack/compose.yaml`](../docker/spark-stack/compose.yaml):
   `ghcr.io/mostlygeek/llama-swap:unified-cuda13` (multi-arch, CUDA 13,
   `llama-server` and `python3` included, so the shim runs inside it) and
-  `ghcr.io/quentinriviere/maestro-worker:spark`, both on the host network and
-  bound to `SPARK_BIND_ADDR` (the Tailscale or LAN address; `127.0.0.1` with an
-  SSH tunnel). Never `0.0.0.0`: even with the worker token and llama-swap
-  `apiKeys`, neither should face the internet. The worker boots like a dstack
-  run (clone `MAESTRO_REPO_REF`, `remote_worker_boot.sh`), starts paused, and
-  keeps its data in `MAESTRO_DATA_DIR`.
+  `ghcr.io/quentinriviere/maestro-worker:spark` on a private bridge network.
+  Only llama-swap's port is published, on `SPARK_BIND_ADDR` (the Tailscale
+  address; `127.0.0.1` when unset, never `0.0.0.0` by default). `llama-server`
+  runs inside the llama-swap container on its loopback; the worker publishes
+  nothing (it listens on `0.0.0.0` inside its container, on the private network
+  only, and requires its token). The worker boots like a dstack run (clone
+  `MAESTRO_REPO_REF`, `remote_worker_boot.sh`), starts paused, and keeps its
+  data in `MAESTRO_DATA_DIR`.
 - [`docker/spark-stack/maestro_worker_lease.py`](../docker/spark-stack/maestro_worker_lease.py):
   the shim (`--url`, `--check-interval`, `--release-timeout`, `--retry`;
   `MAESTRO_WORKER_URL`, `MAESTRO_WORKER_TOKEN`). Exit codes: 0 released, 1
@@ -203,9 +227,29 @@ MODELS_DIR=/srv/models
 MAESTRO_DATA_DIR=/var/lib/maestro-worker
 EOF
 docker compose up -d
-curl -H "Authorization: Bearer $MAESTRO_WORKER_TOKEN" http://100.64.0.2:7860/api/v1/worker/state
+curl -H "Authorization: Bearer $LLAMA_SWAP_API_KEY" http://100.64.0.2:8080/upstream/maestro-api/api/v1/worker/state
 curl -H "Authorization: Bearer $LLAMA_SWAP_API_KEY" http://100.64.0.2:8080/running
 ```
+
+### llama-swap image on the Spark
+
+No custom image is needed: `ghcr.io/mostlygeek/llama-swap:unified-cuda13` is a
+manifest list with `linux/amd64` and `linux/arm64` entries (checked on GHCR on
+2026-10-16), and llama-swap's `docker/unified/README.md` lists its arm64 build
+as CUDA 13.3.1 with `CMAKE_CUDA_ARCHITECTURES` `90;100;120;121`, i.e. native
+`sm_121` code for the GB10, plus `llama-server` and `python3`. Pin a dated tag
+or digest once the stack is validated.
+
+### Other containerised services
+
+TTS servers, ComfyUI and the like follow the Maestro pattern: their own
+compose service on the `inference` network, and a small HTTP lease shim as
+their llama-swap `cmd` (free memory on SIGTERM, reload on start), with
+`checkEndpoint` on their readiness route. llama-swap never runs `docker run`.
+Mounting `/var/run/docker.sock` into llama-swap so `cmd` / `cmdStop` can drive
+containers (the pattern of llama-swap's `docker-llama` example) is possible
+but **opt-in only**: access to the Docker socket is root on the host, so any
+config or request path that reaches it can take over the Spark.
 
 ### Memory budget (128 GB unified)
 
@@ -229,7 +273,8 @@ curl -X POST -H "Authorization: Bearer $LLAMA_SWAP_API_KEY" \
 curl -H "Authorization: Bearer $LLAMA_SWAP_API_KEY" \
   http://spark:8080/upstream/maestro-worker/readyz
 # Restart the worker container without killing a render:
-curl -X POST -H "Authorization: Bearer $MAESTRO_WORKER_TOKEN" http://spark:7860/api/v1/worker/release
+curl -X POST -H "Authorization: Bearer $LLAMA_SWAP_API_KEY" \
+  http://spark:8080/upstream/maestro-api/api/v1/worker/release
 docker compose restart maestro-worker   # comes back paused; the lease resumes it
 ```
 
@@ -250,9 +295,13 @@ the Go sources named above. `llama-swap.yaml` validates against
 | `healthCheckTimeout` is the swap stop timeout; `unloadTimeout` for manual/API/TTL unloads; SIGTERM then SIGKILL of the process group | internal/router/base.go, internal/process/process_command.go |
 | `/upstream/<model>/...` passthrough (loads the model), `/running`, `POST /api/models/unload/<model>`, `/health` | README.md, internal/server/server.go |
 | `apiKeys`: Bearer, Basic (password) or `x-api-key`; also guards `/upstream` | internal/server/auth.go, internal/swaputil/http.go |
+| `peers` (`proxy`, `apiKey` injected as `Authorization: Bearer` and `x-api-key`, `models`, `timeouts.responseHeader: 0` = none); `/upstream/<peer model>/...` proxied without swapping | config.example.yaml, internal/router/peer.go, internal/server/api.go |
+| `upstream.ignorePaths` refuses (409) a matching request for an unloaded local model instead of swapping | internal/server/api.go |
 | `unified-cuda13` image: amd64 + arm64, GB10 listed, `llama-server` and `python3` in `/usr/local/bin` / apt, `LLAMA_SWAP_CONFIG` / `LLAMA_SWAP_LISTEN` / `LLAMA_SWAP_WATCH_CONFIG` | README.md, docker/unified/runtime.Dockerfile |
 
-Not verified: the stack on Spark hardware; that the swap waits for the evicted
+Not verified: the stack on Spark hardware; the peer route end to end (path
+rewriting, large uploads and streamed downloads through it, request capture
+buffers); that the swap waits for the evicted
 model's in-flight requests before stopping it (stated in base.go comments,
 not exercised); `stop_grace_period` interplay when stopping the llama-swap
 container; the example GGUF file names and llama-server flags; `torch.cuda.mem_get_info`

@@ -65,11 +65,17 @@ def redact(url: str) -> str:
     return urlunsplit(parts._replace(netloc="***@" + parts.netloc.rsplit("@", 1)[1]))
 
 
-def _http_wake(url: str) -> None:
+def _http_wake(url: str, token: str) -> None:
+    """GET the wake URL, with the worker token as bearer unless the URL carries credentials.
+
+    Behind llama-swap the worker token is llama-swap's API key (the worker
+    is reached through a llama-swap peer), so the same key opens the wake URL.
+    """
     import requests
 
+    headers = {"Authorization": f"Bearer {token}"} if token and "@" not in urlsplit(url).netloc else {}
     try:
-        response = requests.get(url, timeout=WAKE_TIMEOUT_SECONDS)
+        response = requests.get(url, headers=headers, timeout=WAKE_TIMEOUT_SECONDS)
         log.info("static worker wake %s: HTTP %s", redact(url), response.status_code)
     except Exception as exc:
         log.warning("static worker wake %s failed: %s", redact(url), type(exc).__name__)
@@ -101,7 +107,7 @@ class StaticWorker:
     """Probe cache and wake throttle of one static worker."""
 
     def __init__(self, *, clock: Callable[[], float], probe: Probe | None = None,
-                 wake: Callable[[str], None] | None = None) -> None:
+                 wake: Callable[[str, str], None] | None = None) -> None:
         self._clock = clock
         self._probe = probe or _http_probe
         self._wake = wake or _http_wake
@@ -132,7 +138,7 @@ class StaticWorker:
         with self._lock:
             self._cached = None
 
-    def wake(self, url: str) -> bool:
+    def wake(self, url: str, token: str = "") -> bool:
         """Request ``url`` in the background, at most once per interval. True when sent."""
         if not url:
             return False
@@ -142,6 +148,6 @@ class StaticWorker:
                 return False
             self._woken_at = now
         log.info("static worker paused with jobs waiting: waking it through %s", redact(url))
-        threading.Thread(target=self._wake, args=(url,), name="maestro_static_worker_wake",
+        threading.Thread(target=self._wake, args=(url, token), name="maestro_static_worker_wake",
                          daemon=True).start()
         return True
