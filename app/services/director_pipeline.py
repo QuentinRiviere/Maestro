@@ -5933,13 +5933,13 @@ def shot_identity_refs(params: dict, plan: dict, refs: list[str]) -> list[str]:
     never gets a front-facing portrait: the editor would redraw their face
     and show them twice. They get the bible's back view, or no reference.
     """
-    from services.director.blocking_map import parse_blocking_map, subject_view
+    from services.director.blocking_map import faces_wanted, parse_blocking_map, subject_view
 
     names = {}
     for label, path in zip(params.get("character_ref_labels") or [], params.get("character_ref_paths") or []):
         names[path] = label
         names[image_stage_ref(params, path)] = label
-    if str(plan.get("_director_scene_type") or "").lower() == "insert":
+    if director_is_insert(plan):
         # A hands-or-object insert drawn from a person's portrait comes out as a portrait.
         return [ref for ref in refs if ref not in names]
     views = params.get("_director_image_views") or {}
@@ -5954,9 +5954,17 @@ def shot_identity_refs(params: dict, plan: dict, refs: list[str]) -> list[str]:
             if back_view:
                 out.append(back_view)
             continue
-        view = subject_view(blocking, name) if blocking else ""
+        view = subject_view(blocking, name, faces_wanted(plan.get("_director_camera_framing"))) if blocking else ""
         out.append((views.get(ref) or {}).get(view) or ref if view else ref)
     return out
+
+
+def director_is_insert(plan: dict) -> bool:
+    """Whether a shot is an insert (hands, an object): by scene type or by its framing words."""
+    from services.director.policies import shot_reach
+
+    return (str(plan.get("_director_scene_type") or "").lower() == "insert"
+            or shot_reach(str(plan.get("_director_camera_framing") or "")) == "detail")
 
 
 def without_ots_front_refs(params: dict, plan: dict, refs: list[str]) -> list[str]:
@@ -6040,11 +6048,21 @@ def director_scene_locks(plans: list[dict]) -> list[Optional[dict]]:
 
 
 def scene_locked_plan(plan: dict, lock: Optional[dict]) -> dict:
-    """The plan a shot image is built from: its blocking replaced by the scene-locked one."""
-    if not lock:
-        return plan
-    return {**plan, "_director_blocking_map": lock["blocking"], "_director_camera_reverse": bool(lock["reverse"]),
-            "_director_layout_corrected": bool(lock.get("corrected"))}
+    """The plan a shot image is built from: its blocking replaced by the scene-locked one.
+
+    A close or face shot of one person whose camera stands behind them gets
+    the camera in front instead (see ``face_the_camera``).
+    """
+    from services.director.blocking_map import face_the_camera, parse_blocking_map
+
+    if lock:
+        plan = {**plan, "_director_blocking_map": lock["blocking"], "_director_camera_reverse": bool(lock["reverse"]),
+                "_director_layout_corrected": bool(lock.get("corrected"))}
+    blocking = parse_blocking_map(plan.get("_director_blocking_map"))
+    faced = face_the_camera(blocking, plan.get("_director_camera_framing"))
+    if faced is not blocking:
+        plan = {**plan, "_director_blocking_map": faced, "_director_camera_faced": True}
+    return plan
 
 
 def location_reverse_view(params: dict, location: str) -> str:
@@ -9165,6 +9183,9 @@ def blocking_framing_line(blocking_map: dict, framing: str = "") -> str:
     return staging_line(parse_blocking_map(blocking_map), framing)
 
 
+_INSERT_IDENTITY_RE = re.compile(r"\s*Preserve character identity[^.]*\.?", re.IGNORECASE)
+
+
 def director_shot_layout(pid: str, index: int, plan: dict, prompt: str, image_model: str,
                          out_dir: str) -> tuple[str, str]:
     """(diagram path or "", prompt): a scene shot's top view as an image, or as a sentence.
@@ -9173,7 +9194,6 @@ def director_shot_layout(pid: str, index: int, plan: dict, prompt: str, image_mo
     the same layout appended to the prompt.
     """
     from services.director.blocking_map import insert_line
-    from services.director.policies import shot_reach
 
     names = [str(subject.get("speaker_name") or subject.get("name") or "").strip()
              for subject in plan.get("_director_subjects_on_screen") or [] if isinstance(subject, dict)]
@@ -9181,7 +9201,9 @@ def director_shot_layout(pid: str, index: int, plan: dict, prompt: str, image_mo
     # An insert keeps its hands and objects: the blocking map only knows wide,
     # medium and close-up, and its people count would bring the faces back.
     framing = str(plan.get("_director_camera_framing") or "")
-    if str(plan.get("_director_scene_type") or "").lower() == "insert" or shot_reach(framing) == "detail":
+    if director_is_insert(plan):
+        # Its portraits are dropped (shot_identity_refs): no identity to preserve.
+        prompt = _INSERT_IDENTITY_RE.sub(" ", prompt or "").strip()
         return "", f"{prompt.rstrip()} {insert_line(framing, names)}"
     blocking_map = plan.get("_director_blocking_map") if plan.get("_director_continuity_group") else None
     if not isinstance(blocking_map, dict):

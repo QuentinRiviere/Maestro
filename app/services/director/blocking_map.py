@@ -201,12 +201,14 @@ def _facing_words(blocking: dict, facing: Optional[float]) -> str:
     return "facing frame right" if relative < 180 else "facing frame left"
 
 
-def framing_line(blocking: Optional[dict], foreground: str = "") -> str:
+def framing_line(blocking: Optional[dict], foreground: str = "", faces: bool = False) -> str:
     """The diagram in words, for editors that do not read images.
 
     ``foreground`` names the person whose back fills an over-the-shoulder
     shot (see ``ots_foreground``): they are described as a cropped,
-    faceless shoulder rather than listed with the others.
+    faceless shoulder rather than listed with the others. ``faces`` is set
+    when the shot's framing asks to see the faces (see ``faces_wanted``):
+    a person the blocking turns away is then turned three quarters instead.
     """
     if not blocking:
         return ""
@@ -226,6 +228,8 @@ def framing_line(blocking: Optional[dict], foreground: str = "") -> str:
         if back and _name_key(subject["name"]) == back:
             continue
         facing = _facing_words(blocking, subject["facing_deg"])
+        if faces and facing == "back to camera":
+            facing = "turned three quarters away, face visible"
         people.append(f"{subject['name']} ({facing})" if facing else subject["name"])
     order = ""
     if len(people) > 1:
@@ -244,13 +248,14 @@ def _angle_from_camera(blocking: dict, facing: float) -> float:
     return abs(((relative - 180.0) + 180.0) % 360.0 - 180.0)
 
 
-def subject_view(blocking: Optional[dict], name: str) -> str:
+def subject_view(blocking: Optional[dict], name: str, faces: bool = False) -> str:
     """The bible angle that shows ``name`` as this shot sees them ("" for the look's own image).
 
     Editors copy a reference's framing and pose, so a wide shot of a person
     facing the camera keeps the full-figure look image, closer shots take
     the face, and a person turned three quarters, in profile or away gets
-    that angle instead of a front-facing pose.
+    that angle instead of a front-facing pose. With ``faces`` (the framing
+    asks to see the faces) a person turned away gets three quarters, not the back.
     """
     if not blocking:
         return ""
@@ -266,10 +271,13 @@ def subject_view(blocking: Optional[dict], name: str) -> str:
         return "face_three_quarter"
     if angle < 125:
         return "face_profile"
-    return "back"
+    return "face_three_quarter" if faces else "back"
 
 
 _OTS_RE = re.compile(r"over[\s-]*(?:the[\s-]*)?shoulders?|\bo\.?t\.?s\b", re.IGNORECASE)
+# Framing words that ask to see the faces, and words that ask for a back view.
+_FACES_RE = re.compile(r"\bfaces?\b|\beyes\b|\breactions?\b|\bexpressions?\b", re.IGNORECASE)
+_BACK_VIEW_RE = re.compile(r"\bback\b|\bbehind\b|silhouett|walk(?:s|ing)? away", re.IGNORECASE)
 # A person turned at least this far from the camera shows it their back.
 _BACK_ANGLE = 135.0
 
@@ -294,7 +302,7 @@ def ots_foreground(blocking: Optional[dict], framing: Any = "") -> str:
         _lateral, depth = _to_camera(blocking, subject["x"], subject["y"])
         if depth > 0.02:
             placed.append((depth, subject))
-    if len(placed) < 2:
+    if len(placed) < 2 or (faces_wanted(framing) and not is_over_the_shoulder(framing)):
         return ""
     placed.sort(key=lambda item: item[0])
     nearest = placed[0][1]
@@ -303,6 +311,43 @@ def ots_foreground(blocking: Optional[dict], framing: Any = "") -> str:
     if is_over_the_shoulder(framing) or (back and blocking["camera"]["framing"] != "wide"):
         return nearest["name"]
     return ""
+
+
+def faces_wanted(framing: Any) -> bool:
+    """Whether a framing text asks to see the faces ("both faces", "reaction") and not a back view."""
+    text = str(framing or "")
+    return bool(_FACES_RE.search(text)) and not _BACK_VIEW_RE.search(text) and not is_over_the_shoulder(text)
+
+
+def face_the_camera(blocking: Optional[dict], framing: Any = "") -> Optional[dict]:
+    """A close or face shot of one person, with the camera moved in front of them when it stood behind.
+
+    Planners place the camera behind a lone person for a close-up or a
+    reaction: the image then shows the back of a head while the shot's text
+    describes the face. A framing that asks for a back view (or an OTS) keeps
+    its camera. The camera keeps its distance and turns to face the person.
+    """
+    if not blocking:
+        return blocking
+    text = str(framing or "")
+    if is_over_the_shoulder(text) or _BACK_VIEW_RE.search(text):
+        return blocking
+    if not (faces_wanted(text) or "close" in text.lower()):
+        return blocking
+    placed = [s for s in blocking["subjects"] if _to_camera(blocking, s["x"], s["y"])[1] > 0.02]
+    if len(placed) != 1 or placed[0].get("facing_deg") is None:
+        return blocking
+    person = placed[0]
+    if _angle_from_camera(blocking, person["facing_deg"]) < _BACK_ANGLE:
+        return blocking
+    camera = blocking["camera"]
+    distance = math.hypot(camera["x"] - person["x"], camera["y"] - person["y"])
+    theta = math.radians(person["facing_deg"])
+    # Facing 0 looks toward -y and 90 toward +x.
+    moved = {**camera, "x": round(person["x"] + math.sin(theta) * distance, 4),
+             "y": round(person["y"] - math.cos(theta) * distance, 4),
+             "facing_deg": round((person["facing_deg"] + 180.0) % 360.0, 2)}
+    return {**blocking, "camera": moved}
 
 
 def ots_foreground_line(name: str, side: str) -> str:
@@ -364,7 +409,7 @@ def staging_line(blocking: Optional[dict], framing: Any = "") -> str:
     describes its foreground person by their back only (``ots_foreground``).
     """
     foreground = ots_foreground(blocking, framing)
-    line = framing_line(blocking, foreground)
+    line = framing_line(blocking, foreground, faces=faces_wanted(framing))
     if not line:
         return ""
     placed = [s for s in blocking["subjects"] if _to_camera(blocking, s["x"], s["y"])[1] > 0.02]

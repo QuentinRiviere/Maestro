@@ -127,15 +127,15 @@ def resolve_subjects_text(shot: ShotPlan, plan: Optional[ProductionPlan] = None)
     parts = []
     for subj in shot.subjects_on_screen:
         desc = subj.visual_description
-        if subj.character_id and plan:
-            char = plan.get_character(subj.character_id)
-            if char:
-                wardrobe = visible_wardrobe(char.wardrobe, reach)
-                if reach == "detail":
-                    # Hands and sleeves only: a face description pulls an insert back to a portrait.
-                    desc = f"hands of a person in {wardrobe}" if wardrobe else "hands"
-                else:
-                    desc = ", ".join(p for p in (char.physical_description, wardrobe) if p)
+        char = plan.get_character(subj.character_id) if subj.character_id and plan else None
+        if reach == "detail":
+            # Hands and sleeves only: a face description pulls an insert back to a portrait,
+            # including the planner's own description of a person the plan cannot resolve.
+            wardrobe = visible_wardrobe(char.wardrobe, reach) if char else ""
+            desc = f"hands of a person in {wardrobe}" if wardrobe else "hands"
+        elif char:
+            wardrobe = visible_wardrobe(char.wardrobe, reach)
+            desc = ", ".join(p for p in (char.physical_description, wardrobe) if p)
         if subj.position_or_relation:
             desc += f", {subj.position_or_relation}"
         parts.append(desc)
