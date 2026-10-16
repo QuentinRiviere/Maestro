@@ -13,6 +13,10 @@ idle clock.
 ``Slots`` bounds how many remote jobs the controller runs at once:
 ``worker_count × jobs_per_worker``. Holding more than one job per pod lets the
 next job's transfers and preparation overlap the previous job's GPU work.
+
+A static worker (``provider: static``) is a single pod that is never started:
+jobs wait for it while it is unreachable (same timeout as a starting pod) or
+paused (no timeout; its wake URL is asked to resume it).
 """
 from __future__ import annotations
 
@@ -31,7 +35,8 @@ NO_CAPACITY_RETRIES = 10
 # How far each state is from taking a job, to report the closest pod while waiting.
 log = logging.getLogger("maestro.remote_worker.pool")
 
-_PROGRESS = {"ready": 4, "booting": 3, "starting": 2, "stopping": 1}
+_PROGRESS = {"ready": 4, "busy": 4, "booting": 3, "starting": 2, "paused": 2, "stopping": 1,
+             "unreachable": 1}
 
 
 class RemoteWorkerPool:
@@ -87,7 +92,7 @@ class RemoteWorkerPool:
         caller's ``ensure_ready`` reports a stopped one).
         """
         primary = self.primary
-        if not primary.settings.auto_start:
+        if not primary.settings.auto_start and not primary.settings.is_static:
             with self._lock:
                 self._extend(primary.settings.pool_size)
                 pod = min(self._pods[:primary.settings.pool_size], key=lambda p: (p.active_jobs, not p.ready, p._index))
@@ -103,7 +108,12 @@ class RemoteWorkerPool:
                     return pod
                 if should_abort():
                     return None
-                on_update(self._poll(model_type, poll_interval))
+                polled = self._poll(model_type, poll_interval)
+                on_update(polled)
+                if primary.settings.is_static and polled.get("state") == "paused":
+                    # Lent to another service: wait for it as long as it takes.
+                    primary.wake_static()
+                    deadline = primary._clock() + timeout
                 pod = self._take_free_pod()
                 if pod is not None:
                     return pod

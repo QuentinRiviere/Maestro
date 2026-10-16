@@ -2,6 +2,11 @@
 
 The dstack token is stored in full in the gitignored settings directory and
 only ever returned masked by the API, like the other provider keys.
+
+``provider`` picks how the worker exists: ``dstack`` (the default) starts and
+stops it as a dstack run; ``static`` talks to a worker that is always running
+at ``static_url`` (e.g. a DGX Spark under llama-swap, see
+docs/Remote-worker-static-and-llama-swap.md) and never starts or stops it.
 """
 from __future__ import annotations
 
@@ -19,11 +24,22 @@ DEFAULT_IMAGE = "ghcr.io/quentinriviere/maestro-worker:latest"
 
 # Never returned in clear by the API; a masked value sent back is ignored.
 SECRET_FIELDS = ("token", "registry_token", "r2_access_key_id", "r2_secret_access_key", "cf_api_token",
-                 "vast_api_key")
+                 "vast_api_key", "static_token")
+
+PROVIDERS = ("dstack", "static")
 
 
 @dataclass
 class RemoteWorkerSettings:
+    # "dstack" (start/stop runs) or "static" (an always-on worker at static_url)
+    provider: str = "dstack"
+    # static worker: base URL, the bearer token it requires
+    # (MAESTRO_WORKER_TOKEN on the worker), and an optional URL that wakes it
+    # when it reports paused (a llama-swap /upstream/<model>/ path; empty
+    # waits for whoever paused it to resume it).
+    static_url: str = ""
+    static_token: str = ""
+    static_wake_url: str = ""
     # dstack access
     server_url: str = "http://127.0.0.1:3000"
     project: str = "main"
@@ -112,12 +128,30 @@ class RemoteWorkerSettings:
     jobs_per_worker: int = 1
 
     @property
-    def configured(self) -> bool:
+    def is_static(self) -> bool:
+        return self.provider == "static"
+
+    @property
+    def dstack_configured(self) -> bool:
         return bool(self.server_url and self.project and self.token)
 
     @property
+    def configured(self) -> bool:
+        """The selected provider has what it needs to reach a worker."""
+        if self.is_static:
+            return bool(self.static_url)
+        return self.dstack_configured
+
+    @property
+    def worker_token(self) -> str:
+        """Bearer token of requests to the worker itself (the dstack proxy or a static worker)."""
+        return self.static_token if self.is_static else self.token
+
+    @property
     def pool_size(self) -> int:
-        """Pods the pool may run at once (1 to 4)."""
+        """Pods the pool may run at once (1 to 4; a static worker is one)."""
+        if self.is_static:
+            return 1
         return max(1, min(4, int(self.worker_count or 1)))
 
     @property
@@ -161,6 +195,7 @@ class RemoteWorkerSettings:
             payload[name] = _mask(getattr(self, name))
             payload[f"{name}_set"] = bool(getattr(self, name))
         payload["configured"] = self.configured
+        payload["dstack_configured"] = self.dstack_configured
         payload["r2_configured"] = self.r2_configured
         return payload
 
@@ -188,7 +223,12 @@ def _coerce(name: str, value: Any, current: Any) -> Any:
         if isinstance(value, str):
             value = [part.strip() for part in value.split(",")]
         return [str(part) for part in value if str(part).strip()]
-    return str(value or "").strip()
+    text = str(value or "").strip()
+    if name == "provider":
+        text = text.lower() or "dstack"
+        if text not in PROVIDERS:
+            raise ValueError(f"provider must be one of {', '.join(PROVIDERS)}")
+    return text
 
 
 def is_masked(value: object) -> bool:

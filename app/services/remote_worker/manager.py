@@ -23,6 +23,14 @@ that the current host is kept. Queued jobs keep waiting meanwhile: the pod
 reports ``starting``. A data center is not blamed for one slow host (its
 machines sit on different networks), but two slow hosts in a row from the same
 one keep it out of the run's ``regions`` for ``slow_region_exclusion_seconds``.
+
+Static provider (``provider: static``): the worker always runs at
+``static_url`` and is never started or stopped from here (see
+static_worker.py for its states: ``ready``, ``busy``, ``paused``,
+``unreachable``). ``start`` and ``stop`` only report the status: resuming a
+paused worker is left to whoever paused it (llama-swap), since resuming it
+from here could load a model next to the one that holds the GPU memory. The
+idle stop does not apply.
 """
 from __future__ import annotations
 
@@ -43,6 +51,7 @@ from services.remote_worker.settings import (
     is_masked,
     read_local_dstack_config,
 )
+from services.remote_worker.static_worker import READY_STATES as STATIC_READY_STATES, StaticWorker
 from services.remote_worker.ephemeral_r2 import EphemeralKeyError, EphemeralR2Keys, duration_seconds
 from services.remote_worker.vast_network import PLAN_OFFERS, VastFilterError, pin_fast_offers
 from services.remote_worker.worker_spec import build_fleet_spec, build_run_spec, dstack_secrets
@@ -175,6 +184,8 @@ class RemoteWorkerManager:
         # center and the excluded ones with their expiry.
         self._last_slow_region: str | None = None
         self._excluded_regions: dict[str, float] = {}
+        # Probes of a static worker (provider "static").
+        self.static_worker = StaticWorker(clock=clock)
 
     # ── settings ───────────────────────────────────────────────────────────
 
@@ -237,11 +248,20 @@ class RemoteWorkerManager:
 
     def client(self) -> DstackClient:
         settings = self.settings
-        if not settings.configured:
+        if not settings.dstack_configured:
             raise RemoteWorkerError("Remote worker is not configured (dstack server, project, token)")
         return self._client_factory(settings)
 
     def test_connection(self) -> dict[str, Any]:
+        if self.settings.is_static:
+            if not self.settings.configured:
+                raise RemoteWorkerError("Static worker URL is not set")
+            self.static_worker.forget()
+            current = self.status()
+            if current.get("state") == "unknown":
+                raise RemoteWorkerError(str(current.get("message")))
+            return {"server_version": None, "fleets": [], "state": current.get("state"),
+                    "message": current.get("message") or ""}
         client = self.client()
         info = client.get_info()
         fleets = [f.get("name") for f in client.list_fleets() if isinstance(f, Mapping)]
@@ -267,6 +287,8 @@ class RemoteWorkerManager:
         }
         if not settings.configured:
             return base
+        if settings.is_static:
+            return {**base, **self._static_status(settings)}
         try:
             run = self.client().get_run(self.run_name)
         except (DstackError, RemoteWorkerError) as exc:
@@ -274,6 +296,22 @@ class RemoteWorkerManager:
         described = self._describe(run)
         # Read after _describe, which may just have replaced a slow host.
         return {**base, **described, **self._slow_host_status()}
+
+    def _static_status(self, settings: RemoteWorkerSettings) -> dict[str, Any]:
+        """Probe the static worker; it counts as ready while it takes jobs."""
+        described = self.static_worker.status(settings.static_url, settings.worker_token)
+        if described.get("state") in STATIC_READY_STATES:
+            with self._lock:
+                if self._ready_since is None:
+                    self._ready_since = self._last_activity = self._clock()
+        else:
+            self._mark_not_ready()
+        return described
+
+    def wake_static(self) -> bool:
+        """Ask the static worker's wake URL to resume it (throttled); True when sent."""
+        settings = self.settings
+        return settings.is_static and self.static_worker.wake(settings.static_wake_url)
 
     def _slow_host_status(self) -> dict[str, Any]:
         return {"slow_host_retries": self._slow_retries,
@@ -421,7 +459,7 @@ class RemoteWorkerManager:
             return []
         if self._clock() - self._downloads_polled_at >= BOOT_LOG_POLL_SECONDS:
             self._downloads_polled_at = self._clock()
-            self._downloads = self._fetch_downloads(service_url, self.settings.token)
+            self._downloads = self._fetch_downloads(service_url, self.settings.worker_token)
         return [
             {"model_type": model_type, "phase": entry.get("phase"), "progress": entry.get("progress")}
             for model_type, entry in sorted(self._downloads.items())
@@ -436,7 +474,7 @@ class RemoteWorkerManager:
             if not service_url or not model_type or key in self._preloaded:
                 return
             self._preloaded.add(key)
-        token = self.settings.token
+        token = self.settings.worker_token
         threading.Thread(
             target=self._preload,
             args=(service_url, token, model_type),
@@ -452,8 +490,13 @@ class RemoteWorkerManager:
     # ── start / stop ───────────────────────────────────────────────────────
 
     def start(self, model_type: str | None = None) -> dict[str, Any]:
-        """Submit the worker run unless one is already active. Idempotent."""
+        """Submit the worker run unless one is already active. Idempotent.
+
+        A static worker is never started (nor resumed): this only reports it.
+        """
         settings = self.settings
+        if settings.is_static:
+            return self.status()
         client = self.client()
         with self._lock:
             if model_type:
@@ -676,6 +719,10 @@ class RemoteWorkerManager:
 
     def stop(self, reason: str = "Stopped by user") -> dict[str, Any]:
         settings = self.settings
+        if settings.is_static:
+            # Never stops the static worker's process: it may be rendering for
+            # another controller, and llama-swap owns its GPU lease.
+            return self.status()
         client = self.client()
         with self._lock:
             run = client.get_run(self.run_name)
@@ -731,6 +778,8 @@ class RemoteWorkerManager:
         return self.r2_keys.reconcile(self.settings, self.run_active)
 
     def logs(self, since: str | None = None) -> list[dict[str, str]]:
+        if self.settings.is_static:
+            return []
         client = self.client()
         run = client.get_run(self.run_name)
         submission = (run or {}).get("latest_job_submission") or {}
@@ -764,6 +813,9 @@ class RemoteWorkerManager:
         Returns the ready status (with ``service_url``). Raises on timeout,
         on a failed run, or returns early with the current status on abort.
         """
+        if self.settings.is_static:
+            return self._wait_static(should_abort=should_abort, on_update=on_update,
+                                     timeout=timeout, poll_interval=poll_interval)
         if not self.settings.auto_start:
             current = self.status()
             if current.get("state") != "ready":
@@ -788,6 +840,31 @@ class RemoteWorkerManager:
                 raise RemoteWorkerError(str(current.get("message") or "Remote worker unavailable"))
             if self._clock() > deadline:
                 raise RemoteWorkerError(f"Remote worker not ready after {int(timeout // 60)} min")
+            self._sleep(poll_interval)
+
+    def _wait_static(self, *, should_abort, on_update, timeout: float, poll_interval: float) -> dict[str, Any]:
+        """Block until the static worker takes jobs.
+
+        Unreachable: wait up to ``timeout`` (as for a starting pod). Paused:
+        wait without limit, and ask the wake URL (if any) to resume it.
+        """
+        deadline = self._clock() + timeout
+        while True:
+            current = self.status()
+            state = current.get("state")
+            on_update(current)
+            if state in STATIC_READY_STATES:
+                return current
+            if should_abort():
+                return current
+            if state in ("not_configured", "unknown"):
+                raise RemoteWorkerError(str(current.get("message") or "Remote worker unavailable"))
+            if state == "paused":
+                self.wake_static()
+                deadline = self._clock() + timeout  # a pause never fails a job
+            elif self._clock() > deadline:
+                raise RemoteWorkerError(
+                    f"Static worker unreachable for {int(timeout // 60)} min: {current.get('message') or ''}")
             self._sleep(poll_interval)
 
     # ── idle watchdog ──────────────────────────────────────────────────────
@@ -817,7 +894,7 @@ class RemoteWorkerManager:
     def idle_tick(self) -> bool:
         """Stop the worker when idle past its limit. Returns True if stopped."""
         settings = self.settings
-        if not settings.configured:
+        if not settings.configured or settings.is_static:
             return False
         if self._review_hold_active():
             return False
@@ -843,8 +920,9 @@ class RemoteWorkerManager:
                 try:
                     if self.settings.configured:
                         self.status()  # refreshes readiness bookkeeping
-                        self.idle_tick()
-                        self.reconcile_pod_keys()  # revoke keys of finished pods
+                        if not self.settings.is_static:
+                            self.idle_tick()
+                            self.reconcile_pod_keys()  # revoke keys of finished pods
                 except Exception as exc:  # never let the watchdog die
                     log.warning("remote worker watchdog: %s", exc)
 

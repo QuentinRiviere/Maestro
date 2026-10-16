@@ -30,6 +30,7 @@ class FakeManager:
 
         class S:
             token = "tok"
+            worker_token = "tok"
 
         self.settings = S()
 

@@ -12,7 +12,13 @@ then bring the outputs and their sidecars into the local output folder.
 
 With R2 configured, inputs go controller -> R2 -> worker (content-addressed,
 uploaded once) and outputs worker -> R2 -> controller, where they stay as a
-remote copy. Without R2, files travel through the dstack service proxy.
+remote copy. Without R2, files travel through the dstack service proxy (or
+straight to a static worker).
+
+A worker can hand a job back before starting it: it was paused (submission
+answered 423) or it released its queue (the job ends ``cancelled`` with
+``handed_back``), e.g. because llama-swap lent its GPU to an LLM. The job is
+then neither lost nor failed: it waits for the worker again and is resubmitted.
 """
 from __future__ import annotations
 
@@ -58,6 +64,20 @@ class RemoteJobError(RuntimeError):
 
 class RemoteJobCancelled(RuntimeError):
     pass
+
+
+class RemoteJobHandedBack(RuntimeError):
+    """The worker gave the job back unstarted; submit it again later."""
+
+
+class RemoteWorkerPaused(RemoteJobHandedBack):
+    """The worker refused a submission because it is paused (HTTP 423)."""
+
+
+# A job handed back more often than this fails instead of looping forever.
+MAX_HANDBACKS = 50
+# HTTP status of a worker that is paused (see worker_control.py).
+WORKER_PAUSED_STATUS = 423
 
 
 @dataclass
@@ -132,6 +152,8 @@ class WorkerClient:
 
     def post_json(self, path: str, body: Any = None, *, timeout: float = 60.0, retry: bool = True) -> Any:
         response = self._send("POST", path, retry=retry, headers=self._headers, json=body, timeout=timeout)
+        if response.status_code == WORKER_PAUSED_STATUS:
+            raise RemoteWorkerPaused("The remote worker is paused")
         if not response.ok:
             raise RemoteJobError(f"Worker POST {path} failed: HTTP {response.status_code} {response.text[:300]}")
         return response.json() if response.content else None
@@ -247,6 +269,27 @@ class RemoteJobForwarder:
         clip of a multi-clip job as soon as the worker finished it; the file
         is downloaded into ``out_dir`` mid-job and refreshed at the end.
         """
+        handbacks = 0
+        while True:
+            try:
+                return self._run_once(
+                    params, job_id=job_id, out_dir=out_dir, resolve_lora=resolve_lora, update=update,
+                    is_cancelled=is_cancelled, preview_mode=preview_mode, on_preview=on_preview,
+                    on_preview_notice=on_preview_notice, on_clip_output=on_clip_output,
+                )
+            except RemoteJobHandedBack as exc:
+                if is_cancelled():
+                    raise RemoteJobCancelled() from exc
+                handbacks += 1
+                if handbacks > MAX_HANDBACKS:
+                    raise RemoteJobError(f"The remote worker handed the job back {handbacks} times") from exc
+                log.info("remote job %s handed back (%s), resubmitting when the worker takes jobs",
+                         job_id or "-", exc)
+                update(phase="Remote worker", message=f"{exc}: waiting to resubmit…")
+                self._sleep(self._poll_interval)
+
+    def _run_once(self, params, *, job_id, out_dir, resolve_lora, update, is_cancelled,
+                  preview_mode, on_preview, on_preview_notice, on_clip_output) -> RemoteJobResult:
         model_type = str(params.get("model_type") or "")
         update(phase="Remote worker", message="Waiting for the remote GPU worker…")
         waiting_since = time.monotonic()
@@ -271,7 +314,7 @@ class RemoteJobForwarder:
             )
             if is_cancelled():
                 raise RemoteJobCancelled()
-            client = self._client_factory(str(status["service_url"]), manager.settings.token)
+            client = self._client_factory(str(status["service_url"]), manager.settings.worker_token)
             store = self._store_factory(manager.settings)
 
             self._preload(client, model_type, update=update, is_cancelled=is_cancelled, params=params)
@@ -432,6 +475,8 @@ class RemoteJobForwarder:
             missing = 0
             status = remote.get("status")
             if status in _TERMINAL:
+                if status == "cancelled" and remote.get("handed_back") and cancel_sent_at is None:
+                    raise RemoteJobHandedBack("The remote worker handed the job back")
                 if status == "cancelled" or cancel_sent_at is not None:
                     raise RemoteJobCancelled()
                 if status == "failed":
@@ -627,6 +672,12 @@ def _worker_state_message(status: Mapping[str, Any]) -> str:
         return "Remote worker booting Maestro…"
     if state == "stopping":
         return "Waiting for the previous worker to stop…"
+    if state == "paused":
+        return "Remote worker paused (its GPU is lent to another service), waiting…"
+    if state == "unreachable":
+        return "Remote worker unreachable, retrying…"
+    if state == "busy":
+        return "Remote worker busy"
     if state == "ready":
         return "Remote worker ready"
     return "Starting remote GPU worker…"
