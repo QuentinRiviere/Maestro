@@ -157,6 +157,15 @@ person the action has moved since the scene's previous shot. "props" places the 
 the same spots in every shot of the scene. The camera stays on one side of the line between the two main
 characters for the whole scene; add "crosses_line": true to the camera only when this shot deliberately crosses it."""
 
+# Planners asked for "the scene's light" write even, balanced light ("soft
+# amber glow balanced by cool twilight, natural skin tones") even at night,
+# and the image comes out flat like a catalogue photo.
+LIGHTING_RULE = """LIGHTING (live-action / photographic looks): the light is motivated and contrasted, consistent with the
+scene's time of day. Name the visible light sources (practicals: lamps, pendants, windows, neon, streetlights,
+screens) and where the shadows fall on the faces. Night and interior drama scenes are low-key: most of the frame
+dark, deep shadows, faces partly in shadow. Never "balanced", "even", "soft natural lighting" or "natural skin
+tones" as the whole description."""
+
 SCENE_DESIGN_SYSTEM = """You are the director preparing the scenes of a short production before shooting.
 From the brief, the skill rules and the cast, design the scenes. Return ONLY a JSON array, one object per scene:
 [{"scene_id": "short_snake_case", "location": "the cast location this scene is shot in, by its exact name",
@@ -171,7 +180,9 @@ From the brief, the skill rules and the cast, design the scenes. Return ONLY a J
 Use as few scenes as the story needs (usually one or two for a short piece). Time and light only change
 between scenes, never inside one. When cast locations are listed, every scene takes place in one of them (its
 reference image is the set) and "place" describes that same location; use "" for location only if the story
-truly needs a place the cast lacks. Write in English."""
+truly needs a place the cast lacks. Write in English.
+
+""" + LIGHTING_RULE
 
 
 def scene_grammar_block(spec: dict) -> str:
@@ -304,6 +315,8 @@ class CustomSkillPlanner(BasePlanner):
 {build_character_rules_block(has_reference, char_profiles or None)}
 
 {SCENE_CRAFT if narrative else build_camera_style_block()}
+
+{LIGHTING_RULE}
 
 {density_rule}
 

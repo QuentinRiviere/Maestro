@@ -296,6 +296,17 @@ class PlannerTests(unittest.TestCase):
         self.assertIn("hand_detail: true ONLY when the story beat", prompt)
         self.assertIn('"props": ["each object the action uses', prompt)
 
+    def test_scene_and_shot_prompts_carry_the_lighting_rule(self):
+        spec = {**self.spec, "workflow": "story"}
+        planner = FakePlanner(spec, [{"scene_goal": "a"}])
+        planner.plan(scene_description="x")
+        scene_prompt, shot_prompt = planner.prompts[0]["system_prompt"], planner.prompts[-1]["system_prompt"]
+        for prompt in (scene_prompt, shot_prompt):
+            self.assertIn("LIGHTING (live-action / photographic looks)", prompt)
+            self.assertIn("Night and interior drama scenes are low-key", prompt)
+            self.assertIn("lamps, pendants, windows, neon, streetlights", prompt)
+            self.assertIn('Never "balanced", "even", "soft natural lighting"', prompt)
+
     def test_props_and_hand_detail_reach_shot_metadata(self):
         spec = {**self.spec, "workflow": "story"}
         plan = FakePlanner(spec, [
