@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { ChevronLeft, ChevronRight, Heart, Film, Search, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Heart, Film, Search, StickyNote, X } from 'lucide-react'
 import { useStore } from '../../stores/useStore'
 import type { MediaFilter } from '../../types'
 
@@ -11,6 +11,7 @@ const tabs: { value: MediaFilter; label: string; shortLabel: string; icon?: stri
   { value: 'avatars', label: 'Edits', shortLabel: 'Edit' },
   { value: 'multiclip', label: 'Multi-clip', shortLabel: 'MC', icon: 'film' },
   { value: 'favorites', label: 'Favorites', shortLabel: '', icon: 'heart' },
+  { value: 'annotated', label: 'Annotated', shortLabel: '', icon: 'note' },
 ]
 
 export function TabFilter() {
@@ -92,6 +93,7 @@ export function TabFilter() {
                 mediaFilter === tab.value
                   ? tab.value === 'favorites' ? 'bg-red-500/20 text-chip-red'
                   : tab.value === 'multiclip' ? 'bg-purple-500/20 text-chip-purple'
+                  : tab.value === 'annotated' ? 'bg-amber-500/20 text-amber-300'
                   : 'bg-bg-active text-text-primary'
                   : 'text-text-muted hover:text-text-secondary'
               }`}
@@ -99,6 +101,7 @@ export function TabFilter() {
             >
               {tab.icon === 'heart' && <Heart size={11} fill={mediaFilter === 'favorites' ? 'currentColor' : 'none'} />}
               {tab.icon === 'film' && <Film size={11} />}
+              {tab.icon === 'note' && <StickyNote size={11} />}
               <span className="hidden xl:inline">{tab.label}</span>
               <span className="xl:hidden">{tab.shortLabel}</span>
             </button>

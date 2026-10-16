@@ -212,6 +212,14 @@ class SearchIndex:
         if mode:
             searchable_parts.append(str(mode))
 
+        # User annotations: notes and tags such as "hand morph" or "keep".
+        annotation = meta.get("annotation")
+        if isinstance(annotation, dict):
+            self._append_searchable(searchable_parts, annotation.get("note"))
+            self._append_searchable(searchable_parts, annotation.get("tags"))
+            if annotation.get("note") or annotation.get("tags"):
+                searchable_parts.append("annotated")
+
         # Tokenize all parts and add to inverted index
         full_text = " ".join(searchable_parts)
         return set(self._tokenize(full_text))

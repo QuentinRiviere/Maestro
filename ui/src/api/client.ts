@@ -52,6 +52,8 @@ export interface ApiOutput {
   type: 'video' | 'image' | 'audio'
   mode: string | null
   favorite?: boolean
+  /** True when the output's sidecar carries a user note or tags. */
+  annotated?: boolean
   size: number
   created_at: number
   /** True once the authoritative .meta.json sidecar has been published. */
@@ -758,6 +760,25 @@ export async function toggleFavorite(name: string, workspace?: string): Promise<
   const res = await fetch(`${BASE}/api/v1/favorites/${encodeURIComponent(name)}${workspaceQuery(workspace)}`, { method: 'POST' })
   if (!res.ok) throw new Error('Failed to toggle favorite')
   return res.json()
+}
+
+// --- Annotations ---
+
+export async function saveOutputAnnotation(
+  name: string,
+  annotation: { note: string; tags: string[] },
+  workspace?: string,
+): Promise<import('../types').OutputAnnotation | null> {
+  const res = await fetch(`${BASE}/api/v1/outputs/${encodeURIComponent(name)}/annotation${workspaceQuery(workspace)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(annotation),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Could not save the annotation' }))
+    throw new Error(err.detail || 'Could not save the annotation')
+  }
+  return (await res.json()).annotation ?? null
 }
 
 // --- Outputs ---

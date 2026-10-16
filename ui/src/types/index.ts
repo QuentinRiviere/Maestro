@@ -588,6 +588,8 @@ export interface OutputFile {
    *  the parent `mode`, since e.g. outpaint endpoints write mode='video'. */
   edit_sub_mode?: EditSubMode | null
   favorite: boolean
+  /** True when the output carries a user note or tags. */
+  annotated?: boolean
   size: number
   created_at: number
   /** True once the final output sidecar exists (rather than embedded temp metadata only). */
@@ -829,7 +831,7 @@ export interface EditorExportCapabilities {
   recommended: EditorExportSettings['encoder']
 }
 
-export type MediaFilter = 'all' | 'images' | 'videos' | 'audio' | 'avatars' | 'multiclip' | 'favorites'
+export type MediaFilter = 'all' | 'images' | 'videos' | 'audio' | 'avatars' | 'multiclip' | 'favorites' | 'annotated'
 export type AspectRatio = 'auto' | '21:9' | '16:9' | '9:16' | '1:1' | '4:3' | '3:4'
 export type ResolutionPreset = 'auto' | '480p' | '540p' | '720p' | '768p' | '1080p' | '2k'
 export type ScailResolutionProfile = '480p' | '512p' | '704p'
@@ -1221,9 +1223,19 @@ export interface OutputProcessingInfo {
   options?: Record<string, unknown>
 }
 
+/** A user's note and tags on a generated output (stored in its sidecar). */
+export interface OutputAnnotation {
+  note: string
+  tags: string[]
+  /** Unix seconds. */
+  updated_at?: number
+}
+
 export interface OutputMetadata {
   /** Model, runtime, LoRAs, acceleration, GPU and render time of this output. */
   provenance?: GenerationProvenance | null
+  /** The user's note and tags on this output. */
+  annotation?: OutputAnnotation | null
   model_details?: {
     architecture?: string
     sample_rate?: number

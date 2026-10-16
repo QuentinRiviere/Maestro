@@ -16,6 +16,10 @@ MEDIA_EXTENSIONS = VIDEO_EXTENSIONS | AUDIO_EXTENSIONS | {".png", ".jpg", ".jpeg
 _SEED_GROUP = re.compile(r"^\d{4}-\d{2}-\d{2}-\d{2}h\d{2}m\d{2}s_(seed\d+_.+)\.(mp4|webm|mkv)$", re.I)
 
 
+def _annotated(annotation):
+    return isinstance(annotation, dict) and bool(annotation.get("note") or annotation.get("tags"))
+
+
 class GalleryLibrary:
     def __init__(self):
         self._lock = threading.RLock()
@@ -58,6 +62,7 @@ class GalleryLibrary:
             "multi_clip_info": mci,
             "metadata_ready": stamp is not None,
             "metadata_updated_at": stamp[0] / 1e9 if stamp else None,
+            "annotated": _annotated(meta.get("annotation")),
             "tokens": SearchIndex.searchable_tokens(os.path.basename(path), meta),
         }
         self._cache[path] = (stamp, compact)
@@ -71,7 +76,7 @@ class GalleryLibrary:
         front and deletes between requests cannot skip older matches. A scope
         digest prevents accidental reuse after switching filters or folders.
         """
-        if media_filter not in {"all", "images", "videos", "audio", "avatars", "favorites", "multiclip"}:
+        if media_filter not in {"all", "images", "videos", "audio", "avatars", "favorites", "multiclip", "annotated"}:
             raise ValueError("Invalid media filter")
         favorites_only = favorites_only or media_filter == "favorites"
         multiclip_only = multiclip_only or media_filter == "multiclip"
@@ -130,7 +135,7 @@ class GalleryLibrary:
                         if highest >= total - 1 or int(mci.get("index", 0)) < highest:
                             continue
                     kind = "video" if ext in VIDEO_EXTENSIONS else "audio" if ext in AUDIO_EXTENSIONS else "image"
-                    item = {key: meta[key] for key in ("mode", "edit_sub_mode", "metadata_ready", "metadata_updated_at")}
+                    item = {key: meta[key] for key in ("mode", "edit_sub_mode", "metadata_ready", "metadata_updated_at", "annotated")}
                     item.update(name=name, workspace=workspace, path=path,
                                 id=f"{workspace}/{name}", type=kind, size=stat.st_size,
                                 created_at=stat.st_mtime, favorite=name in favs,
@@ -155,6 +160,8 @@ class GalleryLibrary:
                     if media_filter in ("images", "videos", "audio") and item["type"] != {"images": "image", "videos": "video", "audio": "audio"}[media_filter]:
                         continue
                     if media_filter == "avatars" and not (item["edit_sub_mode"] or item["mode"] == "avatar"):
+                        continue
+                    if media_filter == "annotated" and not item["annotated"]:
                         continue
                     if search.strip() and not (query_tokens and query_tokens <= tokens) and search.casefold() not in item["name"].casefold():
                         continue

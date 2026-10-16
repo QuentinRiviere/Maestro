@@ -18,6 +18,7 @@ import { useVideoPosterSize } from '../../lib/useVideoPosterSize'
 import { getMediaTimestamp } from '../../lib/mediaTimestamp'
 import { MediaMetadataDetails } from './MediaMetadataDetails'
 import { ProvenanceChip, ProvenanceDetails } from '../ProvenanceChip'
+import { AnnotationEditor, AnnotationSummary } from '../AnnotationEditor'
 import { hasProvenance } from '../../lib/provenance'
 
 interface Props {
@@ -895,6 +896,7 @@ export function MediaFeedItem({ file, index, isActive, onActivate, onPlaybackSta
             </div>
           )}
           <ProvenanceChip provenance={meta?.provenance} className="mt-1" />
+          <AnnotationSummary annotation={meta?.annotation} className="mt-1" />
         </div>
 
         {browsingAllFolders && file.workspace && (
@@ -1181,6 +1183,16 @@ export function MediaFeedItem({ file, index, isActive, onActivate, onPlaybackSta
           onClick={event => event.stopPropagation()}
         >
           <MediaMetadataDetails file={file} metadata={meta} />
+          {!browsingUploads && (
+            <AnnotationEditor
+              name={file.name}
+              workspace={file.workspace}
+              annotation={meta?.annotation}
+              onSaved={annotation => setMeta(previous => (
+                previous ? { ...previous, annotation } : { source: 'sidecar', params: null, annotation }
+              ))}
+            />
+          )}
           {hasProvenance(meta?.provenance) && (
             <div className="mb-3">
               <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-text-muted">Generated with</div>

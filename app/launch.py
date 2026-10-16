@@ -31153,6 +31153,33 @@ def get_output_metadata(name: str, workspace: str = ""):
     return _with_file_details({"source": "none", "params": None})
 
 
+@api.put("/api/v1/outputs/{name}/annotation")
+def set_output_annotation(name: str, body: dict, workspace: str = ""):
+    """Set an output's note and tags (empty note and no tags clears them).
+
+    Body: { note?: str, tags?: list[str] }. Stored under ``annotation`` in the
+    output's ``.meta.json`` and indexed by the gallery search.
+    """
+    from services import output_annotations
+    out_dir = _gallery_directory(workspace, writable=True)
+    filepath = _safe_join(out_dir, name)
+    if filepath is None or not os.path.isfile(filepath) or name.endswith(".meta.json"):
+        raise HTTPException(status_code=404, detail="Output file not found")
+    meta_path = os.path.splitext(filepath)[0] + ".meta.json"
+    try:
+        record = output_annotations.write(meta_path, body)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not save the annotation: {exc}") from exc
+    try:
+        from services.search_index import get_search_index
+        get_search_index().invalidate()
+    except Exception:
+        pass
+    return {"name": name, "annotation": record}
+
+
 @api.post("/api/v1/outputs/rejoin")
 def rejoin_clips(body: dict):
     """Re-concatenate clips from a multi-clip group.

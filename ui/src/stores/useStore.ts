@@ -5,7 +5,7 @@ import type { SavedOmniCharacter, TtsVoice } from '../types'
 import { applyTtsVoices, ttsAudioModeForCount, ttsCharacterEnhancePrompt, ttsSpeakingVoiceCount, ttsVoiceLimit, ttsVoicePaths } from '../lib/ttsVoices'
 import { vigglePreparationKey, viggleTimeline } from '../lib/viggle'
 import { DEFAULT_AVATAR_SPEAKER_LOCATIONS, isLongCatAvatarModel, isMultiSpeakerAvatarModel, parseAvatarSpeakerRegions } from '../lib/avatarWorkflow'
-import type { GenerateParams, OutputFile, MediaFilter, AspectRatio, ResolutionPreset, ScailResolutionProfile, GenerationJob, ModelFamily, ModelDef, GenerationMode, StudioVideoWorkflow, StudioVideoCreateRoute, StudioVideoEffectiveCreateRoute, StudioImageWorkflow, ModelOptions, SystemConfig, SettingsTab, OutputMetadata, MultiClip, ServicesConfig, LlmStatus, LlmModelOption, AudioAnalysisResult, PlannedClip, ClipPlan, DirectorClipImage, DirectorImageGenProgress, SpeakerMapping, DirectorSkill, DirectorShotImageGuidance, DirectorBibleSelection, ShortFilmCharacter, ShortFilmPath, ViralPlatform, ViralStyle, CivitAIModel, CivitAIDownload, PipelineListItem, PipelineClipState, PipelineRepairState, SavedPipelineState, DirectorQueueState, SystemDetectResponse, SystemStats, RecastCharacterMapping, RepaintRegionMapping, H3WindowPlan, MiniMaxH3Reference, AppMode } from '../types'
+import type { GenerateParams, OutputFile, MediaFilter, AspectRatio, ResolutionPreset, ScailResolutionProfile, GenerationJob, ModelFamily, ModelDef, GenerationMode, StudioVideoWorkflow, StudioVideoCreateRoute, StudioVideoEffectiveCreateRoute, StudioImageWorkflow, ModelOptions, SystemConfig, SettingsTab, OutputMetadata, OutputAnnotation, MultiClip, ServicesConfig, LlmStatus, LlmModelOption, AudioAnalysisResult, PlannedClip, ClipPlan, DirectorClipImage, DirectorImageGenProgress, SpeakerMapping, DirectorSkill, DirectorShotImageGuidance, DirectorBibleSelection, ShortFilmCharacter, ShortFilmPath, ViralPlatform, ViralStyle, CivitAIModel, CivitAIDownload, PipelineListItem, PipelineClipState, PipelineRepairState, SavedPipelineState, DirectorQueueState, SystemDetectResponse, SystemStats, RecastCharacterMapping, RepaintRegionMapping, H3WindowPlan, MiniMaxH3Reference, AppMode } from '../types'
 import * as api from '../api/client'
 import { mergeRunPages } from '../lib/directorRunList'
 import type { DirectorView } from '../lib/directorRoute'
@@ -2083,6 +2083,8 @@ interface AppState {
   loadMoreOutputs: () => Promise<void>
   refreshOutputs: () => Promise<void>
   toggleFavorite: (name: string, workspace?: string) => Promise<void>
+  /** Save an output's note and tags; returns the stored annotation (null once cleared). */
+  saveOutputAnnotation: (name: string, annotation: { note: string; tags: string[] }, workspace?: string) => Promise<OutputAnnotation | null>
 
   // Output metadata (lazy-loaded for selected output)
   selectedOutputMeta: OutputMetadata | null
@@ -2889,6 +2891,8 @@ function computeFilteredOutputs(outputs: OutputFile[], mediaFilter: MediaFilter)
     _foCachedResult = outputs
   } else if (mediaFilter === 'favorites') {
     _foCachedResult = outputs.filter(o => o.favorite)
+  } else if (mediaFilter === 'annotated') {
+    _foCachedResult = outputs.filter(o => o.annotated)
   } else {
     _foCachedResult = outputs
   }
@@ -12200,6 +12204,16 @@ export const useStore = create<AppState>((set, get) => ({
     } catch (e) {
       console.error('Failed to toggle favorite:', e)
     }
+  },
+
+  saveOutputAnnotation: async (name, annotation, workspace) => {
+    const origin = workspace || get().activeWorkspace
+    const stored = await api.saveOutputAnnotation(name, annotation, origin)
+    set(s => ({
+      outputs: s.outputs.map(o => o.name === name && (o.workspace || s.activeWorkspace) === origin
+        ? { ...o, annotated: !!stored } : o),
+    }))
+    return stored
   },
 
   // Output metadata
