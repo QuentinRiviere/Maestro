@@ -1,0 +1,22 @@
+# dstack SSH fleet for an NVIDIA DGX Spark used as Maestro's remote worker.
+# See docs/Remote-worker-DGX-Spark.md.
+#
+#   dstack apply -f docs/examples/spark-fleet.dstack.yml
+#   dstack fleet          # expect: spark  0  GB10:1  $0  idle
+#
+# Maestro never applies or changes this fleet: set `fleet: spark` and
+# `manage_fleet: false` in its remote worker settings.
+type: fleet
+name: spark
+
+ssh_config:
+  # A user with passwordless sudo on the Spark (dstack installs its shim and
+  # runs containers through Docker as root).
+  user: maestro
+  # Private key on the machine that runs `dstack apply`; the CLI sends it to
+  # the dstack server, which opens the SSH connections to the Spark.
+  identity_file: ~/.ssh/id_ed25519
+  hosts:
+    # Hostname or IP the dstack server can reach over SSH (LAN, or a
+    # Tailscale name such as spark-e3a4.tailnet.ts.net).
+    - spark-e3a4.local
