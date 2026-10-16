@@ -1,15 +1,18 @@
 name: Remote worker image
 
 # Builds the dependency image used by the remote GPU worker
-# (docker/remote-worker/Dockerfile) and its CPU variant for the R2 cache warmer
-# (docker/cache-warmer/Dockerfile, tag `cpu`), and pushes both to GHCR. Code is
-# cloned at pod boot, so this only needs to run when the dependency set changes.
+# (docker/remote-worker/Dockerfile), its CPU variant for the R2 cache warmer
+# (docker/cache-warmer/Dockerfile, tag `cpu`) and its NVIDIA DGX Spark variant
+# (docker/remote-worker-spark/Dockerfile, linux/arm64, tag `spark`), and pushes
+# them to GHCR. Code is cloned at pod boot, so this only needs to run when the
+# dependency set changes.
 on:
   push:
     branches: [main, feat/comfy-inference-backend]
     paths:
       - app/requirements.txt
       - docker/remote-worker/**
+      - docker/remote-worker-spark/**
       - docker/cache-warmer/**
       - docker/controller/controller_requirements.py
       - .github/workflows/remote-worker-image.yml
@@ -107,3 +110,51 @@ jobs:
             ${{ steps.meta.outputs.image }}:cpu-${{ steps.meta.outputs.deps }}
           cache-from: type=registry,ref=${{ steps.meta.outputs.image }}:buildcache-cpu
           cache-to: type=registry,ref=${{ steps.meta.outputs.image }}:buildcache-cpu,mode=max,ignore-error=true
+
+  spark:
+    # NVIDIA DGX Spark worker (GB10, linux/arm64, sm_121), run on a dstack SSH
+    # fleet; see docs/Remote-worker-DGX-Spark.md. Same package, `spark` tag.
+    # Built natively on GitHub's hosted arm64 runner (free for public
+    # repositories): under QEMU on an amd64 runner, compiling SageAttention
+    # and decord would take several hours instead of ~30-45 minutes.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free runner disk space
+        # CUDA 13 + torch + Maestro's dependencies exceed the default free space.
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          df -h /
+
+      - name: Compute tags
+        id: meta
+        run: |
+          owner="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          deps="$(sha256sum app/requirements.txt docker/remote-worker-spark/Dockerfile | sha256sum | cut -c1-12)"
+          echo "image=ghcr.io/${owner}/maestro-worker" >> "$GITHUB_OUTPUT"
+          echo "deps=${deps}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/remote-worker-spark/Dockerfile
+          platforms: linux/arm64
+          # zstd layers unpack several times faster than gzip on the host.
+          outputs: type=image,push=true,compression=zstd,compression-level=3,force-compression=true,oci-mediatypes=true
+          tags: |
+            ${{ steps.meta.outputs.image }}:spark
+            ${{ steps.meta.outputs.image }}:spark-deps-${{ steps.meta.outputs.deps }}
+          # mode=max keeps the SageAttention and decord builder stages.
+          cache-from: type=registry,ref=${{ steps.meta.outputs.image }}:buildcache-spark
+          cache-to: type=registry,ref=${{ steps.meta.outputs.image }}:buildcache-spark,mode=max,ignore-error=true
