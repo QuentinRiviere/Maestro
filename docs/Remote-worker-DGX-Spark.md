@@ -125,7 +125,7 @@ arm64 because the requirements carry `platform_machine` markers.
 | Package | Spark (linux/arm64) |
 |---|---|
 | torch / torchvision / torchaudio | 2.10.0 / 0.25.0 / 2.10.0 from `cu130`. The aarch64 wheel ships sm_120 SASS + PTX, which run on sm_121 |
-| torchcodec 0.10.0 | from the PyTorch `cu130` index (PyPI has no aarch64 wheel) |
+| torchcodec 0.10.0 | from the PyTorch `cu130` index (PyPI has no aarch64 wheel), plus `nvidia-npp` 13.0 which that CUDA build links |
 | SageAttention 2.2 | compiled for 12.0 with CUDA 13.0. v2.2.0 has no 12.1 target, and sm_120 cubins load on sm_121. Enabled through `MAESTRO_SAGE2_EXTRA_ARCHS=12.0,12.1` and gated by a kernel probe at startup |
 | FlashAttention 2 | **not installed**: no aarch64 wheel for torch 2.10. Maestro drops `flash` and the models that use it fall back to SDPA |
 | onnxruntime-gpu | **onnxruntime (CPU) 1.22.1**: no cp310 aarch64 GPU wheel. rembg, DWPose and the face detectors run on the Grace CPU |
