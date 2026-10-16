@@ -333,6 +333,29 @@ class ForwarderHandBackTests(unittest.TestCase):
                              resolve_lora=lambda m, n: None, update=lambda **u: self.updates.append(u),
                              is_cancelled=cancelled)
 
+    def test_a_download_lost_by_a_worker_restart_is_started_again(self):
+        worker = HandBackWorker(["ok"])
+        statuses = iter([{}, {"ltx2": {"status": "downloading"}}, {}, {"ltx2": {"status": "completed"}}])
+        starts = []
+        get_json, post_json = worker.get_json, worker.post_json
+
+        def lossy_get_json(path, **kwargs):
+            if path == "api/v1/models/downloads/status":
+                return {"downloads": next(statuses)}
+            return get_json(path, **kwargs)
+
+        def counting_post_json(path, body=None, **kwargs):
+            if path.endswith("/download"):
+                starts.append(path)
+                return {"status": "downloading", "download_key": "ltx2"}
+            return post_json(path, body, **kwargs)
+
+        worker.get_json, worker.post_json = lossy_get_json, counting_post_json
+        result = self._run(worker)
+        self.assertEqual(result.output_files, ["out.mp4"])
+        # First start, then once more after the worker forgot it.
+        self.assertEqual(starts, ["api/v1/models/ltx2/download"] * 2)
+
     def test_handed_back_and_paused_jobs_are_resubmitted_not_failed(self):
         worker = HandBackWorker(["paused", "handed_back", "ok"])
         result = self._run(worker)

@@ -379,6 +379,14 @@ class RemoteJobForwarder:
             state = entry.get("status")
             if state == "completed":
                 return
+            if not entry:
+                # The worker no longer knows the download (its process
+                # restarted): start it again. The worker registers a download
+                # before answering and ignores a second start while one runs.
+                client.post_json(
+                    f"api/v1/models/{quote(model_type, safe='')}/download",
+                    {"precision_overrides": overrides} if overrides else None,
+                )
             if state in ("failed", "cancelled"):
                 raise RemoteJobError(f"Remote worker could not fetch {model_type}: {entry.get('error') or state}")
             phase = {
