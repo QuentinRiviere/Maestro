@@ -309,6 +309,25 @@ def try_requeue(job: MutableMapping[str, Any], **updates: Any) -> bool:
         return True
 
 
+def try_hand_back(job: MutableMapping[str, Any], **updates: Any) -> bool:
+    """Cancel a job that has not started yet, marked ``handed_back``.
+
+    A remote worker gives unstarted jobs back to its controller this way,
+    which submits them again later. A job that already moved to running
+    (or ended) is left alone.
+    """
+    if "status" in updates:
+        raise ValueError("status must be changed through a lifecycle transition")
+    with _lifecycle_lock:
+        if is_cancel_requested(job) or job.get("status") != "queued":
+            return False
+        job.update(updates)
+        job["handed_back"] = True
+        job["cancel_requested"] = True
+        job["status"] = "cancelled"
+        return True
+
+
 def update_job(job: MutableMapping[str, Any], **updates: Any) -> bool:
     """Update a live job without replacing a terminal/cancelled message."""
     if "status" in updates:

@@ -374,6 +374,16 @@ api.add_middleware(
     allow_headers=["*"],
 )
 
+# A worker reachable without the dstack proxy (a static worker on a LAN or
+# tailnet) sets MAESTRO_WORKER_TOKEN: every request then needs it as a
+# bearer token, except /healthz and /readyz. Unset, nothing changes.
+from services.remote_worker.worker_auth import BearerTokenMiddleware, worker_token_from_env  # noqa: E402
+
+_worker_api_token = worker_token_from_env()
+if _worker_api_token:
+    api.add_middleware(BearerTokenMiddleware, token=_worker_api_token)
+    print("[Maestro] MAESTRO_WORKER_TOKEN is set: requests need the bearer token")
+
 # --- Generation job tracking ---
 from services.job_lifecycle import (
     GENERATED_MEDIA_EXTENSIONS,
@@ -7921,28 +7931,36 @@ def system_release_model():
     if not _gen_lock.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="A generation is in progress — stop it or wait for it to finish first.")
     try:
-        released = []
-        if getattr(wgp, "wan_model", None) is not None or getattr(wgp, "offloadobj", None) is not None:
-            print("[ReleaseModel] Unloading generation model (user request)")
-            wgp.release_model()
-            released.append("generation model")
-        from services.generation_memory import release_auxiliary_models
-        released.extend(release_auxiliary_models())
-        try:
-            from services import llm_service
-            if llm_service.is_loaded():
-                print("[ReleaseModel] Unloading LLM (user request)")
-                llm_service.unload_model()
-                released.append("LLM")
-        except Exception as e:
-            print(f"[ReleaseModel] LLM unload skipped: {e}")
-        import gc
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        return {"released": released}
+        return {"released": _release_resident_models()}
     finally:
         _gen_lock.release()
+
+
+def _release_resident_models() -> list[str]:
+    """Unload the generation model, post-processors and the prompt LLM; free CUDA memory.
+
+    The caller holds ``_gen_lock``.
+    """
+    released = []
+    if getattr(wgp, "wan_model", None) is not None or getattr(wgp, "offloadobj", None) is not None:
+        print("[ReleaseModel] Unloading generation model")
+        wgp.release_model()
+        released.append("generation model")
+    from services.generation_memory import release_auxiliary_models
+    released.extend(release_auxiliary_models())
+    try:
+        from services import llm_service
+        if llm_service.is_loaded():
+            print("[ReleaseModel] Unloading LLM")
+            llm_service.unload_model()
+            released.append("LLM")
+    except Exception as e:
+        print(f"[ReleaseModel] LLM unload skipped: {e}")
+    import gc
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    return released
 
 
 # ============================================================================
@@ -26961,7 +26979,8 @@ def _publish_remote_provenance(job: dict, result, *, out_dir: str, total_seconds
 
 # ── Worker-only routes (process started with --worker) ─────────────────────
 # Raw file transfer and verbatim job submission for a controlling Maestro.
-# The dstack service proxy authenticates every request before it gets here.
+# The dstack service proxy authenticates every request before it gets here;
+# a static worker requires MAESTRO_WORKER_TOKEN instead (worker_auth.py).
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -26969,6 +26988,70 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 def _require_worker_process() -> None:
     if not _is_remote_worker_process:
         raise HTTPException(status_code=404, detail="Not a remote worker")
+
+
+def _worker_loaded_models() -> list[str]:
+    loaded = []
+    if getattr(wgp, "wan_model", None) is not None:
+        loaded.append(str(getattr(wgp, "transformer_type", None) or "generation model"))
+    from services import llm_service
+    if llm_service.is_loaded() and getattr(llm_service, "_provider", None) not in getattr(llm_service, "API_PROVIDERS", ()):
+        loaded.append("prompt LLM")
+    return loaded
+
+
+def _worker_memory() -> dict:
+    stats = {}
+    if torch.cuda.is_available():
+        free, total = torch.cuda.mem_get_info()
+        stats.update(
+            gpu_free_gb=round(free / 1e9, 2),
+            gpu_total_gb=round(total / 1e9, 2),
+            torch_allocated_gb=round(torch.cuda.memory_allocated() / 1e9, 2),
+            torch_reserved_gb=round(torch.cuda.memory_reserved() / 1e9, 2),
+        )
+    try:
+        import psutil
+        stats["ram_available_gb"] = round(psutil.virtual_memory().available / 1e9, 2)
+    except Exception:
+        pass
+    return stats
+
+
+def _env_seconds(name: str) -> float:
+    try:
+        return max(0.0, float(os.environ.get(name) or 0))
+    except ValueError:
+        print(f"[Worker] Ignoring {name}={os.environ.get(name)!r}: not a number of seconds")
+        return 0.0
+
+
+from services.remote_worker.worker_control import (  # noqa: E402
+    IDLE_UNLOAD_ENV as _WORKER_IDLE_UNLOAD_ENV,
+    PAUSED_ENV as _WORKER_PAUSED_ENV,
+    WorkerControl,
+    create_router as _create_worker_control_router,
+)
+
+# Pause / hand back / unload, for a worker that lends its GPU to other
+# services (llama-swap on a DGX Spark). Jobs reach the GPU through its gate;
+# its routes (/healthz, /readyz, /api/v1/worker/...) are in worker_control.py.
+_worker_control = WorkerControl(
+    _gen_lock,
+    jobs=lambda: [job for job in list(_jobs.values()) if job.get("worker_job")],
+    release_models=_release_resident_models,
+    loaded_models=_worker_loaded_models,
+    memory=_worker_memory,
+    idle_unload_seconds=_env_seconds(_WORKER_IDLE_UNLOAD_ENV),
+    start_paused=_is_remote_worker_process
+    and (os.environ.get(_WORKER_PAUSED_ENV) or "").strip().lower() in {"1", "true", "yes", "on"},
+)
+if _is_remote_worker_process:
+    _worker_control.start_idle_watch()
+
+
+api.include_router(_create_worker_control_router(
+    _worker_control, enabled=lambda: _is_remote_worker_process))
 
 
 def _worker_file_target(kind: str, name: str, sha256: str, model_type: str) -> str:
@@ -27069,6 +27152,9 @@ async def worker_submit_job(request: Request):
     requested_preview = body.get("preview_mode")
     if not params.get("sfx_mode") and wgp.get_model_def(params.get("model_type")) is None:
         raise HTTPException(status_code=400, detail=f"Unknown model: {params.get('model_type')}")
+    if _worker_control.paused:
+        # 423: the controller keeps the job queued and submits it once resumed.
+        raise HTTPException(status_code=423, detail="Worker paused")
     job_id = uuid.uuid4().hex[:8]
     out_dir = wgp.server_config.get("save_path") or wgp.save_path
     _jobs[job_id] = {
@@ -27086,6 +27172,7 @@ async def worker_submit_job(request: Request):
         "error": None,
         "workspace": None,
         "out_dir": out_dir,
+        "worker_job": True,
     }
     if requested_preview is not None:
         # The controller's Generation Preview preference, not this worker's.
@@ -27193,6 +27280,7 @@ def _run_generation(job_id: str, *, finalize: bool = True, _slot_owned: bool = F
     cloud_lane = _uses_cloud_lane(job)
     lock = (_cloud_gen_lock if cloud_lane
             else _remote_gen_slots if _uses_remote_lane(job)
+            else _worker_control.gate if _is_remote_worker_process
             else _gen_lock)
     with ExitStack() as media_resources, (nullcontext(True) if _slot_owned else generation_slot(lock, job)) as acquired:
         if not acquired:
