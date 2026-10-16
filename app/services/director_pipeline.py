@@ -1598,6 +1598,11 @@ def _save_pipeline_state_locked(pid: str) -> bool:
                 if i < len(p.get("_clip_unrefined_images") or []) else None
             ) or None,
             "keyframe_filenames": (p.get("_clip_keyframes", []) or [])[i] if i < len(p.get("_clip_keyframes", [])) else [],
+            # Candidates, ranking, chosen draft and final (director_storyboard_drafts; None when off).
+            "storyboard_drafts": (
+                (p.get("_clip_storyboard_drafts") or [])[i]
+                if i < len(p.get("_clip_storyboard_drafts") or []) else None
+            ),
             # The shot's blockout guide images and camera (director_blockout_guide; None when off).
             "blockout_guide": (
                 (p.get("_clip_blockout_guides") or [])[i]
@@ -2506,6 +2511,11 @@ def _delete_pipeline_locked(out_dir: str, pid: str) -> dict:
                 names.add(clip["start_image_filename"])
             if clip.get("start_image_unrefined_filename"):
                 names.add(clip["start_image_unrefined_filename"])
+            drafts = clip.get("storyboard_drafts") if isinstance(clip.get("storyboard_drafts"), dict) else {}
+            for name in [*(c.get("file") for c in drafts.get("candidates") or [] if isinstance(c, dict)),
+                         drafts.get("upscaled"), drafts.get("final")]:
+                if name and os.path.basename(str(name)) == name:
+                    names.add(name)
             for kf in clip.get("keyframe_filenames") or []:
                 if kf:
                     names.add(kf)
@@ -6848,6 +6858,7 @@ def _resume_pipeline_reserved(pid: str, out_dir: str) -> tuple[bool, str]:
     planned_clips = [c.get("planned_clip") for c in saved_clips]
     clip_images = [c.get("start_image_filename") for c in saved_clips]
     clip_unrefined_images = [c.get("start_image_unrefined_filename") or "" for c in saved_clips]
+    clip_storyboard_drafts = [c.get("storyboard_drafts") for c in saved_clips]
     clip_keyframes = [c.get("keyframe_filenames", []) or [] for c in saved_clips]
 
     workspace = data.get("workspace") if data.get("workspace") not in ("default", None) else None
@@ -6863,6 +6874,7 @@ def _resume_pipeline_reserved(pid: str, out_dir: str) -> tuple[bool, str]:
         "_planned_clips": planned_clips,
         "clip_images": clip_images,
         "_clip_unrefined_images": clip_unrefined_images,
+        "_clip_storyboard_drafts": clip_storyboard_drafts,
         "_clip_keyframes": clip_keyframes,
         "_clip_video_files": [
             # A provisional clip was never confirmed by its batch.
@@ -7418,10 +7430,21 @@ def _run_pipeline(pid: str, resume: bool = False):
         # Judge the fresh shot images before paying for any video render:
         # failures are regenerated, what stays bad is flagged for review.
         storyboard_flags = []
-        if requires_shot_images and not _prepared_imgs_ok and not _resume_imgs_ok:
+        from services.director import storyboard_drafts
+        draft_mode = storyboard_drafts.draft_settings(
+            params, (params.get("image_params") or {}).get("resolution", "1280x720")).enabled
+        if requires_shot_images and not _prepared_imgs_ok and not _resume_imgs_ok and not draft_mode:
             from services.director import storyboard_judge
             judged = storyboard_judge.run_stage(pid, params, clip_plans, clip_images, pipeline_out_dir)
             storyboard_flags = (judged or {}).get("flagged") or []
+            if _pipelines[pid]["status"] == "cancelled":
+                return
+        # Storyboard drafts: the judge ranked every shot's candidates while
+        # they rendered; the chosen drafts get their full-resolution final.
+        if draft_mode and requires_shot_images and not _prepared_imgs_ok:
+            _run_draft_finals(pid, params, clip_plans, clip_images,
+                              out_dir=pipeline_out_dir, workspace=pipeline_workspace)
+            storyboard_flags = (_pipelines[pid].get("storyboard_judge") or {}).get("flagged") or []
             if _pipelines[pid]["status"] == "cancelled":
                 return
 
@@ -9634,6 +9657,9 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
         layout_ref: str = "",
         canvas: bool = True,
         control_guide: str = "",
+        seed: int = -1,
+        job_resolution: str = "",
+        cost_stage: str = "image",
     ) -> str:
         """Generate a single image using source_ref + optional extra refs.
 
@@ -9644,6 +9670,9 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
         ``control_guide`` is the shot's blockout guide, sent as the raw
         control image (only when director_blockout_guide is on and the
         model takes one; the prompt already names it reference 1).
+        ``seed``, ``job_resolution`` and ``cost_stage`` serve the storyboard
+        drafts (see storyboard_drafts): a seed per candidate, the draft
+        resolution and the ``image_draft`` cost stage.
         """
         nonlocal image_count
         _pre_strip = prompt
@@ -9674,8 +9703,8 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
             "num_inference_steps": steps,
             "guidance_scale": guidance,
             "video_prompt_type": director_shot_prompt_type(image_model, all_refs, canvas),
-            "resolution": resolution,
-            "seed": -1,
+            "resolution": job_resolution or resolution,
+            "seed": seed,
             "settings_version": 2.52,
             "generation_mode": "image",
             "repeat_generation": 1,
@@ -9685,7 +9714,7 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
             "loras_multipliers": image_loras.get("loras_multipliers", ""),
             **director_image_job_fields(image_params),
             "_director_pipeline_id": pid,
-            "_director_cost_stage": "image",
+            "_director_cost_stage": cost_stage,
         }
         if spatial_upsampling:
             gen_params["spatial_upsampling"] = spatial_upsampling
@@ -9810,6 +9839,80 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
     blockout_control = blockout_mode != "off" and blockout_guide.control_supported(image_model)
     blockout_records: list[Optional[dict]] = list(_pipelines.get(pid, {}).get("_clip_blockout_guides") or [])
 
+    # Draft best-of-N storyboard (director_storyboard_drafts, off by default):
+    # N candidates per shot at the draft resolution, ranked by the storyboard
+    # judge; the final pass (_run_draft_finals) re-renders the chosen one.
+    from services.director import storyboard_drafts
+
+    drafts = storyboard_drafts.draft_settings(params, resolution)
+    draft_records: list[Optional[dict]] = [None] * len(clip_plans)
+    draft_started = time.time()
+    draft_judge: dict = {}
+    if drafts.enabled:
+        from services.director import storyboard_judge
+
+        draft_judge = storyboard_judge.stage_config(params)
+        print(f"[Pipeline {pid}] Storyboard drafts: {drafts.count} candidate(s) per shot at {drafts.resolution}, "
+              f"up to {drafts.rounds} round(s), "
+              + ("ranked by the storyboard judge" if draft_judge.get("vision")
+                 else "no judge (no fal key or judge off): candidate 1 kept"))
+
+    def _publish_drafts(status: str = "running") -> None:
+        _publish_draft_report(pid, out_dir, draft_records, status=status, model=draft_judge.get("model"),
+                              started_at=draft_started)
+
+    def _draft_start_image(index: int, plan: dict, shot_prompt: str, render_start: Callable[..., str]) -> str:
+        """Shot ``index``'s chosen draft (see storyboard_drafts.select_draft)."""
+        from services.director import cost_ledger, storyboard_judge
+
+        judge_shot = storyboard_judge.shots_from_plans([plan], [], out_dir, params)[0]
+        group = str(plan.get("_director_continuity_group") or "")
+        others: list[tuple[int, str]] = []
+        # A shot copying an earlier shot of its scene is a duplicate (see storyboard_judge.duplicate_of).
+        if group and not storyboard_judge._establishing(judge_shot) and storyboard_judge._checks_duplicates(
+                {**judge_shot, "path": "draft"}):
+            others = [(j, os.path.join(out_dir, clip_images[j])) for j in range(index)
+                      if clip_images[j] and str(clip_plans[j].get("_director_continuity_group") or "") == group
+                      and os.path.isfile(os.path.join(out_dir, clip_images[j]))]
+
+        def render(text: str, seed: int) -> str:
+            return render_start(text, seed=seed, job_resolution=drafts.resolution,
+                                cost_stage=storyboard_drafts.DRAFT_STAGE)
+
+        rank = None
+        if draft_judge.get("vision"):
+            def rank(paths: list[str]) -> dict:
+                try:
+                    ranking = storyboard_judge.rank_candidates(judge_shot, paths, fal_key=draft_judge["fal_key"],
+                                                               model=draft_judge["model"])
+                except Exception as error:
+                    cost_ledger.record(pid, "cloud", stage=storyboard_judge.STAGE, provider="fal",
+                                       model=draft_judge["model"], shot=index,
+                                       usd=getattr(error, "cost_usd", None))
+                    raise
+                cost_ledger.record(pid, "cloud", stage=storyboard_judge.STAGE, provider="fal",
+                                   model=draft_judge["model"], shot=index, usd=ranking.get("cost_usd"))
+                return ranking
+
+        def progress(message: str) -> None:
+            _update_pipeline(pid, progress={"current": index, "total": len(clip_plans), "message": message,
+                                            "step": 0, "total_steps": 0})
+
+        record = storyboard_drafts.select_draft(
+            shot_label=f"shot {index + 1}/{len(clip_plans)}", base_prompt=shot_prompt, settings=drafts,
+            render=render, out_dir=out_dir, rank=rank, others=others, on_progress=progress,
+            is_cancelled=lambda: _pipelines[pid]["status"] == "cancelled",
+            fatal=(_GenerationTimeoutError,), log=lambda message: print(f"[Pipeline {pid}] {message}"),
+        )
+        draft_records[index] = record
+        _publish_drafts()
+        chosen = record.get("chosen") or {}
+        print(f"[Pipeline {pid}] Storyboard drafts: shot {index + 1} keeps round {chosen.get('round')} "
+              f"candidate {chosen.get('candidate')} ({record.get('verdict')}): {chosen.get('file')}")
+        if not chosen.get("file"):
+            raise RuntimeError("no storyboard draft rendered")
+        return chosen["file"]
+
     for i, plan in enumerate(clip_plans):
         if _pipelines[pid]["status"] == "cancelled":
             return clip_images, clip_keyframes
@@ -9869,10 +9972,15 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
                 # Dual reference: previous scene output as primary + original reference for character identity
                 # _gen_image puts source_ref first, then extra_refs (which includes character/location refs).
                 # We temporarily prepend the original ref to extra_refs so the model sees both.
-                saved_extras = extra_refs[:]
-                extra_refs.insert(0, ref_image_path)
-                start_img = _gen_image(prompt, source_ref, include_extra_refs=True, layout_ref=layout_ref)
-                extra_refs[:] = saved_extras  # restore
+                def render_start(text: str, _source=source_ref, _layout=layout_ref, **job) -> str:
+                    saved_extras = extra_refs[:]
+                    extra_refs.insert(0, ref_image_path)
+                    try:
+                        return _gen_image(text, _source, include_extra_refs=True, layout_ref=_layout, **job)
+                    finally:
+                        extra_refs[:] = saved_extras  # restore
+
+                shot_prompt = prompt
             else:
                 request = director_shot_image_request(
                     image_model, shot_plan, prompt,
@@ -9894,10 +10002,15 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
                              else " (set described in text, master not sent)"))
                 shot_prompt = blockout_guide.guide_prompt(request["prompt"], blockout_record,
                                                           control=bool(guide_path))
-                start_img = _gen_image(shot_prompt, request["source"],
-                                       supplemental_refs=request["supplemental"],
-                                       layout_ref=layout_ref, canvas=request["canvas"],
-                                       control_guide=guide_path)
+
+                def render_start(text: str, _request=request, _layout=layout_ref, _guide=guide_path, **job) -> str:
+                    return _gen_image(text, _request["source"], supplemental_refs=_request["supplemental"],
+                                      layout_ref=_layout, canvas=_request["canvas"], control_guide=_guide, **job)
+
+            if drafts.enabled:
+                start_img = _draft_start_image(i, plan, shot_prompt, render_start)
+            else:
+                start_img = render_start(shot_prompt)
             clip_images.append(start_img)
             if group and start_img and group not in scene_masters:
                 scene_masters[group] = os.path.join(out_dir, start_img)
@@ -9961,6 +10074,8 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
                 _update_pipeline(pid, _clip_keyframes=copy.deepcopy(clip_keyframes))
                 _save_pipeline_state(pid)
 
+    if drafts.enabled:
+        _publish_drafts("drafted")
     _update_pipeline(pid, progress={
         "current": total_images,
         "total": total_images,
@@ -9969,6 +10084,152 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
     })
 
     return clip_images, clip_keyframes
+
+
+def _publish_draft_report(pid: str, out_dir: str, records: list, *, status: str, model: Optional[str] = None,
+                          started_at: Optional[float] = None) -> None:
+    """Publish the storyboard drafts as the pipeline's storyboard report and save it beside the project."""
+    from services.director import storyboard_drafts, storyboard_judge
+
+    previous = _pipelines.get(pid, {}).get("storyboard_judge") or {}
+    report = storyboard_drafts.build_report(records, model=model or previous.get("model"), status=status,
+                                            started_at=started_at or previous.get("started_at"))
+    if status == "completed":
+        report["finished_at"] = time.time()
+    _update_pipeline(pid, _clip_storyboard_drafts=copy.deepcopy(list(records)),
+                     storyboard_judge=json.loads(json.dumps(report, default=str)))
+    storyboard_judge.save_report(out_dir, pid, report)
+
+
+def _run_draft_finals(pid: str, params: dict, clip_plans: list[dict], clip_images: list[str],
+                      out_dir: str, workspace: Optional[str] = None) -> None:
+    """Re-render each shot's chosen storyboard draft at the run resolution (see storyboard_drafts).
+
+    Updates ``clip_images`` in place. A shot whose final pass fails keeps its
+    draft; a shot whose image is no longer its chosen draft (a rerun) or that
+    already has a final is skipped, so a resumed run picks up where it stopped.
+    """
+    from services.director import image_refine, storyboard_drafts
+
+    resolution = (params.get("image_params") or {}).get("resolution", "1280x720")
+    drafts = storyboard_drafts.draft_settings(params, resolution)
+    records = list(_pipelines.get(pid, {}).get("_clip_storyboard_drafts") or [])
+    records.extend([None] * (len(clip_images) - len(records)))
+    pending = [i for i, record in enumerate(records)
+               if record and not record.get("final") and i < len(clip_images)
+               and clip_images[i] and clip_images[i] == storyboard_drafts.chosen_file(record)]
+    if not drafts.enabled or not pending:
+        return
+    size = storyboard_drafts.parse_resolution(resolution) or (1280, 720)
+    refine = image_refine.refine_settings(params)
+    identity_refs_for = _refine_identity_refs(params, clip_plans, out_dir)
+    print(f"[Pipeline {pid}] Storyboard drafts: final pass of {len(pending)} shot(s) at {size[0]}x{size[1]}, "
+          f"{refine.model}, strength {drafts.final_strength:g}")
+
+    def submit(job: dict) -> list:
+        return _submit_and_wait(job, timeout_s=900, workspace=workspace, out_dir=out_dir)
+
+    for done, index in enumerate(pending):
+        if _pipelines.get(pid, {}).get("status") == "cancelled":
+            break
+        _update_pipeline(pid, progress={"current": done, "total": len(pending), "step": 0, "total_steps": 0,
+                                        "message": f"Storyboard drafts: final pass, shot {index + 1} "
+                                                   f"({done + 1}/{len(pending)})"})
+        try:
+            final = storyboard_drafts.run_final(
+                pid=pid, index=index, record=records[index], out_dir=out_dir,
+                image_prompt=str((clip_plans[index] or {}).get("image_prompt") or ""),
+                identity_refs=identity_refs_for(index), settings=drafts, refine_settings=refine,
+                size=size, submit=submit,
+            )
+        except _GenerationTimeoutError:
+            raise
+        except Exception as error:
+            if _pipelines.get(pid, {}).get("status") == "cancelled":
+                break
+            records[index]["final_error"] = str(error)[:300]
+            print(f"[Pipeline {pid}] WARNING: shot {index + 1} storyboard final pass failed, "
+                  f"keeping the draft: {error}")
+            continue
+        print(f"[Pipeline {pid}] Shot {index + 1}: storyboard final {records[index]['final_from']} -> {final}")
+        clip_images[index] = final
+        _update_pipeline(pid, clip_images=list(clip_images))
+        _publish_draft_report(pid, out_dir, records, status="running")
+        _save_pipeline_state(pid)
+    _publish_draft_report(pid, out_dir, records, status="completed")
+    _save_pipeline_state(pid)
+
+
+@_exclusive_pipeline_operation
+def select_storyboard_draft(out_dir: str, pid: str, clip_index: int, candidate_file: str) -> dict:
+    return _select_storyboard_draft_impl(out_dir, pid, clip_index, candidate_file)
+
+
+def _select_storyboard_draft_impl(out_dir: str, pid: str, clip_index: int, candidate_file: str) -> dict:
+    """Make one of a shot's storyboard draft candidates its chosen draft and re-run its final pass.
+
+    The human override of the judge's pick: ``candidate_file`` must be one of
+    the shot's recorded candidates. Returns {filename, clip_index, chosen}.
+    """
+    from services.director import image_refine, storyboard_drafts, storyboard_judge
+
+    state = load_pipeline_state(out_dir, pid)
+    if not state:
+        raise ValueError(f"Pipeline {pid} not found")
+    clips = state.get("clips", [])
+    if clip_index < 0 or clip_index >= len(clips):
+        raise ValueError(f"Clip index {clip_index} out of range (0-{len(clips)-1})")
+    record = copy.deepcopy(clips[clip_index].get("storyboard_drafts") or {})
+    candidate = next((c for c in record.get("candidates") or []
+                      if c.get("file") and c.get("file") == os.path.basename(str(candidate_file or ""))), None)
+    if candidate is None:
+        raise ValueError(f"{candidate_file!r} is not a storyboard draft candidate of clip {clip_index}")
+    pipeline_file = _find_pipeline_file(out_dir, pid)
+    clip_out_dir = os.path.dirname(pipeline_file) if pipeline_file else out_dir
+    if not os.path.isfile(os.path.join(clip_out_dir, candidate["file"])):
+        raise ValueError(f"Storyboard draft {candidate['file']} is missing on disk")
+
+    snapshot = state.get("_params_snapshot") or {}
+    image_params = state.get("image_params") or snapshot.get("image_params") or {}
+    resolution = image_params.get("resolution", "1280x720")
+    params = {**snapshot, "character_ref_paths": state.get("character_ref_paths")
+              or snapshot.get("character_ref_paths") or []}
+    drafts = storyboard_drafts.draft_settings(params, resolution)
+    if not drafts.enabled:
+        drafts = storyboard_drafts.DraftSettings(count=2, resolution=drafts.resolution,
+                                                 final_strength=drafts.final_strength)
+    record["chosen"] = {"round": candidate.get("round"), "candidate": candidate.get("candidate"),
+                        "file": candidate["file"], "override": True}
+    record.update(verdict=candidate.get("verdict") or "unranked", issues=list(candidate.get("issues") or []),
+                  final="")
+    record.pop("final_error", None)
+    size = storyboard_drafts.parse_resolution(resolution) or (1280, 720)
+
+    def submit(job: dict) -> list:
+        return _submit_and_wait({**job, "_director_detached_operation": True}, timeout_s=900, out_dir=clip_out_dir)
+
+    final = storyboard_drafts.run_final(
+        pid=pid, index=clip_index, record=record, out_dir=clip_out_dir,
+        image_prompt=str(clips[clip_index].get("image_prompt") or ""),
+        identity_refs=_refine_identity_refs(params, clips, clip_out_dir)(clip_index),
+        settings=drafts, refine_settings=image_refine.refine_settings(params), size=size, submit=submit,
+    )
+
+    def _update(s):
+        clip = s["clips"][clip_index]
+        clip["start_image_filename"] = final
+        clip["storyboard_drafts"] = record
+        # The new final has not been through the texture refine.
+        clip.pop("start_image_unrefined_filename", None)
+        clip["video_stale"] = bool(clip.get("video_filename"))
+    _update_saved_pipeline(out_dir, pid, _update)
+
+    report = storyboard_judge.load_report(clip_out_dir, pid)
+    if report and report.get("mode") == "drafts" and clip_index < len(report.get("shots") or []):
+        report["shots"][clip_index] = storyboard_drafts.report_entry(clip_index, record)
+        report["flagged"] = [shot["index"] for shot in report["shots"] if shot.get("verdict") == "flagged"]
+        storyboard_judge.save_report(clip_out_dir, pid, report)
+    return {"filename": final, "clip_index": clip_index, "chosen": record["chosen"]}
 
 
 def _refine_identity_refs(params: dict, clip_plans: list[dict], out_dir: str) -> Callable[[int], list[str]]:

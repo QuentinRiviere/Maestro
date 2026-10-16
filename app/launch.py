@@ -11689,6 +11689,41 @@ async def rerun_pipeline_clip_image(pid: str, clip_index: int, request: Request)
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@api.post("/api/v1/director/pipelines/{pid}/clips/{clip_index}/select-draft")
+async def select_pipeline_clip_draft(pid: str, clip_index: int, request: Request):
+    """Override the storyboard judge's draft for a clip and re-run its final pass.
+
+    Body: {"file": "<candidate filename>"}, one of the clip's
+    ``storyboard_drafts.candidates`` (director_storyboard_drafts runs only).
+    """
+    _init_pipeline()
+    from services.director_pipeline import (
+        GenerationCancelledError,
+        PipelineBusyError,
+        select_storyboard_draft,
+    )
+    body = await request.json()
+    base = wgp.server_config.get("save_path", "outputs")
+    try:
+        # The final pass is an image job: keep it off the event loop (see rerun-image).
+        return await asyncio.to_thread(
+            select_storyboard_draft, base, pid, clip_index, str(body.get("file") or ""),
+        )
+    except PipelineBusyError as e:
+        return JSONResponse({"error": str(e)}, status_code=409)
+    except GenerationCancelledError as e:
+        return JSONResponse({
+            "error": str(e),
+            "cancelled": True,
+            "output_files": list(e.output_files),
+        }, status_code=409)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except Exception as e:
+        traceback.print_exc()
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @api.post("/api/v1/director/pipelines/{pid}/clips/{clip_index}/rerun-video")
 async def rerun_pipeline_clip_video(pid: str, clip_index: int, request: Request):
     """Re-generate the video for a specific clip in a saved pipeline."""

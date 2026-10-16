@@ -65,6 +65,28 @@ Return ONLY a JSON object, no prose, no markdown:
  "fix_hint": "one imperative sentence to append to the image prompt so the next render fixes the issues, or empty"}"""
 
 
+RANK_PROMPT = """You pick the best of several candidate storyboard frames for ONE shot of an AI video pipeline
+BEFORE it is animated: the chosen frame is re-rendered at full resolution and becomes the first frame of an
+expensive video render. You receive the candidates (each shown as a short still video, videos 1 to N, in the
+order listed), optionally the character sheets of the cast expected in the shot (the following videos), and the
+shot plan. All candidates share the same prompt and references; they differ only by their random seed.
+Check every candidate:
+- framing: the shot size and angle match the plan (an extreme wide shot is not a close-up, an insert of an
+  object is not a group shot, an over-the-shoulder shot shows the foreground person only as a cropped,
+  out-of-focus shoulder and back of the head);
+- people: every expected person is present, recognisable from their sheet when one is given, and the number of
+  people matches the plan (no missing, extra or duplicated person: a person drawn twice fails);
+- set: the location matches the plan;
+- integrity: no collage, split screen, reference sheet or text overlay, no broken anatomy.
+Stylisation that matches the rest of the plan is correct; minor differences (pose details, props in the
+background, colour nuances) pass. Pick as best the candidate that passes and reads the plan most clearly; when
+none passes, the one closest to passing.
+Return ONLY a JSON object, no prose, no markdown, candidates numbered from 1:
+{"best": 1, "verdicts": [{"index": 1, "verdict": "pass"|"flagged", "issues": ["short description", ...]}, ...],
+ "fix_hint": "one imperative sentence to append to the image prompt so the next renders fix the issues of the
+ best candidate, or empty"}"""
+
+
 class StoryboardJudgeError(RuntimeError):
     pass
 
@@ -243,6 +265,55 @@ def parse_check(text: str) -> dict:
     return {"pass": verdict, "issues": issues, "fix_hint": str(raw.get("fix_hint") or "").strip()[:400]}
 
 
+def parse_rank(text: str, count: int) -> dict:
+    """{best, verdicts, fix_hint} of a ranking of ``count`` candidates (numbered from 1).
+
+    Every candidate gets a verdict ("flagged" when the model skipped it); a
+    verdict for a number out of range is dropped. A ``best`` out of range or
+    missing falls back to the first passing candidate, else candidate 1, and
+    the result says so (``best_fallback``). No JSON at all raises JudgeError.
+    """
+    match = re.search(r"\{.*\}", text or "", re.S)
+    if not match:
+        raise JudgeError("The storyboard judge returned no ranking JSON")
+    try:
+        raw = json.loads(match.group(0))
+    except ValueError as error:
+        raise JudgeError(f"The storyboard judge returned invalid ranking JSON: {error}") from error
+    if not isinstance(raw, dict):
+        raise JudgeError("The storyboard judge returned no ranking object")
+
+    def number(value: Any) -> int | None:
+        try:
+            value = int(str(value).strip())
+        except (TypeError, ValueError):
+            return None
+        return value if 1 <= value <= count else None
+
+    verdicts: dict[int, dict] = {}
+    for item in raw.get("verdicts") or []:
+        if not isinstance(item, dict):
+            continue
+        index = number(item.get("index"))
+        if index is None or index in verdicts:
+            continue
+        verdict = item.get("verdict", item.get("pass"))
+        if isinstance(verdict, bool):
+            passed = verdict
+        else:
+            passed = str(verdict or "").strip().lower() in ("pass", "passed", "true", "yes")
+        issues = [str(issue).strip()[:240] for issue in item.get("issues") or [] if str(issue).strip()][:6]
+        verdicts[index] = {"index": index, "verdict": "pass" if passed else "flagged", "issues": issues}
+    ordered = [verdicts.get(index) or {"index": index, "verdict": "flagged", "issues": ["not ranked by the judge"]}
+               for index in range(1, count + 1)]
+    best = number(raw.get("best"))
+    fallback = best is None
+    if fallback:
+        best = next((v["index"] for v in ordered if v["verdict"] == "pass"), 1)
+    return {"best": best, "verdicts": ordered, "fix_hint": str(raw.get("fix_hint") or "").strip()[:400],
+            "best_fallback": fallback}
+
+
 def shot_plan_text(shot: Mapping[str, Any]) -> str:
     plan = {key: shot.get(key) for key in ("framing", "scene_type", "location", "environment", "subjects",
                                            "opening_blocking", "image_prompt")}
@@ -285,6 +356,51 @@ def check_shot(shot: Mapping[str, Any], *, fal_key: str, model: str = DEFAULT_MO
         if owns_http:
             http.close()
 
+
+def rank_candidates(shot: Mapping[str, Any], paths: Sequence[str], *, fal_key: str, model: str = DEFAULT_MODEL,
+                    ask: Callable[..., tuple[str, float | None]] = _ask, http: Any = None) -> dict:
+    """One vision call ranking a shot's candidate images: {best, verdicts, fix_hint, cost_usd}.
+
+    The candidates are videos 1 to N, the shot's character sheets follow, as
+    in ``check_shot``; one retry on bad JSON.
+    """
+    import httpx
+
+    sheets = [s for s in shot.get("cast_sheets") or [] if s.get("path") and os.path.isfile(s["path"])]
+    count = len(paths)
+    prompt = "Candidates: " + ", ".join(f"video {n + 1} = candidate {n + 1}" for n in range(count)) + ".\n"
+    if sheets:
+        prompt += "Character sheets: " + ", ".join(
+            f"video {count + n + 1} = {sheet.get('name') or 'cast member'}" for n, sheet in enumerate(sheets)) + ".\n"
+    prompt += "Shot plan:\n" + shot_plan_text(shot)
+    owns_http = http is None
+    http = http or httpx.Client(timeout=120)
+    cost = 0.0
+    try:
+        with tempfile.TemporaryDirectory(prefix="director-storyboard-rank-") as tmp:
+            urls = [data_uri(still_as_video(path, os.path.join(tmp, f"candidate_{n}.mp4")))
+                    for n, path in enumerate(paths)]
+            for n, sheet in enumerate(sheets):
+                urls.append(data_uri(still_as_video(sheet["path"], os.path.join(tmp, f"sheet_{n}.mp4"))))
+            last_error: Exception | None = None
+            for _ in range(2):
+                text, call_cost = ask(http, fal_key, model, RANK_PROMPT, prompt, urls, time.sleep,
+                                      max_tokens=4000, timeout=180)
+                cost += float(call_cost or 0)
+                try:
+                    ranking = parse_rank(text, count)
+                except JudgeError as error:
+                    last_error = error
+                    continue
+                ranking["cost_usd"] = round(cost, 5)
+                return ranking
+            error = last_error or JudgeError("The storyboard judge returned no ranking")
+            # The calls were paid for even without a ranking.
+            error.cost_usd = round(cost, 5)  # type: ignore[attr-defined]
+            raise error
+    finally:
+        if owns_http:
+            http.close()
 
 # ── The stage ─────────────────────────────────────────────────────────
 
@@ -441,6 +557,15 @@ def shots_from_plans(clip_plans: Sequence[Mapping[str, Any]], clip_images: Seque
     return shots
 
 
+def stage_config(params: Mapping[str, Any] | None) -> dict:
+    """``settings`` of the running server: its services flags and its fal key."""
+    from services import cloud_image
+    from services import director_pipeline as pipeline
+
+    server_config = getattr(pipeline._wgp, "server_config", None) if pipeline._wgp else None
+    services = (server_config.get("services", {}) if isinstance(server_config, dict) else {}) or {}
+    return settings(services, params, cloud_image.provider_api_key("fal", services))
+
 def run_stage(pid: str, params: dict, clip_plans: list[dict], clip_images: list[str], out_dir: str) -> dict | None:
     """Pipeline hook between shot images and video: judge, regenerate, flag.
 
@@ -448,13 +573,11 @@ def run_stage(pid: str, params: dict, clip_plans: list[dict], clip_images: list[
     report as the pipeline's ``storyboard_judge`` field and saves it beside
     the project. Never raises: a judge failure must not fail the render.
     """
-    from services import cloud_image
     from services.director import cost_ledger
     from services import director_pipeline as pipeline
 
     try:
-        services = (pipeline._wgp.server_config.get("services", {}) if pipeline._wgp else {}) or {}
-        config = settings(services, params, cloud_image.provider_api_key("fal", services))
+        config = stage_config(params)
         if not config["enabled"]:
             return None
         shots = shots_from_plans(clip_plans, clip_images, out_dir, params)
