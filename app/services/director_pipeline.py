@@ -10301,10 +10301,16 @@ def _run_image_refine(pid: str, params: dict, clip_plans: list[dict], clip_image
 
     Updates ``clip_images`` in place. A shot whose refine fails keeps its image.
     """
-    from services.director import image_refine
+    from services.director import image_refine, storyboard_drafts
 
     settings = image_refine.refine_settings(params)
     if not settings.enabled or not clip_images:
+        return
+    if storyboard_drafts.draft_settings(params, params.get("resolution")).enabled:
+        # The drafts' final pass is this same masked re-render at the run
+        # resolution: a second one doubles the base-model work for nothing.
+        print(f"[Pipeline {pid}] Texture refine skipped: the storyboard drafts' final pass already refined "
+              "each start image")
         return
     unrefined = list(_pipelines.get(pid, {}).get("_clip_unrefined_images") or [])
     print(f"[Pipeline {pid}] Texture refine: {settings.model}, strength {settings.strength:g}, "
