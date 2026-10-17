@@ -349,6 +349,26 @@ class ImageRefProfileTests(unittest.TestCase):
         self.assertIn("Setting: a dim school hallway.", prompt)
         self.assertNotIn("surfaces and light", prompt)
 
+    def test_a_close_up_opens_with_its_face_framing(self):
+        plan = {"_director_camera_framing": "close-up", "_director_environment": "a dim school hallway",
+                "_director_subjects_on_screen": [{"speaker_name": "Cha Hae-won", "visual_description": "x"}]}
+        refs, prompt = pipeline.scene_shot_refs("qwen_image_21_7B_turbo_8step", plan, "her face",
+                                                master="m.jpg", identity=["girl.jpg"])
+        self.assertEqual(refs, ["girl.jpg"])
+        self.assertIn("Tight close-up on Cha Hae-won: the face fills the frame", prompt)
+        self.assertTrue(prompt.endswith("The camera setup of this shot is: her face"))
+        plan["_director_camera_framing"] = "medium close-up"
+        plan["_director_subjects_on_screen"].append({"speaker_name": "Song Jin-woo"})
+        self.assertIn("Medium close-up on the subject: head and shoulders", pipeline.close_up_lead(plan))
+
+    def test_inserts_ots_and_wider_shots_get_no_close_up_lead(self):
+        self.assertEqual(pipeline.close_up_lead({"_director_camera_framing": "medium two-shot"}), "")
+        self.assertEqual(pipeline.close_up_lead({"_director_camera_framing": "close-up insert on the hands",
+                                                 "_director_scene_type": "insert"}), "")
+        ots = {"_director_camera_framing": "over-the-shoulder close-up over Jin-woo's shoulder",
+               "_director_subjects_on_screen": [{"speaker_name": "Jin-woo"}, {"speaker_name": "Hae-won"}]}
+        self.assertEqual(pipeline.close_up_lead(ots), "")
+
     def test_an_insert_gets_no_reference_and_opens_with_its_framing(self):
         plan = {"_director_camera_framing": "tight insert on the hands and the mug", "_director_scene_type": "insert",
                 "_director_location": "Café Haru"}

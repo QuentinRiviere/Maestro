@@ -5840,6 +5840,33 @@ INSERT_LEAD = ("Extreme close-up insert, macro framing, the camera angled down a
                "no chin, no head, no shoulders and no torso anywhere, not even cropped at the frame edge. ")
 
 
+# Lead of a close-up on a face: the framing first, as for inserts (judges
+# flagged "a medium shot, not a tight close-up" six times on one run: the long
+# SUBJECT text with its two people pulls the camera back).
+CLOSE_UP_LEAD = ("Tight close-up on {who}: the face fills the frame from the hairline to the chin, the shoulders "
+                 "cropped by the bottom edge, the background a soft blur with no second person in it. ")
+MEDIUM_CLOSE_UP_LEAD = ("Medium close-up on {who}: head and shoulders fill the frame, the face large and sharp, nothing "
+                        "below the chest in the image, the background a soft blur. ")
+
+
+def close_up_lead(plan: dict) -> str:
+    """The framing lead of a close-up on one person ("" for other shots).
+
+    Only a shot whose framing says "close-up" and that is neither an insert
+    nor over a shoulder (those have their own leads); the person is the one
+    subject on screen, or "the subject" when the plan lists several.
+    """
+    framing = str(plan.get("_director_camera_framing") or "").strip().lower()
+    if "close" not in framing or director_is_insert(plan) or director_ots_foreground(plan):
+        return ""
+    subjects = [s for s in plan.get("_director_subjects_on_screen") or [] if isinstance(s, dict)]
+    names = [str(s.get("speaker_name") or s.get("name") or "").strip() for s in subjects]
+    names = [n for n in names if n]
+    who = names[0] if len(names) == 1 else "the subject"
+    template = MEDIUM_CLOSE_UP_LEAD if "medium" in framing else CLOSE_UP_LEAD
+    return template.format(who=who)
+
+
 def shot_is_tight(plan: dict) -> bool:
     """A close-up or an insert: the frame shows a face or an object, hardly any set."""
     from services.director.blocking_map import normalize_framing
@@ -5913,7 +5940,7 @@ def scene_shot_refs(image_model: str, plan: dict, prompt: str, *, master: str, i
     if reverse == "text":
         lead += REVERSE_NOTE.format(view=f"the view of {_ref_name(image_model, len(refs))}" if keep_master
                                     else "the scene's main view")
-    return refs, f"{lead}The camera setup of this shot is: {prompt}"
+    return refs, f"{lead}{close_up_lead(plan)}The camera setup of this shot is: {prompt}"
 
 
 def director_shot_prompt_type(image_model: str, refs: list[str], canvas: bool = True) -> str:
@@ -6398,7 +6425,9 @@ def director_ots_prompt(plan: dict, prompt: str, cast: Optional[dict]) -> str:
     line = (f"{name} appears only once in this shot, as that blurred foreground shape: a dark, out-of-focus "
             f"shoulder and the back of the head at the {side} edge of the frame, recognisable only by "
             f"{known_by}; {name}'s face is never shown and {name} is not drawn again anywhere else in the "
-            "frame, neither seated nor facing the camera.")
+            "frame, neither seated nor facing the camera. Shallow depth of field: only the person facing the "
+            "camera is sharp; that foreground shoulder is a featureless dark blur with no fabric texture, no "
+            "stitching and no hair detail.")
     if line in prompt:
         return prompt
     return f"{prompt.rstrip()} {line}"
