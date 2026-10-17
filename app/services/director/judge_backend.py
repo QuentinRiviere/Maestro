@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import base64
 import io
+import json
 import os
 import re
 import subprocess
@@ -53,6 +54,11 @@ ENV = {
 IMAGE_LONG_SIDE = 768
 VIDEO_FRAMES = 8
 MAX_VIDEO_FRAMES = 12
+# A frame-based judge hears nothing: without this it reported "audio is
+# completely missing" as a critical defect on every clip (run 3087cc42).
+SILENT_FRAMES_NOTE = ("These videos are given to you as silent stills: you cannot hear their audio, dialogue, "
+                      "music or sound. Do not judge or mention sound at all, never report audio or dialogue as "
+                      "missing, and leave any audio field null.")
 JPEG_QUALITY = 85
 TEMPERATURE = 0.2
 VIDEO_SUFFIXES = (".mp4", ".mov", ".webm", ".mkv", ".m4v")
@@ -241,9 +247,93 @@ def build_messages(system: str, prompt: str, media: Sequence[str], tmp: str, htt
         else:
             parts.append({"type": "text", "text": f"Image {number}:"})
             parts.append({"type": "image_url", "image_url": {"url": image_data_uri(path)}})
+    if notes:
+        notes.append(SILENT_FRAMES_NOTE)
     text = prompt if not notes else prompt + "\n" + "\n".join(notes)
     return [{"role": "system", "content": system},
             {"role": "user", "content": [{"type": "text", "text": text}] + parts}]
+
+
+_TRAILING_COMMA_RE = re.compile(r",\s*([}\]])")
+
+
+def _json_depth_scan(text: str) -> tuple[list[str], list[tuple[int, int]], int]:
+    """Open closers, (index, depth) of every comma outside strings, and the index of the root's end (-1 if open)."""
+    stack: list[str] = []
+    commas: list[tuple[int, int]] = []
+    in_string = escaped = False
+    for index, char in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char in "{[":
+            stack.append("}" if char == "{" else "]")
+        elif char in "}]":
+            if not stack or stack[-1] != char:
+                raise ValueError(f"mismatched bracket at {index}")
+            stack.pop()
+            if not stack:
+                return stack, commas, index
+        elif char == ",":
+            commas.append((index, len(stack)))
+    return stack, commas, -1
+
+
+def _close_open_json(text: str) -> str:
+    """``text`` cut back to its last complete element, with its open brackets closed.
+
+    The cut is at the last comma outside the innermost unfinished container,
+    so a half-written element goes with its comma instead of surviving as
+    an object missing half its fields.
+    """
+    stack, commas, end = _json_depth_scan(text)
+    if end >= 0:
+        return text[:end + 1]
+    depth = len(stack)
+    cuts = [index for index, comma_depth in commas if comma_depth < depth] or [index for index, _ in commas]
+    if not cuts:
+        return text
+    cut = text[:cuts[-1]]
+    stack, _, _ = _json_depth_scan(cut)
+    return cut + "".join(reversed(stack))
+
+
+def load_json_object(text: str, who: str = "The judge") -> dict:
+    """The first JSON object in ``text``, repaired when a local model cut or dirtied it.
+
+    Tried in order: a plain decode from the first brace (ignores any text
+    after the object), the same without trailing commas, then the object
+    cut back to its last complete element with its brackets closed (an
+    answer stopped by the token limit). Raises JudgeError otherwise.
+    """
+    start = (text or "").find("{")
+    if start < 0:
+        raise JudgeError(f"{who} returned no JSON")
+    body = text[start:]
+    decoder = json.JSONDecoder()
+    candidates = [body, _TRAILING_COMMA_RE.sub(r"\1", body)]
+    error: Exception | None = None
+    try:
+        candidates.append(_TRAILING_COMMA_RE.sub(r"\1", _close_open_json(candidates[1])))
+    except ValueError as failure:  # a closer that matches no opener: not a cut answer, junk
+        error = failure
+    for candidate in candidates:
+        try:
+            value, _ = decoder.raw_decode(candidate)
+        except ValueError as failure:
+            error = failure
+            continue
+        if isinstance(value, dict):
+            return value
+        error = ValueError("the JSON is not an object")
+    raise JudgeError(f"{who} returned invalid JSON: {error}") from error
 
 
 def _content_text(body: Mapping[str, Any]) -> str:

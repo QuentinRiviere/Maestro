@@ -235,13 +235,9 @@ def _clamp_score(value: Any) -> int | None:
 
 def parse_verdict(text: str, duration: float | None) -> dict:
     """Extract and normalise the judge's JSON; raise JudgeError when unusable."""
-    match = re.search(r"\{.*\}", text or "", re.S)
-    if not match:
-        raise JudgeError("The judge returned no JSON")
-    try:
-        raw = json.loads(match.group(0))
-    except ValueError as error:
-        raise JudgeError(f"The judge returned invalid JSON: {error}") from error
+    from .judge_backend import load_json_object  # judge_backend imports this module
+
+    raw = load_json_object(text, "The judge")
     score = _clamp_score(raw.get("score"))
     if score is None:
         raise JudgeError("The judge returned no overall score")
@@ -375,10 +371,9 @@ def judge_shot(
 
 
 def _parse_choice(text: str) -> tuple[str, float, str]:
-    match = re.search(r"\{.*\}", text or "", re.S)
-    if not match:
-        raise JudgeError("The comparison returned no JSON")
-    raw = json.loads(match.group(0))
+    from .judge_backend import load_json_object  # judge_backend imports this module
+
+    raw = load_json_object(text, "The comparison")
     winner = str(raw.get("winner") or "tie").strip().upper()
     winner = winner if winner in ("A", "B") else "tie"
     try:
@@ -693,13 +688,9 @@ def _text_list(value: Any, limit: int = 8) -> list[str]:
 
 def parse_episode_verdict(text: str, duration: float | None, timeline: list[dict]) -> dict:
     """Extract and normalise the episode judge's JSON; raise JudgeError when unusable."""
-    match = re.search(r"\{.*\}", text or "", re.S)
-    if not match:
-        raise JudgeError("The episode judge returned no JSON")
-    try:
-        raw = json.loads(match.group(0))
-    except ValueError as error:
-        raise JudgeError(f"The episode judge returned invalid JSON: {error}") from error
+    from .judge_backend import load_json_object  # judge_backend imports this module
+
+    raw = load_json_object(text, "The episode judge")
     score = _clamp_score(raw.get("score"))
     if score is None:
         raise JudgeError("The episode judge returned no overall score")

@@ -174,7 +174,8 @@ class AskTests(unittest.TestCase):
         with patch.object(judge_backend, "extract_frames", extract), client(handler) as http:
             self.backend.ask(http, "", "judge", "S", "Video 1 is take A", [video], lambda _: None)
         parts = json.loads(requests[0].content)["messages"][1]["content"]
-        self.assertEqual(parts[0]["text"], "Video 1 is take A\nVideo 1 is shown as 3 frames at t=0.0s, 1.5s, 3.0s.")
+        self.assertEqual(parts[0]["text"], "Video 1 is take A\nVideo 1 is shown as 3 frames at t=0.0s, 1.5s, 3.0s.\n"
+                                           + judge_backend.SILENT_FRAMES_NOTE)
         self.assertEqual(parts[1]["text"], "Video 1, frames in order:")
         self.assertEqual([p["text"] for p in parts[2::2]], ["t=0.0s", "t=1.5s", "t=3.0s"])
         self.assertEqual(sum(1 for p in parts if p["type"] == "image_url"), 3)
@@ -317,3 +318,34 @@ class VideoJudgeBackendTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LoadJsonObjectTests(unittest.TestCase):
+    def test_a_clean_object_with_text_around_it(self):
+        self.assertEqual(judge_backend.load_json_object('Here: {"score": 7, "issues": []} done {"x": 1}'),
+                         {"score": 7, "issues": []})
+
+    def test_trailing_commas_are_dropped(self):
+        self.assertEqual(judge_backend.load_json_object('{"score": 7, "issues": [1, 2,],}'),
+                         {"score": 7, "issues": [1, 2]})
+
+    def test_an_answer_cut_by_the_token_limit_keeps_its_complete_elements(self):
+        text = '{"score": 4, "scores": {"rhythm": 5, "coverage": 7}, "issues": [{"shot": 1, "severity": "major"}, {"shot": 2, "sev'
+        self.assertEqual(judge_backend.load_json_object(text),
+                         {"score": 4, "scores": {"rhythm": 5, "coverage": 7}, "issues": [{"shot": 1, "severity": "major"}]})
+
+    def test_braces_inside_strings_do_not_close_the_object(self):
+        self.assertEqual(judge_backend.load_json_object('{"note": "a } in text", "score": 3}'),
+                         {"note": "a } in text", "score": 3})
+
+    def test_no_json_and_junk_raise(self):
+        with self.assertRaises(video_judge.JudgeError):
+            judge_backend.load_json_object("no braces here", "The episode judge")
+        with self.assertRaises(video_judge.JudgeError):
+            judge_backend.load_json_object("{ this is not json at all", "The episode judge")
+
+    def test_the_episode_parser_survives_a_cut_answer(self):
+        text = '{"score": 4, "verdict": "needs_polish", "scores": {}, "defects": [{"shot": 1, "at_sec": 2, "severity": "major", "description": "x"}, {"shot": 2, "at_s'
+        verdict = video_judge.parse_episode_verdict(text, 20.0, [])
+        self.assertEqual(verdict["score"], 4)
+        self.assertEqual(len(verdict["defects"]), 1)

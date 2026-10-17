@@ -36,7 +36,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Mapping, Sequence
 
 from . import judge_backend
-from .judge_backend import JudgeBackend
+from .judge_backend import JudgeBackend, load_json_object
 from .video_judge import DEFAULT_MODEL, JudgeError
 
 STAGE = "storyboard_judge"
@@ -292,13 +292,7 @@ def data_uri(path: str) -> str:
 
 
 def parse_check(text: str) -> dict:
-    match = re.search(r"\{.*\}", text or "", re.S)
-    if not match:
-        raise JudgeError("The storyboard judge returned no JSON")
-    try:
-        raw = json.loads(match.group(0))
-    except ValueError as error:
-        raise JudgeError(f"The storyboard judge returned invalid JSON: {error}") from error
+    raw = load_json_object(text, "The storyboard judge")
     verdict = raw.get("pass")
     if isinstance(verdict, str):
         verdict = verdict.strip().lower() in ("true", "yes", "pass")
@@ -316,13 +310,7 @@ def parse_rank(text: str, count: int) -> dict:
     missing falls back to the first passing candidate, else candidate 1, and
     the result says so (``best_fallback``). No JSON at all raises JudgeError.
     """
-    match = re.search(r"\{.*\}", text or "", re.S)
-    if not match:
-        raise JudgeError("The storyboard judge returned no ranking JSON")
-    try:
-        raw = json.loads(match.group(0))
-    except ValueError as error:
-        raise JudgeError(f"The storyboard judge returned invalid ranking JSON: {error}") from error
+    raw = load_json_object(text, "The storyboard judge")
     if not isinstance(raw, dict):
         raise JudgeError("The storyboard judge returned no ranking object")
 
