@@ -73,7 +73,8 @@ shot plan. All candidates share the same prompt and references; they differ only
 Check every candidate:
 - framing: the shot size and angle match the plan (an extreme wide shot is not a close-up, an insert of an
   object is not a group shot, an over-the-shoulder shot shows the foreground person only as a cropped,
-  out-of-focus shoulder and back of the head);
+  out-of-focus shoulder and back of the head); an insert of hands or an object that shows any face, head or
+  whole person fails, however good the frame looks;
 - people: every expected person is present, recognisable from their sheet when one is given, and the number of
   people matches the plan (no missing, extra or duplicated person: a person drawn twice fails);
 - set: the location matches the plan;
