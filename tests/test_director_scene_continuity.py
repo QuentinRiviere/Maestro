@@ -114,7 +114,7 @@ class SceneContinuityImageTests(unittest.TestCase):
         plans[2] = {**plans[2], "_director_scene_type": "insert"}
         _, requests = self._run(params, plans[:3], ["shot1.jpg", "shot2.jpg", "shot3.jpg"])
         self.assertNotIn("shot1.jpg", requests[2]["refs"])
-        self.assertIn("hall.jpg", requests[2]["refs"])
+        self.assertEqual(requests[2]["refs"], [])
 
     def test_a_rerun_rebuilds_the_references_of_the_run(self):
         params, plans = self._hallway_scene("qwen_image_edit_2511_20B_fp8_lightning_8step")
@@ -349,6 +349,17 @@ class ImageRefProfileTests(unittest.TestCase):
         self.assertIn("Setting: a dim school hallway.", prompt)
         self.assertNotIn("surfaces and light", prompt)
 
+    def test_an_insert_gets_no_reference_and_opens_with_its_framing(self):
+        plan = {"_director_camera_framing": "tight insert on the hands and the mug", "_director_scene_type": "insert",
+                "_director_location": "Café Haru"}
+        refs, prompt = pipeline.scene_shot_refs("qwen_image_21_7B_turbo_8step", plan, "SHOT: tight insert",
+                                                master="cafe.jpg", identity=["girl.jpg", "boy.jpg"], empty_set=True)
+        self.assertEqual(refs, [])
+        self.assertTrue(prompt.startswith("Extreme close-up insert"))
+        self.assertIn("no face, no head", prompt)
+        self.assertNotIn("Same place and same moment", prompt)
+        self.assertTrue(prompt.endswith("SHOT: tight insert"))
+
     def test_seedream_takes_every_person_then_the_master(self):
         refs, prompt = pipeline.scene_shot_refs("cloud_fal_seedream_4", {"_director_camera_framing": "wide"}, "x",
                                                 master="m.jpg", identity=["girl.jpg", "boy.jpg"], layout=True)
@@ -436,14 +447,15 @@ class StagingTests(unittest.TestCase):
         _, prompt = pipeline.director_shot_layout("p", 0, plan, "Hands hold a tool roll.", "m", "/tmp")
         self.assertIn("Only the hands of Mina", prompt)
 
-    def test_a_shot_without_people_keeps_its_own_place_not_the_episode_anchor(self):
+    def test_a_shot_without_people_gets_no_reference_at_all(self):
         request = pipeline.director_shot_image_request(
             "qwen_image_21_7B_turbo_8step", {"_director_scene_type": "insert"}, "Hands hold a mug.",
             scene_master="/o/cafe_master.png", anchor="/o/studio_first_shot.png",
             scene_location="/o/cafe_empty.png", subject_refs=[])
         refs = [request["source"], *request["supplemental"]]
         self.assertNotIn("/o/studio_first_shot.png", refs)
-        self.assertEqual(refs, ["/o/cafe_empty.png"])
+        self.assertEqual(refs, [""])
+        self.assertTrue(request["prompt"].startswith("Extreme close-up insert"))
 
     def test_people_facing_each_other_get_their_profile_angle(self):
         from services.director.blocking_map import parse_blocking_map, subject_view

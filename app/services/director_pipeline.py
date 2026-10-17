@@ -5833,6 +5833,10 @@ def layout_diagram_fits(image_model: str) -> bool:
 # image as reference 1 would be edited in place and keep its framing whatever
 # the text and the diagram say, so it comes after the people, or not at all.
 SCENE_SHOT_PREFIX = "Same place and same moment of the scene, from a new camera position and framing. "
+# Lead of an insert: the framing first, before the long shot text, so the
+# editor does not draw the people the text names (see ``scene_shot_refs``).
+INSERT_LEAD = ("Extreme close-up insert, macro framing: only hands, objects and the surface they rest on fill the "
+               "frame; no face, no head, no shoulders and no body anywhere in the image. ")
 
 
 def shot_is_tight(plan: dict) -> bool:
@@ -5864,13 +5868,20 @@ def scene_shot_refs(image_model: str, plan: dict, prompt: str, *, master: str, i
 
     ``empty_set``: ``master`` is the place's own image with nobody in it (the
     bible location). It has no people's framing to copy, so every shot keeps
-    it, close-ups and inserts included, and the scene keeps one room and one
-    light from shot to shot.
+    it, close-ups included, and the scene keeps one room and one light from
+    shot to shot. An insert (``director_is_insert``) gets no reference at
+    all and no scene lead: its prompt opens with ``INSERT_LEAD``.
 
     ``reverse``: the camera faces the wall opposite the master's. "view":
     ``master`` is the place seen from that opposite wall; "text": ``master``
     shows the usual side, and the prompt says the camera looks the other way.
     """
+    if director_is_insert(plan):
+        # Hands and objects, seen from close: the editor turns a room image,
+        # even an empty one, back into a two-shot of the room, and the scene
+        # lead ("same place, new camera") reads as "the same people". No
+        # reference, and the framing opens the prompt.
+        return [], f"{INSERT_LEAD}{prompt}"
     budget = director_image_ref_budget(image_model)
     slots = None if budget is None else max(1, budget - (1 if layout else 0))
     people = list(dict.fromkeys(r for r in identity if r and r != master))
