@@ -80,8 +80,11 @@ SCENE_CRAFT = """SCENE CRAFT (this is what separates a real scene from generated
   that move falls inside keep_sec.
 - Hand contact is a short close, not a reach: a hand that takes a wrist, a cup or another hand starts already
   beside it (fingertips a few centimetres away) and closes that gap slowly, then tightens; never a reach across
-  the frame, never two hands crossing (short clips morph the fingers on a long reach). On an insert the camera
-  holds still and nothing else moves.
+  the frame, never two hands crossing (short clips morph the fingers on a long reach). On an insert the contact
+  is already made at the first frame (the hand already rests on the wrist or the cup) and the move is only the
+  fingers tightening or a thumb shifting, the camera still and nothing else moving; the reach itself belongs to
+  a wider shot where the hands are small. In an over-the-shoulder shot no arm crosses the foreground shoulder:
+  a hand that holds the other person stays off-frame and still.
 - Action is performance, second by second: a physical intention, the visible expression change it causes, the
   reaction. No filler motion (aimless walking, hair touching, looking around) to fill time.
 - Filmable action only: an action beat describes what a viewer can see at the shot's framing in a short, low
