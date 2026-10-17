@@ -594,6 +594,12 @@ def _strip_hallucinated_names(
     stoplist_lower = {s.lower() for s in _NAME_HARVEST_STOPLIST}
 
     out_tokens = _PROPER_NOUN_TOKEN_RE.findall(output_text)
+    # A capitalised word the polish only ever writes as a sentence opener
+    # followed by a comma ("Initially, ...", "Afterward, ...") is an adverb,
+    # not a person (seen: both replaced by a woman's descriptor).
+    openers = {m.group(1).lower() for m in re.finditer(r"(?:^|[.!?]\s+)([A-Z][a-z]+),", output_text)}
+    elsewhere = {m.group(1).lower() for m in re.finditer(r"(?<![.!?]\s)(?<!^)\b([A-Z][a-z]+)\b(?!,)", output_text)}
+    openers -= elsewhere
     hallucinated: list[str] = []
     seen: set[str] = set()
     for tok in out_tokens:
@@ -602,6 +608,8 @@ def _strip_hallucinated_names(
             continue
         seen.add(tl)
         if tl in in_input_lower:
+            continue
+        if tl in openers:
             continue
         if tl in known_names_lower:
             continue

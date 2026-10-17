@@ -52,3 +52,16 @@ def test_a_descriptor_word_is_not_a_hallucinated_name():
     )
     assert found == []
     assert text == "A slender young Korean woman with guarded eyes trembles, her pale hands around the mug."
+
+
+def test_a_sentence_opener_is_not_a_hallucinated_name():
+    from app.services.director.prompt_polish import _strip_hallucinated_names
+
+    text, found = _strip_hallucinated_names(
+        "Cha Hae-won nods. He holds her wrist.",
+        "Initially, the woman nods. Afterward, he holds her wrist. Blaine smiles, and the woman looks at Blaine.",
+        {"Cha Hae-won": "the woman"},
+        ["the slender woman"],
+    )
+    assert found == ["Blaine"]
+    assert text.startswith("Initially, the woman nods. Afterward, he holds her wrist.")
