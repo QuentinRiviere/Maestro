@@ -561,6 +561,17 @@ def _director_takes_per_shot() -> int:
     return max(1, min(3, value))
 
 
+def _record_director_insights(pid: str, base: str) -> None:
+    """Fold the run's judge reports into the insights registry; never raises (advisory)."""
+    try:
+        from services.director import insights
+
+        counts = insights.ingest_run(base, pid)
+        print(f"[Director insights] {pid}: {counts['findings']} finding(s) recorded")
+    except Exception as error:  # noqa: BLE001 - the registry must never fail a review
+        print(f"[Director insights] {pid}: not recorded: {error}")
+
+
 def _director_state_dir(pid: str, base: str) -> str | None:
     from services.director_pipeline import _find_pipeline_state_file
 
@@ -697,6 +708,7 @@ def _run_director_review(pid: str, base: str, wait_for_save: bool, takes: int = 
         review["cost_usd"] = round(float(review.get("cost_usd") or 0)
                                    + float(review["episode"].get("cost_usd") or 0), 4)
         save_review(state_dir, pid, review)
+        _record_director_insights(pid, base)
         print(f"[Director review] {pid}: episode {review['episode'].get('status')} "
               f"score={review['episode'].get('score')} cost=${review['episode'].get('cost_usd')}")
         print(f"[Director review] {pid}: {review.get('status')} score={review.get('score')} "
@@ -11533,6 +11545,25 @@ def director_pipeline_review(pid: str, takes: int = 1):
     if not _start_director_review(pid, base, takes=takes):
         raise HTTPException(status_code=409, detail="A review of this project is already running")
     return {"status": "running", "pipeline_id": pid}
+
+
+@api.get("/api/v1/director/insights")
+def director_insights(days: float | None = None, image_model: str | None = None,
+                      video_model: str | None = None, skill: str | None = None):
+    """What the judges keep finding across saved Director runs (see services/director/insights.py)."""
+    from services.director import insights
+
+    base = wgp.server_config.get("save_path", "outputs")
+    return insights.summary(base, days=days, image_model=image_model, video_model=video_model, skill=skill)
+
+
+@api.post("/api/v1/director/insights/backfill")
+def director_insights_backfill():
+    """Ingest every saved Director run of the outputs folder into the insights registry."""
+    from services.director import insights
+
+    base = wgp.server_config.get("save_path", "outputs")
+    return insights.backfill(base)
 
 
 @api.post("/api/v1/director/pipeline/{pid}/continue")

@@ -261,6 +261,34 @@ Then set the provider to the local server, the URL to
 `https://<spark>/v1`, the key to llama-swap's API key and the model to
 `judge`. Any other OpenAI-compatible vision endpoint works the same way.
 
+## Insights registry
+
+Every judge finding of every run lands in one SQLite file,
+`<outputs>/_director_insights.sqlite` (`services/director/insights.py`), so
+recurring defects can be read per scene type and per model. Three tables:
+`runs` (models, skill, bible, draft count, judge models, episode score and
+verdict), `shots` (scene type, framing, movement, duration, storyboard
+verdict, draft candidates/rounds/flagged, clip score) and `findings` (one row
+per storyboard issue, draft candidate issue, clip issue or episode defect,
+with its category, severity, `fixable_by` / `root_cause`, scene type, framing
+and models).
+
+A run is ingested at the end of its storyboard judge stage and again when its
+video review finishes; both are best effort and never fail the run. A run
+without a review is recorded with its storyboard findings only. Ingestion
+replaces the run's rows, so re-running it is safe.
+
+- `GET /api/v1/director/insights?days=&image_model=&video_model=&skill=`:
+  run count, average episode score and trend, findings by (source, category)
+  and by scene type, the 20 most frequent descriptions with their categories
+  and runs, draft stats per scene type (candidates, flagged ratio, rounds) and
+  the models present.
+- `POST /api/v1/director/insights/backfill`: ingest every saved run of the
+  outputs folder (workspaces included); returns the counts.
+- CLI, from `app/`: `python -m services.director.insights backfill <outputs>`
+  and `python -m services.director.insights summary <outputs> [--days N]
+  [--image-model M] [--video-model M] [--skill S]` (JSON on stdout).
+
 ## Recommended next UI pass
 
 These are proposed changes, not yet implemented:

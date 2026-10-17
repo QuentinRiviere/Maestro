@@ -7580,6 +7580,10 @@ def _run_pipeline(pid: str, resume: bool = False):
             storyboard_flags = (_pipelines[pid].get("storyboard_judge") or {}).get("flagged") or []
             if _pipelines[pid]["status"] == "cancelled":
                 return
+        if requires_shot_images and not _prepared_imgs_ok:
+            # The storyboard verdicts go to the insights registry (advisory).
+            _save_pipeline_state(pid)
+            record_insights(pid, _wgp.save_path if _wgp else pipeline_out_dir)
 
         # In non-auto mode, pause for image review
         if (
@@ -10235,6 +10239,17 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
     })
 
     return clip_images, clip_keyframes
+
+
+def record_insights(pid: str, out_dir: str) -> None:
+    """Fold the run's judge reports into the insights registry; never raises (advisory)."""
+    try:
+        from services.director import insights
+
+        counts = insights.ingest_run(out_dir, pid)
+        print(f"[Pipeline {pid}] Insights: {counts['shots']} shot(s), {counts['findings']} finding(s) recorded")
+    except Exception as error:  # noqa: BLE001 - the registry must never fail a render
+        print(f"[Pipeline {pid}] Insights not recorded: {error}")
 
 
 def _publish_draft_report(pid: str, out_dir: str, records: list, *, status: str, model: Optional[str] = None,
