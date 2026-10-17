@@ -130,3 +130,42 @@ class OtsImageJobTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OtsIdentityTests(unittest.TestCase):
+    def test_the_foreground_person_loses_their_face_description(self):
+        cast = {"characters": [
+            {"name": "Jin-woo", "descriptor": "A friendly young man with round spectacles",
+             "description": "23 years old. Round friendly face, warm dark eyes. Tousled short black hair.",
+             "wardrobe": "a forest green corduroy overshirt over a beige t-shirt"},
+            {"name": "Hae-won", "description": "a woman in her twenties", "wardrobe": "a red knit sweater"},
+        ]}
+        prompt = ("SUBJECT: Hae-won, facing right toward A friendly young man with round spectacles and "
+                  "23 years old. Round friendly face, warm dark eyes. Tousled short black hair., screen right "
+                  "foreground, shoulder framing the edge. | MOOD: tense")
+        out = pipeline.director_ots_prompt(OTS_ON_HAE_WON, prompt, cast)
+        self.assertNotIn("Round friendly face", out)
+        self.assertNotIn("round spectacles and", out)
+        self.assertIn("toward Jin-woo, seen from behind,", out)
+        self.assertIn("Jin-woo appears only once in this shot", out)
+
+
+class InsertTextTests(unittest.TestCase):
+    def test_face_sentences_and_fields_are_dropped_whole(self):
+        text = ("SHOT: tight insert on hands | LIGHTING: amber pendant. The actors' faces are partially shadowed. | "
+                "SUBJECT: hands of a person in a cream sweater around a mug. | MOOD: intimate")
+        self.assertEqual(
+            pipeline.without_portrait_text(text),
+            "SHOT: tight insert on hands | LIGHTING: amber pendant. | SUBJECT: hands of a person in a cream "
+            "sweater around a mug. | MOOD: intimate")
+        look = "Shot on Arri Alexa. True-to-life skin with visible pores, fine facial hair. Subtle film grain."
+        self.assertEqual(pipeline.without_portrait_text(look), "Shot on Arri Alexa. Subtle film grain.")
+
+    def test_an_insert_prompt_keeps_its_lead_and_loses_the_faces(self):
+        plan = {"_director_scene_type": "insert", "_director_camera_framing": "tight insert on hands"}
+        _, prompt = pipeline.scene_shot_refs("qwen_image_21_7B_turbo_8step", plan,
+                                             "SHOT: insert | LIGHTING: faces half in shadow. | SUBJECT: two hands.",
+                                             master="m.jpg", identity=["a.jpg"], empty_set=True)
+        self.assertTrue(prompt.startswith(pipeline.INSERT_LEAD))
+        self.assertNotIn("faces half in shadow", prompt)
+        self.assertIn("SUBJECT: two hands.", prompt)

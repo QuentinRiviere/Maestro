@@ -5881,7 +5881,7 @@ def scene_shot_refs(image_model: str, plan: dict, prompt: str, *, master: str, i
         # even an empty one, back into a two-shot of the room, and the scene
         # lead ("same place, new camera") reads as "the same people". No
         # reference, and the framing opens the prompt.
-        return [], f"{INSERT_LEAD}{prompt}"
+        return [], f"{INSERT_LEAD}{without_portrait_text(prompt)}"
     budget = director_image_ref_budget(image_model)
     slots = None if budget is None else max(1, budget - (1 if layout else 0))
     people = list(dict.fromkeys(r for r in identity if r and r != master))
@@ -6024,6 +6024,31 @@ def assemble_director_image_refs(image_model: str, prompt: str, source_ref: str,
         else:
             prompt = f"{prompt.rstrip()}{role}"
     return all_refs, prompt
+
+
+def without_portrait_text(text: str) -> str:
+    """``text`` minus every sentence or prompt field that describes a face, hair, skin or a body.
+
+    Fields of a structured prompt ("LIGHTING: ... | MOOD: ...") and the
+    sentences of a free paragraph are kept or dropped whole. An insert's
+    prompt carried "the actors' faces are partially shadowed" and the look's
+    "true-to-life skin with visible pores, fine facial hair", and the editor
+    drew the faces (run fdd0f64c, six candidates out of six).
+    """
+    pieces = re.split(r"(\s*\|\s*|(?<=[.!?])\s+)", str(text or ""))
+    kept = []
+    for i in range(0, len(pieces), 2):
+        piece = pieces[i]
+        sep = pieces[i + 1] if i + 1 < len(pieces) else ""
+        if piece.strip() and _PORTRAIT_SENTENCE_RE.search(piece) and not piece.startswith(INSERT_LEAD.strip()):
+            if "|" in sep and kept:
+                # The dropped sentence closed its field: the field separator stays.
+                kept[-1] = kept[-1].rstrip() + " | "
+            continue
+        kept.append(piece + sep)
+    out = "".join(kept).strip()
+    out = re.sub(r"^\s*\|\s*", "", out)
+    return re.sub(r"\s*\|\s*$", "", out)
 
 
 def _shot_text(plan: dict, prompt: str) -> str:
@@ -6269,6 +6294,29 @@ def _ots_foreground_clothes(cast: Optional[dict], name: str) -> str:
     return ""
 
 
+def _without_person_identity(prompt: str, cast: Optional[dict], name: str) -> str:
+    """``prompt`` without the cast's face and body text of one person (their ``description``).
+
+    The planner's SUBJECT quotes it whole ("23 years old... Round friendly
+    face..."); for a person seen from behind those words made the editor
+    draw their face a second time, seated in frame (run fdd0f64c).
+    """
+    wanted = name.strip().casefold()
+    text = prompt
+    for character in (cast or {}).get("characters") or []:
+        if not isinstance(character, dict) or str(character.get("name") or "").strip().casefold() != wanted:
+            continue
+        for key in ("description", "physical_description"):
+            words = str(character.get(key) or "").strip()
+            if len(words) >= 12 and words in text:
+                text = text.replace(words, "")
+        descriptor = str(character.get("descriptor") or "").strip()
+        if descriptor and descriptor in text:
+            text = text.replace(descriptor, f"{name}, seen from behind,")
+    text = re.sub(r"\s*,\s*,", ",", text)
+    return re.sub(r"[ \t]{2,}", " ", text).strip()
+
+
 def director_ots_prompt(plan: dict, prompt: str, cast: Optional[dict]) -> str:
     """An OTS shot's prompt with its foreground person described without identity.
 
@@ -6288,6 +6336,7 @@ def director_ots_prompt(plan: dict, prompt: str, cast: Optional[dict]) -> str:
     side = _foreground_side(blocking, name) if blocking else _ots_text_side(plan, name)
     clothes = _ots_foreground_clothes(cast, name)
     known_by = f"their clothes ({clothes})" if clothes else "the clothes on that shoulder"
+    prompt = _without_person_identity(prompt, cast, name)
     line = (f"{name} appears only once in this shot, as that blurred foreground shape: a dark, out-of-focus "
             f"shoulder and the back of the head at the {side} edge of the frame, recognisable only by "
             f"{known_by}; {name}'s face is never shown and {name} is not drawn again anywhere else in the "
@@ -9716,7 +9765,9 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
             prompt = _style_prefix + prompt
         # Last, so a scene lead naming reference 1 stays at the start.
         if _bible_look and _bible_look not in prompt:
-            prompt = f"{prompt.rstrip()} {_bible_look}"
+            look = without_portrait_text(_bible_look) if prompt.startswith(INSERT_LEAD) else _bible_look
+            if look:
+                prompt = f"{prompt.rstrip()} {look}"
         selected_extra_refs = (
             extra_refs if supplemental_refs is None else supplemental_refs
         )
