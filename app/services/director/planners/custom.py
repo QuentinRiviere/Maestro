@@ -228,6 +228,71 @@ def skill_rules_block(spec: dict, options: dict[str, str]) -> str:
     return "\n".join(lines)
 
 
+# A hand taking hold of a wrist, a hand or a cup, and a hand still on its way.
+_CONTACT_RE = re.compile(
+    r"\b(?:holds?|holding|held|encircl\w*|grips?|gripping|gripped|grasp\w*|clasp\w*|closes?\s+(?:over|around)|"
+    r"wraps?\s+around|covers?|covering|takes?\s+(?:hold\s+of\s+)?|catches|catching)\b[^.;]*\b(?:wrist|hand|hands|fingers|cup|mug)\b",
+    re.IGNORECASE)
+_APPROACH_RE = re.compile(
+    r"\b(?:inches|centimet\w+|away\s+from|beside|next\s+to|near|close\s+to|short\s+of|toward|towards|"
+    r"rests?\s+(?:open\s+|flat\s+)?on\s+the\s+(?:table|wood|tabletop|surface))\b", re.IGNORECASE)
+_LAST_BEAT_RE = re.compile(r"^\s*([\d.]+)\s*-\s*([\d.]+)\s*s\s*:", re.IGNORECASE)
+
+
+def move_contact_out_of_inserts(shot_dicts: list[dict], low: float = 3.0) -> int:
+    """Start every insert with its hand contact already made; the grab moves to the shot before.
+
+    Short video models fuse the fingers at the moment a hand takes a wrist
+    in close-up (LTX, every Café Haru run). An insert whose opening has the
+    hand on its way and whose closing has it holding now opens on the hold
+    and only tightens; the previous shot of the same scene, when it ended
+    with the hand short of its target, ends on the hold instead and gets
+    the closing move as its last beat (the hands are small there).
+    Returns the number of inserts rewritten.
+    """
+    moved = 0
+    for index, raw in enumerate(shot_dicts):
+        if not isinstance(raw, dict) or str(raw.get("scene_type") or "").strip().lower() != "insert":
+            continue
+        opening = str(raw.get("opening_blocking") or "")
+        closing = str(raw.get("closing_blocking") or raw.get("ending_beat") or "")
+        if not (_CONTACT_RE.search(closing) and _APPROACH_RE.search(opening) and not _CONTACT_RE.search(opening)):
+            continue
+        try:
+            duration = float(raw.get("duration_sec") or low)
+        except (TypeError, ValueError):
+            duration = float(low)
+        raw["opening_blocking"] = f"Already at the first frame: {closing.strip().rstrip('.')}."
+        raw["action_beats"] = [f"0.0-{duration:.1f}s: nothing moves but the fingers: the holding hand tightens "
+                               "slightly and a thumb shifts; the other hand and the objects stay still; the camera "
+                               "is still."]
+        locks = [str(lock).strip() for lock in raw.get("locks") or [] if str(lock).strip()]
+        raw["locks"] = locks + ["the hold is already made at the first frame; no hand travels across the frame"]
+        moved += 1
+        previous = shot_dicts[index - 1] if index > 0 and isinstance(shot_dicts[index - 1], dict) else None
+        if previous and str(previous.get("scene_id") or "") == str(raw.get("scene_id") or ""):
+            prev_closing = str(previous.get("closing_blocking") or previous.get("ending_beat") or "")
+            if _APPROACH_RE.search(prev_closing) and not _CONTACT_RE.search(prev_closing):
+                previous["closing_blocking"] = closing
+                try:
+                    prev_duration = float(previous.get("duration_sec") or low)
+                except (TypeError, ValueError):
+                    prev_duration = float(low)
+                beats = [str(beat) for beat in previous.get("action_beats") or []]
+                start = max(0.0, prev_duration - 1.5)
+                if beats:
+                    match = _LAST_BEAT_RE.match(beats[-1])
+                    if match:
+                        try:
+                            start = max(float(match.group(1)), min(start, float(match.group(2))))
+                        except ValueError:
+                            pass
+                beats.append(f"{start:.1f}-{prev_duration:.1f}s: the hand closes the last centimetres and takes "
+                             "hold, slowly; nothing else moves.")
+                previous["action_beats"] = beats
+    return moved
+
+
 class CustomSkillPlanner(BasePlanner):
     """Plans shots for a validated custom skill definition."""
 
@@ -379,6 +444,7 @@ OUTPUT FORMAT — respond with ONLY a JSON array of shot objects:
             raise ValueError("The LLM returned no shots")
         if clip_durations:
             shot_dicts = (list(shot_dicts) + [shot_dicts[-1]] * len(clip_durations))[: len(clip_durations)]
+        move_contact_out_of_inserts(shot_dicts, float(low))
 
         shots = []
         for i, raw in enumerate(shot_dicts):

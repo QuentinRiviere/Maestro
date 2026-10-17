@@ -15,7 +15,8 @@ if _APP_DIR not in sys.path:
 
 from services.director import custom_skills, skill_creator  # noqa: E402
 from services.director.blocking_map import subjects_in_view  # noqa: E402
-from services.director.planners.custom import CustomSkillPlanner, skill_rules_block  # noqa: E402
+from services.director.planners.custom import (CustomSkillPlanner, move_contact_out_of_inserts,  # noqa: E402
+                                               skill_rules_block)
 
 SPEC = {
     "name": "Recipe Reel", "description": "Fast overhead cooking reels.", "icon": "heart", "workflow": "story",
@@ -450,3 +451,40 @@ def test_custom_planner_writes_shots_the_video_model_renders_alone():
         concept="a meeting", target_duration=12, fps=24, frames_minimum=124, frames_maximum=192)
     assert [shot.duration_sec for shot in plan.shots] == [5.2, 5.2]
     assert "between 5.2 and 5.2 seconds" in seen["system"]
+
+
+class InsertContactTests(unittest.TestCase):
+    def shots(self):
+        return [
+            {"scene_id": "cafe", "scene_type": "exchange", "duration_sec": 6,
+             "opening_blocking": "Jin-woo sits screen-left, his right hand flat on the table.",
+             "closing_blocking": "Jin-woo's right hand rests inches from her wrist on the tabletop.",
+             "action_beats": ["0.0-3.0s: he leans in", "3.0-6.0s: his hand slides toward her wrist"]},
+            {"scene_id": "cafe", "scene_type": "insert", "duration_sec": 4,
+             "opening_blocking": "Hae-won's hands clutch the mug. Jin-woo's hand rests open on the table inches away from her wrist.",
+             "closing_blocking": "Jin-woo's hand securely encircles Hae-won's wrist; her fingers stay around the mug.",
+             "action_beats": ["0.0-4.0s: his hand crosses and closes around her wrist"], "locks": ["only two pairs of hands"]},
+            {"scene_id": "cafe", "scene_type": "reaction", "duration_sec": 5,
+             "opening_blocking": "Hae-won looks up.", "closing_blocking": "She nods."},
+        ]
+
+    def test_the_insert_opens_on_the_hold_and_the_grab_moves_to_the_shot_before(self):
+        shots = self.shots()
+        self.assertEqual(move_contact_out_of_inserts(shots), 1)
+        insert, previous = shots[1], shots[0]
+        self.assertTrue(insert["opening_blocking"].startswith("Already at the first frame: Jin-woo's hand securely encircles"))
+        self.assertIn("nothing moves but the fingers", insert["action_beats"][0])
+        self.assertEqual(insert["locks"][0], "only two pairs of hands")
+        self.assertIn("already made at the first frame", insert["locks"][1])
+        self.assertEqual(previous["closing_blocking"], "Jin-woo's hand securely encircles Hae-won's wrist; her fingers stay around the mug.")
+        self.assertEqual(previous["action_beats"][-1], "4.5-6.0s: the hand closes the last centimetres and takes hold, slowly; nothing else moves.")
+        self.assertEqual(shots[2]["opening_blocking"], "Hae-won looks up.")
+
+    def test_an_insert_that_already_holds_or_never_touches_is_left_alone(self):
+        shots = self.shots()
+        shots[1]["opening_blocking"] = "Jin-woo's hand already holds her wrist on the table."
+        self.assertEqual(move_contact_out_of_inserts(shots), 0)
+        shots = self.shots()
+        shots[1]["closing_blocking"] = "The mug sits alone on the table, steam rising."
+        self.assertEqual(move_contact_out_of_inserts(shots), 0)
+        self.assertEqual(shots[0]["closing_blocking"], "Jin-woo's right hand rests inches from her wrist on the tabletop.")
