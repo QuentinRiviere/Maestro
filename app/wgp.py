@@ -11050,7 +11050,11 @@ def generate_video(
 
                 send_cmd("output")
 
-        seed = set_seed(-1)
+        # The next repeat follows the previous seed instead of drawing a
+        # random one: a run of N repeats is reproducible from its first seed
+        # (seed, seed + 1, ...), and a caller that renders N candidates in one
+        # job knows which seed each output carries.
+        seed = set_seed((seed + 1) % 1_000_000_000)
     _cleanup_generation_resources()
 
     return not gen.get("abort", False)

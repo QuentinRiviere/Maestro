@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Hashable
@@ -14,9 +15,19 @@ class _CacheEntry:
 
 
 class TextEncoderCache:
-    def __init__(self, max_size_mb: float = 100) -> None:
+    def __init__(self, max_size_mb: float = 100, max_entries: int | None = None) -> None:
         self.max_size_bytes = int(max_size_mb * 1024 * 1024)
+        # ``max_entries`` bounds the number of entries as well as their size
+        # (None: size only); the least recently used entry goes first.
+        self.max_entries = int(max_entries) if max_entries is not None else None
         self._entries: "OrderedDict[Hashable, _CacheEntry]" = OrderedDict()
+        self._size_bytes = 0
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    def clear(self) -> None:
+        self._entries.clear()
         self._size_bytes = 0
 
     def encode(
@@ -103,9 +114,10 @@ class TextEncoderCache:
         return self._to_device(encoded, device)
 
     def _purge_if_needed(self) -> None:
-        if self._size_bytes <= self.max_size_bytes:
-            return
-        while self._entries and self._size_bytes > self.max_size_bytes:
+        while self._entries and (
+            self._size_bytes > self.max_size_bytes
+            or (self.max_entries is not None and len(self._entries) > self.max_entries)
+        ):
             _, entry = self._entries.popitem(last=False)
             self._size_bytes -= entry.size_bytes
 
@@ -149,3 +161,15 @@ class TextEncoderCache:
         if isinstance(value, list):
             return [self._to_device(v, device) for v in value]
         return value
+
+
+def reference_images_key(images) -> tuple:
+    """A cache key of the pictures a prompt is encoded with: their order, sizes, modes and pixels (PIL images)."""
+    if images is None:
+        return ()
+    if not isinstance(images, (list, tuple)):
+        images = [images]
+    key = []
+    for picture in images:
+        key.append((tuple(picture.size), picture.mode, hashlib.sha1(picture.tobytes()).hexdigest()))
+    return tuple(key)

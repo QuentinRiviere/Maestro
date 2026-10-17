@@ -28,9 +28,12 @@ from .autoencoder_kl_qwenimage import AutoencoderKLQwenImage
 from diffusers import FlowMatchEulerDiscreteScheduler
 from PIL import Image
 from shared.utils.utils import calculate_new_dimensions, convert_image_to_tensor, convert_tensor_to_image
-from shared.utils.text_encoder_cache import TextEncoderCache
+from shared.utils.text_encoder_cache import TextEncoderCache, reference_images_key
 
 XLA_AVAILABLE = False
+
+# Reference-conditioned prompt encodings kept per pipeline (CPU memory).
+REF_PROMPT_CACHE_ENTRIES = 4
 
 PREFERRED_QWENIMAGE_RESOLUTIONS = [
     (672, 1568),
@@ -185,6 +188,12 @@ class QwenImagePipeline(): #DiffusionPipeline
         self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor * 2)
         self.tokenizer_max_length = 1024
         self.text_encoder_cache = TextEncoderCache()
+        # Prompts encoded with reference images (the Qwen-VL encoder reads
+        # the pictures too, ~25-30 s on a DGX Spark): the last few encodings,
+        # keyed by prompt and reference pixels, so the repeats of one job or
+        # consecutive jobs that differ only by seed skip the encoder. The
+        # cache goes with the pipeline when the model unloads.
+        self.ref_prompt_cache = TextEncoderCache(max_size_mb=512, max_entries=REF_PROMPT_CACHE_ENTRIES)
         if processor is not None:
             # self.prompt_template_encode = "<|im_start|>system\nDescribe the key features of the input image (color, shape, size, texture, objects, background), then explain how the user's text instruction should alter or modify the image. Generate a new image that meets the user's requirements while maintaining consistency with the original input where appropriate.<|im_end|>\n<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>{}<|im_end|>\n<|im_start|>assistant\n"
             self.prompt_template_encode = "<|im_start|>system\nDescribe the key features of the input image (color, shape, size, texture, objects, background), then explain how the user's text instruction should alter or modify the image. Generate a new image that meets the user's requirements while maintaining consistency with the original input where appropriate.<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n"
@@ -231,20 +240,29 @@ class QwenImagePipeline(): #DiffusionPipeline
             template = self.prompt_template_encode
 
             drop_idx = self.prompt_template_encode_start_idx
-            txt = [template.format(base_img_prompt + e) for e in prompt]
 
-            model_inputs = self.processor(
-                text=txt,
-                images=image,
-                padding=True,
-                return_tensors="pt",
-            ).to(device)
+            def encode_with_images_fn(prompts):
+                txt = [template.format(base_img_prompt + e) for e in prompts]
+                model_inputs = self.processor(
+                    text=txt,
+                    images=image,
+                    padding=True,
+                    return_tensors="pt",
+                ).to(device)
 
-            outputs = self.text_encoder(input_ids=model_inputs.input_ids, attention_mask=model_inputs.attention_mask, pixel_values=model_inputs.pixel_values, image_grid_thw=model_inputs.image_grid_thw, output_hidden_states=True)
-            hidden_states = outputs.hidden_states[-1]
-            split_hidden_states = self._extract_masked_hidden(hidden_states, model_inputs.attention_mask)
-            split_hidden_states = [e[drop_idx:] for e in split_hidden_states]
-            attn_mask_list = [torch.ones(e.size(0), dtype=torch.long, device=e.device) for e in split_hidden_states]
+                outputs = self.text_encoder(input_ids=model_inputs.input_ids, attention_mask=model_inputs.attention_mask, pixel_values=model_inputs.pixel_values, image_grid_thw=model_inputs.image_grid_thw, output_hidden_states=True)
+                hidden_states = outputs.hidden_states[-1]
+                split_hidden_states = self._extract_masked_hidden(hidden_states, model_inputs.attention_mask)
+                split_hidden_states = [e[drop_idx:] for e in split_hidden_states]
+                attn_mask_list = [torch.ones(e.size(0), dtype=torch.long, device=e.device) for e in split_hidden_states]
+                return list(zip(split_hidden_states, attn_mask_list))
+            images_key = reference_images_key(image)
+            contexts = self.ref_prompt_cache.encode(
+                encode_with_images_fn, prompt, device=device,
+                cache_keys=[(template, p, images_key) for p in prompt],
+            )
+            split_hidden_states = [ctx[0] for ctx in contexts]
+            attn_mask_list = [ctx[1] for ctx in contexts]
         else:
             def encode_fn(prompts):
                 txt = [template.format(p) for p in prompts]
