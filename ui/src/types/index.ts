@@ -1540,6 +1540,14 @@ export interface ServicesConfig {
   director_video_review_model?: string
   director_episode_review_model?: string
   director_takes_per_shot?: number
+  /** Where the Director's vision judges run: fal.ai (default) or a local
+   *  OpenAI-compatible vision server (llama-server behind llama-swap). */
+  director_judge_provider?: 'fal' | 'openai'
+  director_judge_url?: string
+  director_judge_api_key?: string
+  director_judge_api_key_set?: boolean
+  director_judge_api_key_env?: boolean
+  director_judge_model?: string
   r2_configured?: boolean
   use_director_v2: boolean
   nsfw_mode: boolean

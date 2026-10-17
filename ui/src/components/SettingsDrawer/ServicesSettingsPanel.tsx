@@ -226,6 +226,11 @@ export function ServicesSettingsPanel() {
   const isOpenAI = provider === 'openai'
   const isOpenRouter = provider === 'openrouter'
   const isLocal = provider === 'local'
+  // The Director's vision judges: fal.ai needs its key, a local server its URL.
+  const judgeIsLocal = (servicesConfig.director_judge_provider ?? 'fal') === 'openai'
+  const judgeAvailable = judgeIsLocal
+    ? Boolean(servicesConfig.director_judge_url)
+    : Boolean(servicesConfig.fal_api_key_set)
 
   const handleRefreshModels = async () => {
     setRefreshing(true)
@@ -740,20 +745,90 @@ export function ServicesSettingsPanel() {
         </p>
 
         <div>
+          <label className="text-[11px] text-text-muted uppercase tracking-wider mb-1.5 block">
+            Director vision judges
+          </label>
+          <select
+            value={servicesConfig.director_judge_provider ?? 'fal'}
+            onChange={e => updateConfig({ director_judge_provider: e.target.value as 'fal' | 'openai' })}
+            className="w-full bg-bg-tertiary border border-border rounded-lg px-3 py-2 text-sm text-text-primary focus:outline-none focus:border-accent-blue"
+            aria-label="Vision judge backend"
+          >
+            <option value="fal">fal.ai (video LLM, billed per call)</option>
+            <option value="openai">Local OpenAI-compatible vision server (free)</option>
+          </select>
+          <p className="text-[10px] text-text-muted mt-1">
+            The storyboard judge and the video review ask this backend. A local server (llama-server behind
+            llama-swap, e.g. the <code>judge</code> alias on a DGX Spark) sees stills as images and clips as
+            sampled frames; nothing is billed.
+          </p>
+          {judgeIsLocal && (
+            <div className="space-y-3 mt-2">
+              <div>
+                <input
+                  type="text"
+                  defaultValue={servicesConfig.director_judge_url || ''}
+                  placeholder="https://spark.tailnet:8080/v1"
+                  onBlur={e => {
+                    const value = e.target.value.trim()
+                    if (value !== (servicesConfig.director_judge_url || '')) {
+                      void updateConfig({ director_judge_url: value })
+                    }
+                  }}
+                  className="w-full bg-bg-tertiary border border-border rounded-lg px-3 py-1.5 text-xs text-text-primary focus:outline-none focus:border-accent-blue"
+                  aria-label="Judge server URL"
+                />
+                <p className="text-[10px] text-text-muted mt-1">
+                  Base URL of the server (its <code>/v1/chat/completions</code> must accept images).
+                </p>
+              </div>
+              <div>
+                <ApiKeyField
+                  label="Judge server API key"
+                  maskedValue={servicesConfig.director_judge_api_key || ''}
+                  isSet={Boolean(servicesConfig.director_judge_api_key_set)}
+                  onSave={val => updateConfig({ director_judge_api_key: val }, { throwOnError: true })}
+                />
+                <p className="text-[10px] text-text-muted mt-1">
+                  {servicesConfig.director_judge_api_key_env
+                    ? 'Using the key from the MAESTRO_JUDGE_API_KEY environment variable. A key saved here takes precedence.'
+                    : 'Optional. Sent only to this server (llama-swap API key).'}
+                </p>
+              </div>
+              <input
+                type="text"
+                defaultValue={servicesConfig.director_judge_model || ''}
+                placeholder="judge"
+                onBlur={e => {
+                  const value = e.target.value.trim()
+                  if (value !== (servicesConfig.director_judge_model || '')) {
+                    void updateConfig({ director_judge_model: value })
+                  }
+                }}
+                className="w-full bg-bg-tertiary border border-border rounded-lg px-3 py-1.5 text-xs text-text-primary focus:outline-none focus:border-accent-blue"
+                aria-label="Judge model alias"
+              />
+            </div>
+          )}
+        </div>
+
+        <div>
           <label className="flex items-start gap-2 cursor-pointer">
             <input
               type="checkbox"
               checked={Boolean(servicesConfig.director_video_review)}
-              disabled={!servicesConfig.fal_api_key_set}
+              disabled={!judgeAvailable}
               onChange={e => updateConfig({ director_video_review: e.target.checked })}
               className="accent-accent-blue mt-0.5"
             />
             <span>
               <span className="text-[11px] text-text-primary block">Review Director projects with AI</span>
               <span className="text-[10px] text-text-muted block leading-snug">
-                {servicesConfig.fal_api_key_set
-                  ? 'After each finished project, a video-capable LLM (through fal.ai) scores every shot against its plan. Advisory only; about one cent per shot.'
-                  : 'Needs a fal.ai API key.'}
+                {judgeAvailable
+                  ? (judgeIsLocal
+                    ? 'After each finished project, the local vision server scores every shot against its plan. Advisory only; free.'
+                    : 'After each finished project, a video-capable LLM (through fal.ai) scores every shot against its plan. Advisory only; about one cent per shot.')
+                  : (judgeIsLocal ? 'Needs the judge server URL above.' : 'Needs a fal.ai API key.')}
               </span>
             </span>
           </label>

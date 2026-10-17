@@ -1,9 +1,11 @@
 """Read-only AI quality review of Director clips.
 
 Each shot is sent on its own (the pipeline knows the exact shot boundaries,
-so the judge never segments a video) to a video-capable LLM through fal's
-``openrouter/router/video`` endpoint, together with the shot plan it was
-rendered from. A second, stricter pass then judges the stitched episode as
+so the judge never segments a video) to a video-capable LLM, together with
+the shot plan it was rendered from. The call goes through fal's
+``openrouter/router/video`` endpoint by default, or through a local
+OpenAI-compatible vision server that sees the clip as sampled frames
+(``judge_backend``: every entry point takes a ``backend``). A second, stricter pass then judges the stitched episode as
 one scene (blocking, continuity across cuts, coverage, rhythm, AI tells) and
 traces each defect to the skill, the planner, the pipeline or the model. The
 verdicts are validated and stored beside the project; this stage never
@@ -17,9 +19,12 @@ import re
 import subprocess
 import tempfile
 import time
-from typing import Any, Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
 import httpx
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from .judge_backend import JudgeBackend
 
 FAL_ROUTER = "openrouter/router/video"
 FAL_QUEUE_URL = "https://queue.fal.run"
@@ -279,6 +284,15 @@ def parse_verdict(text: str, duration: float | None) -> dict:
     }
 
 
+def _asker(backend: "JudgeBackend | None") -> Callable[..., tuple[str, float | None]]:
+    """The call of ``backend``, fal's when none is given."""
+    return backend.ask if backend is not None else _ask
+
+
+def backend_name(backend: "JudgeBackend | None") -> str:
+    return backend.provider if backend is not None else "fal"
+
+
 def contract_text(contract: dict | None) -> str:
     if not contract or contract.get("medium") in (None, "", "unspecified"):
         return "Style contract: not specified; infer the intended medium from the plan."
@@ -328,8 +342,12 @@ def judge_shot(
     style_contract: dict | None = None,
     http: httpx.Client | None = None,
     sleep: Callable[[float], None] = time.sleep,
+    backend: "JudgeBackend | None" = None,
 ) -> dict:
-    """Ask the video LLM for a verdict on one shot (one retry on bad JSON)."""
+    """Ask the video LLM for a verdict on one shot (one retry on bad JSON).
+
+    ``fal_key`` is the credential of ``backend`` (fal by default).
+    """
     prompt = (contract_text(style_contract) + f"\n\nShot {index + 1} of {count}. Plan for this shot:\n"
               + json.dumps(brief, ensure_ascii=False, indent=1))
     if previous:
@@ -341,7 +359,7 @@ def judge_shot(
     try:
         last_error: Exception | None = None
         for _ in range(2):
-            text, cost = _ask(http, fal_key, model, SYSTEM_PROMPT, prompt, [video_url], sleep)
+            text, cost = _asker(backend)(http, fal_key, model, SYSTEM_PROMPT, prompt, [video_url], sleep)
             try:
                 verdict = parse_verdict(text, brief.get("duration_sec"))
             except JudgeError as error:
@@ -380,6 +398,7 @@ def compare_takes(
     style_contract: dict | None = None,
     http: httpx.Client | None = None,
     sleep: Callable[[float], None] = time.sleep,
+    backend: "JudgeBackend | None" = None,
 ) -> dict:
     """Pairwise choice, asked in both orders to cancel position bias.
 
@@ -390,8 +409,9 @@ def compare_takes(
     owns_http = http is None
     http = http or httpx.Client(timeout=120)
     try:
-        text_1, cost_1 = _ask(http, fal_key, model, COMPARE_PROMPT, prompt, [url_a, url_b], sleep)
-        text_2, cost_2 = _ask(http, fal_key, model, COMPARE_PROMPT, prompt, [url_b, url_a], sleep)
+        ask = _asker(backend)
+        text_1, cost_1 = ask(http, fal_key, model, COMPARE_PROMPT, prompt, [url_a, url_b], sleep)
+        text_2, cost_2 = ask(http, fal_key, model, COMPARE_PROMPT, prompt, [url_b, url_a], sleep)
         first, conf_1, reason_1 = _parse_choice(text_1)
         second, conf_2, reason_2 = _parse_choice(text_2)
         # The second call saw B first: translate its answer back.
@@ -419,11 +439,16 @@ def review_clips(
     style_contract: dict | None = None,
     on_progress: Callable[[dict], None] = lambda review: None,
     judge: Callable[..., dict] = judge_shot,
+    backend: "JudgeBackend | None" = None,
 ) -> dict:
-    """Review every shot. Per-shot failures are recorded, never raised."""
+    """Review every shot. Per-shot failures are recorded, never raised.
+
+    ``publish(path)`` turns a clip file into what ``backend`` accepts (an
+    URL for fal, the path itself for a local server).
+    """
     segments = plan_segments(clips, output_files, out_dir)
-    review = {"status": "running", "model": model, "style_contract": style_contract,
-              "started_at": time.time(), "shots": []}
+    review = {"status": "running", "model": model, "backend": backend_name(backend),
+              "style_contract": style_contract, "started_at": time.time(), "shots": []}
     if not segments:
         review.update(status="failed", error="No rendered video to review")
         return review
@@ -439,7 +464,7 @@ def review_clips(
                 entry.update(judge(
                     publish(clip_path), brief, index=index, count=len(segments),
                     previous={k: previous[k] for k in ("closing", "subjects") if k in previous} if previous else None,
-                    fal_key=fal_key, model=model, style_contract=style_contract,
+                    fal_key=fal_key, model=model, style_contract=style_contract, backend=backend,
                 ))
             except Exception as error:  # noqa: BLE001 - review is advisory
                 entry["error"] = str(error)[:300]
@@ -739,6 +764,7 @@ def judge_episode(
     style_contract: dict | None = None,
     http: httpx.Client | None = None,
     sleep: Callable[[float], None] = time.sleep,
+    backend: "JudgeBackend | None" = None,
 ) -> dict:
     """Ask the video LLM for a scene-grammar verdict on the whole episode (one retry on bad JSON)."""
     shot_list = [{**span, **brief} for span, brief in zip(timeline, shots)]
@@ -753,8 +779,8 @@ def judge_episode(
         last_error: Exception | None = None
         total_cost = 0.0
         for _ in range(2):
-            text, cost = _ask(http, fal_key, model, EPISODE_PROMPT, prompt, [video_url], sleep,
-                              max_tokens=24000, timeout=EPISODE_TIMEOUT_SECONDS)
+            text, cost = _asker(backend)(http, fal_key, model, EPISODE_PROMPT, prompt, [video_url], sleep,
+                                         max_tokens=24000, timeout=EPISODE_TIMEOUT_SECONDS)
             total_cost += float(cost or 0)
             try:
                 verdict = parse_episode_verdict(text, duration, timeline)
@@ -782,9 +808,11 @@ def review_episode(
     style_contract: dict | None = None,
     judge: Callable[..., dict] = judge_episode,
     probe: Callable[[str], float | None] = _probe_duration,
+    backend: "JudgeBackend | None" = None,
 ) -> dict:
     """Judge the stitched episode as one scene. Failures are recorded, never raised."""
-    review: dict[str, Any] = {"status": "running", "model": model, "started_at": time.time()}
+    review: dict[str, Any] = {"status": "running", "model": model, "backend": backend_name(backend),
+                              "started_at": time.time()}
     source = episode_source(clips, output_files, out_dir)
     if source is None:
         review.update(status="failed", error="No rendered episode to review", finished_at=time.time())
@@ -797,7 +825,7 @@ def review_episode(
             dest = os.path.join(tmp, "episode.mp4")
             video = concat_shots(paths, dest) if kind == "concat" else cut_segment(paths[0], None, None, dest)
             review.update(judge(publish(video), context, timeline, [shot_brief(clip) for clip in clips],
-                                fal_key=fal_key, model=model, style_contract=style_contract))
+                                fal_key=fal_key, model=model, style_contract=style_contract, backend=backend))
         review["status"] = "completed"
     except Exception as error:  # noqa: BLE001 - review is advisory
         review.update(status="failed", error=str(error)[:300])

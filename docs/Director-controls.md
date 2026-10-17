@@ -207,6 +207,60 @@ project without an image model still reruns on Flux 2 Klein 9B.
 The remote cache warmer does not hold LoRAs: a fresh worker downloads the
 Viggle LoRA (about 7 s) on its first Qwen 2.1 job.
 
+## Vision judges
+
+Director has two advisory vision judges: the **storyboard judge**
+(`services/director/storyboard_judge.py`) checks every shot image against its
+plan before any video is rendered and ranks best-of-N drafts, and the **video
+judge** (`services/director/video_judge.py`) scores each finished clip, picks
+between takes and reviews the stitched episode. Both ask one backend
+(`services/director/judge_backend.py`), chosen in Settings → Services under
+"Director vision judges":
+
+| Setting | Env default | Meaning |
+|---|---|---|
+| `director_judge_provider` | `MAESTRO_JUDGE_PROVIDER` | `fal` (default: fal's `openrouter/router/video`, billed per call) or `openai` |
+| `director_judge_url` | `MAESTRO_JUDGE_URL` | base URL of an OpenAI-compatible vision server, e.g. `https://spark.tailnet:8080/v1` |
+| `director_judge_api_key` | `MAESTRO_JUDGE_API_KEY` | its bearer token (llama-swap's API key); stored like the other API keys, returned masked, never logged |
+| `director_judge_model` | `MAESTRO_JUDGE_MODEL` | the model name sent in every call, default `judge` |
+
+As with the prompt LLM, an environment variable only fills a setting that
+is unset: a value saved in Settings wins.
+
+With the `openai` provider nothing goes to fal.ai and nothing is billed: the
+`cost_usd` of every verdict is 0 and the review report records
+`"backend": "openai"` with the model alias. The per-shot, episode and
+storyboard model fields are ignored in that mode (the alias replaces them),
+and a fal key is not needed. Media are sent as `image_url` data URIs on
+`/v1/chat/completions`:
+
+- a still (shot image, draft candidate, character sheet) is one JPEG,
+  downscaled to a 768 px long side; the prompts then speak of "image 1",
+  "image 2 = Mina" instead of fal's "video 1";
+- a clip is 8 evenly spaced frames (from t=0, capped at 12), each 768 px,
+  preceded in the prompt by a line such as `Video 1 is shown as 8 frames at
+  t=0.0s, 0.8s, ...` so the model can quote timestamps. Expect 30-120 s per
+  call on a DGX Spark; a 5xx or a timeout is retried once.
+
+The intended server is llama-server behind llama-swap on the Spark (see
+`Remote-worker-static-and-llama-swap.md`), with a `judge` alias pointing at
+Qwen3.6-35B-A3B and its mmproj:
+
+```yaml
+models:
+  judge:
+    cmd: >
+      llama-server --port ${PORT}
+      -m /models/Qwen3.6-35B-A3B-Q4_K_M.gguf
+      --mmproj /models/Qwen3.6-35B-A3B-mmproj-F16.gguf
+      -c 32768 -ngl 999 --jinja
+    ttl: 600
+```
+
+Then set the provider to the local server, the URL to
+`https://<spark>/v1`, the key to llama-swap's API key and the model to
+`judge`. Any other OpenAI-compatible vision endpoint works the same way.
+
 ## Recommended next UI pass
 
 These are proposed changes, not yet implemented:

@@ -9939,8 +9939,8 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
         draft_judge = storyboard_judge.stage_config(params)
         print(f"[Pipeline {pid}] Storyboard drafts: {drafts.count} candidate(s) per shot at {drafts.resolution}, "
               f"up to {drafts.rounds} round(s), "
-              + ("ranked by the storyboard judge" if draft_judge.get("vision")
-                 else "no judge (no fal key or judge off): candidate 1 kept"))
+              + (f"ranked by the storyboard judge ({draft_judge.get('provider')}, {draft_judge.get('model')})"
+                 if draft_judge.get("vision") else "no judge (no usable backend or judge off): candidate 1 kept"))
 
     def _publish_drafts(status: str = "running") -> None:
         _publish_draft_report(pid, out_dir, draft_records, status=status, model=draft_judge.get("model"),
@@ -9976,13 +9976,16 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
             def rank(paths: list[str]) -> dict:
                 try:
                     ranking = storyboard_judge.rank_candidates(judge_shot, paths, fal_key=draft_judge["fal_key"],
-                                                               model=draft_judge["model"])
+                                                               model=draft_judge["model"],
+                                                               backend=draft_judge.get("backend"))
                 except Exception as error:
-                    cost_ledger.record(pid, "cloud", stage=storyboard_judge.STAGE, provider="fal",
+                    cost_ledger.record(pid, "cloud", stage=storyboard_judge.STAGE,
+                                       provider=draft_judge.get("provider") or "fal",
                                        model=draft_judge["model"], shot=index,
                                        usd=getattr(error, "cost_usd", None))
                     raise
-                cost_ledger.record(pid, "cloud", stage=storyboard_judge.STAGE, provider="fal",
+                cost_ledger.record(pid, "cloud", stage=storyboard_judge.STAGE,
+                                   provider=draft_judge.get("provider") or "fal",
                                    model=draft_judge["model"], shot=index, usd=ranking.get("cost_usd"))
                 return ranking
 

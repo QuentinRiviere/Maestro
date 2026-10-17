@@ -213,13 +213,18 @@ _remote_job_forwarder = RemoteJobForwarder(_remote_worker, pool=_remote_pool)
 _remote_gen_slots = Slots(_remote_pool.capacity)
 
 # Deployment defaults for the prompt LLM (e.g. a Docker controller that has no
-# GPU for llama-server). They only fill unset services settings, so a choice
-# made later in Settings → Services still wins. API keys stay in the
-# environment (see llm_service.PROVIDER_API_KEY_ENV) and are never persisted.
+# GPU for llama-server) and for the Director's vision judges (a local
+# OpenAI-compatible server, see services/director/judge_backend.py). They only
+# fill unset services settings, so a choice made later in Settings → Services
+# still wins. API keys stay in the environment (see
+# llm_service.PROVIDER_API_KEY_ENV, judge_backend.ENV) and are never persisted.
 for _llm_env, _llm_setting in (
     ("MAESTRO_LLM_PROVIDER", "llm_provider"),
     ("MAESTRO_LLM_MODEL_ID", "llm_model_id"),
     ("MAESTRO_LLM_REMOTE_URL", "llm_remote_url"),
+    ("MAESTRO_JUDGE_PROVIDER", "director_judge_provider"),
+    ("MAESTRO_JUDGE_URL", "director_judge_url"),
+    ("MAESTRO_JUDGE_MODEL", "director_judge_model"),
 ):
     if os.environ.get(_llm_env):
         wgp.server_config.setdefault("services", {}).setdefault(_llm_setting, os.environ[_llm_env])
@@ -520,19 +525,28 @@ _director_reviews_running: set[str] = set()
 _director_reviews_lock = threading.Lock()
 
 
+def _director_judge_backend():
+    """The backend the Director's vision judges use (fal.ai, or a local server)."""
+    from services.director import judge_backend
+
+    return judge_backend.settings(wgp.server_config.get("services", {}))
+
+
 def _director_review_settings() -> tuple[bool, str]:
+    """(enabled, per-shot model): the local backend's alias replaces the fal model."""
     from services.director.video_judge import DEFAULT_MODEL
 
     services = wgp.server_config.get("services", {})
-    return (bool(services.get("director_video_review", False)),
-            str(services.get("director_video_review_model") or DEFAULT_MODEL))
+    model = str(services.get("director_video_review_model") or DEFAULT_MODEL)
+    return (bool(services.get("director_video_review", False)), _director_judge_backend().resolve_model(model))
 
 
 def _director_episode_review_model() -> str:
     from services.director.video_judge import DEFAULT_EPISODE_MODEL
 
     services = wgp.server_config.get("services", {})
-    return str(services.get("director_episode_review_model") or DEFAULT_EPISODE_MODEL)
+    model = str(services.get("director_episode_review_model") or DEFAULT_EPISODE_MODEL)
+    return _director_judge_backend().resolve_model(model)
 
 
 def _director_takes_per_shot() -> int:
@@ -598,7 +612,6 @@ def _judge_publisher(label: str):
 
 
 def _run_director_review(pid: str, base: str, wait_for_save: bool, takes: int = 1) -> None:
-    from services import cloud_image
     from services.director.video_judge import (
         compare_takes, episode_context, review_clips, review_episode, save_review, select_takes, shot_takes,
     )
@@ -607,7 +620,12 @@ def _run_director_review(pid: str, base: str, wait_for_save: bool, takes: int = 
     )
 
     state_dir = None
-    publish, cleanup_uploads = _judge_publisher(f"review_{pid}")
+    backend = _director_judge_backend()
+    if backend.provider == "openai":
+        # The local server reads the clip files itself (as sampled frames).
+        publish, cleanup_uploads = (lambda path: path), (lambda: None)
+    else:
+        publish, cleanup_uploads = _judge_publisher(f"review_{pid}")
     try:
         state = None
         # The terminal callback fires just before the project is saved.
@@ -620,9 +638,10 @@ def _run_director_review(pid: str, base: str, wait_for_save: bool, takes: int = 
         if not state or not state_dir:
             raise RuntimeError("Saved Director project not found")
         _, model = _director_review_settings()
-        fal_key = cloud_image.provider_api_key("fal", wgp.server_config.get("services", {}))
-        if not fal_key:
-            raise RuntimeError("The video judge needs a fal.ai API key (Settings → Services)")
+        fal_key = backend.key
+        if not backend.available:
+            raise RuntimeError("The video judge needs a fal.ai API key, or the local judge server's URL "
+                               "(Settings → Services)")
         contract = (state.get("_params_snapshot") or {}).get("_director_style_contract")
         take_results: list = []
         if takes > 1 and not state.get("seamless", True) and state.get("clips"):
@@ -633,7 +652,7 @@ def _run_director_review(pid: str, base: str, wait_for_save: bool, takes: int = 
             per_shot = shot_takes(state["clips"], takes)
             print(f"[Director review] {pid}: takes per shot {per_shot}")
             save_review(state_dir, pid, {"status": "running", "phase": "takes", "model": model,
-                                         "style_contract": contract, "shots": []})
+                                         "backend": backend.provider, "style_contract": contract, "shots": []})
 
             def restore(index: int, filename: str) -> None:
                 def keep(saved):
@@ -645,18 +664,20 @@ def _run_director_review(pid: str, base: str, wait_for_save: bool, takes: int = 
                 rerun=lambda index: rerun_clip_video(base, pid, index)["filename"],
                 restore=restore, publish=publish,
                 compare=lambda url_a, url_b, brief: compare_takes(
-                    url_a, url_b, brief, fal_key=fal_key, model=model, style_contract=contract),
+                    url_a, url_b, brief, fal_key=fal_key, model=model, style_contract=contract, backend=backend),
                 on_progress=lambda partial: save_review(state_dir, pid, {
-                    "status": "running", "phase": "takes", "model": model,
+                    "status": "running", "phase": "takes", "model": model, "backend": backend.provider,
                     "style_contract": contract, "takes": partial, "shots": []}),
             )
             if any(len(result.get("takes") or []) > 1 for result in take_results):
                 rejoin_clips(base, pid)
             state = load_pipeline_state(base, pid) or state
 
-        print(f"[Director review] {pid}: judging {len(state.get('clips') or [])} shot(s) with {model}")
+        print(f"[Director review] {pid}: judging {len(state.get('clips') or [])} shot(s) with {model} "
+              f"on {backend.provider}")
         review = review_clips(state.get("clips") or [], state.get("output_files") or [], state_dir,
                               fal_key=fal_key, publish=publish, model=model, style_contract=contract,
+                              backend=backend,
                               on_progress=lambda partial: save_review(
                                   state_dir, pid, {**partial, "takes": take_results}))
         if take_results:
@@ -667,12 +688,12 @@ def _run_director_review(pid: str, base: str, wait_for_save: bool, takes: int = 
         # Then the whole episode as one scene, with a stronger model.
         episode_model = _director_episode_review_model()
         print(f"[Director review] {pid}: judging the episode with {episode_model}")
-        review["episode"] = {"status": "running", "model": episode_model}
+        review["episode"] = {"status": "running", "model": episode_model, "backend": backend.provider}
         save_review(state_dir, pid, review)
         review["episode"] = review_episode(
             state.get("clips") or [], state.get("output_files") or [], state_dir,
             context=episode_context(state), fal_key=fal_key, publish=publish, model=episode_model,
-            style_contract=contract)
+            style_contract=contract, backend=backend)
         review["cost_usd"] = round(float(review.get("cost_usd") or 0)
                                    + float(review["episode"].get("cost_usd") or 0), 4)
         save_review(state_dir, pid, review)
@@ -8269,8 +8290,11 @@ def _cloud_image_key_fields(services: dict) -> dict:
 def get_services_config():
     """Return services settings with API keys masked."""
     from services import llm_service
+    from services.director import judge_backend
     services = wgp.server_config.get("services", {})
     provider = services.get("llm_provider", "local")
+    # The local judge's key: stored, else MAESTRO_JUDGE_API_KEY.
+    judge_key = judge_backend.settings({**services, "director_judge_provider": "openai"}).key
     # Enforce: NSFW must be off when using a public provider
     nsfw = services.get("nsfw_mode", False) and provider not in _PUBLIC_LLM_PROVIDERS
     return {
@@ -8301,6 +8325,14 @@ def get_services_config():
         "director_video_review_model": services.get("director_video_review_model") or "",
         "director_episode_review_model": services.get("director_episode_review_model") or "",
         "director_takes_per_shot": _director_takes_per_shot(),
+        # Where the Director's vision judges run: fal.ai or a local
+        # OpenAI-compatible vision server (services/director/judge_backend.py).
+        "director_judge_provider": services.get("director_judge_provider") or judge_backend.DEFAULT_PROVIDER,
+        "director_judge_url": services.get("director_judge_url") or "",
+        "director_judge_api_key": _mask_key(services.get("director_judge_api_key", "")),
+        "director_judge_api_key_set": bool(judge_key),
+        "director_judge_api_key_env": bool(judge_key) and not services.get("director_judge_api_key"),
+        "director_judge_model": services.get("director_judge_model") or "",
         "r2_configured": _lora_r2_store() is not None,
         # Director v2 (layered architecture: structured shot planning,
         # mode-specific renderers, prompt validation) is now the default
@@ -8387,6 +8419,7 @@ async def update_services_config(request: Request):
         "anthropic_api_key", "fal_api_key", "replicate_api_key", "lora_download_storage",
         "director_video_review", "director_video_review_model", "director_takes_per_shot",
         "director_episode_review_model",
+        "director_judge_provider", "director_judge_url", "director_judge_api_key", "director_judge_model",
         "use_director_v2", "nsfw_mode", "nsfw_accepted_at", "director_prompt_polish",
         "civitai_api_key", "voice_reference_enabled", "ltx_progressive_pipeline",
         "show_experimental", "auto_performance", "storage_allow_linked_removal",
@@ -8408,9 +8441,17 @@ async def update_services_config(request: Request):
             raise HTTPException(status_code=400, detail="director_takes_per_shot must be 1, 2 or 3.")
         if key == "director_video_review" and type(value) is not bool:
             raise HTTPException(status_code=400, detail="director_video_review must be true or false.")
-        if key in ("director_video_review_model", "director_episode_review_model") and (
+        if key in ("director_video_review_model", "director_episode_review_model", "director_judge_model") and (
                 not isinstance(value, str) or len(value) > 200):
             raise HTTPException(status_code=400, detail=f"{key} must be a model ID.")
+        if key == "director_judge_provider" and value not in ("fal", "openai"):
+            raise HTTPException(status_code=400, detail="director_judge_provider must be fal or openai.")
+        if key == "director_judge_url":
+            if not isinstance(value, str) or len(value) > 500:
+                raise HTTPException(status_code=400, detail="director_judge_url must be a URL.")
+            value = value.strip()
+            if value and not value.startswith(("http://", "https://")):
+                raise HTTPException(status_code=400, detail="director_judge_url must start with http:// or https://.")
         if key == "lora_download_storage":
             from services.lora_r2 import STORAGE_CHOICES
             if value not in STORAGE_CHOICES:

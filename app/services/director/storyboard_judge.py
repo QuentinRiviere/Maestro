@@ -7,9 +7,10 @@ twenty times more, so a bad start image is cheapest to catch here:
   every shot image; a non-establishing shot nearly identical to another
   shot of its scene "copies shot N" (image editors often return the scene
   master almost unchanged);
-- a vision check per shot with the provider the video judge uses (fal's
-  ``openrouter/router/video``, the still sent as a short clip): framing,
-  expected people and their count, the right set.
+- a vision check per shot with the backend the video judge uses (see
+  ``judge_backend``: fal's ``openrouter/router/video`` with the still sent as
+  a short clip, or a local OpenAI-compatible vision server with the still
+  sent as an image): framing, expected people and their count, the right set.
 
 A failing shot is regenerated with the judge's fix hint appended to its image
 prompt (up to ``MAX_ATTEMPTS`` times, re-judged each time); a shot still
@@ -18,8 +19,9 @@ beside the project (``_director_storyboard_<pid>.json``) and shown on the
 pipeline status, and a project with ``storyboard_review`` pauses on the
 existing image review where the human sees them.
 
-Without a fal key only the duplicate check runs, and a duplicate gets one
-regeneration with a framing hint.
+Without a usable backend (no fal key, or no server URL for the local
+backend) only the duplicate check runs, and a duplicate gets one regeneration
+with a framing hint.
 """
 from __future__ import annotations
 
@@ -33,7 +35,9 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Mapping, Sequence
 
-from .video_judge import DEFAULT_MODEL, JudgeError, _ask
+from . import judge_backend
+from .judge_backend import JudgeBackend
+from .video_judge import DEFAULT_MODEL, JudgeError
 
 STAGE = "storyboard_judge"
 REPORT_FILE_PREFIX = "_director_storyboard_"
@@ -47,10 +51,10 @@ MAX_CAST_SHEETS = 2
 OFF_VALUES = ("off", "false", "0", "no", "disabled")
 ON_VALUES = ("on", "true", "1", "yes", "enabled")
 
-VISION_PROMPT = """You check one storyboard frame of an AI video pipeline BEFORE it is animated: the frame
+_VISION_PROMPT_TEMPLATE = """You check one storyboard frame of an AI video pipeline BEFORE it is animated: the frame
 becomes the first frame of an expensive video render, so reject only what would ruin that shot. You receive
-the frame (shown as a short still video, video 1), optionally the character sheets of the cast expected in it
-(the following videos, in the order listed), and the shot plan.
+the frame ({shown}, {noun} 1), optionally the character sheets of the cast expected in it
+(the following {nouns}, in the order listed), and the shot plan.
 Check:
 - framing: the shot size and angle match the plan (an extreme wide shot is not a close-up, an insert of an
   object is not a group shot);
@@ -65,10 +69,10 @@ Return ONLY a JSON object, no prose, no markdown:
  "fix_hint": "one imperative sentence to append to the image prompt so the next render fixes the issues, or empty"}"""
 
 
-RANK_PROMPT = """You pick the best of several candidate storyboard frames for ONE shot of an AI video pipeline
+_RANK_PROMPT_TEMPLATE = """You pick the best of several candidate storyboard frames for ONE shot of an AI video pipeline
 BEFORE it is animated: the chosen frame is re-rendered at full resolution and becomes the first frame of an
-expensive video render. You receive the candidates (each shown as a short still video, videos 1 to N, in the
-order listed), optionally the character sheets of the cast expected in the shot (the following videos), and the
+expensive video render. You receive the candidates (each {shown}, {nouns} 1 to N, in the
+order listed), optionally the character sheets of the cast expected in the shot (the following {nouns}), and the
 shot plan. All candidates share the same prompt and references; they differ only by their random seed.
 Check every candidate:
 - framing: the shot size and angle match the plan (an extreme wide shot is not a close-up, an insert of an
@@ -87,6 +91,32 @@ Return ONLY a JSON object, no prose, no markdown, candidates numbered from 1:
  "fix_hint": "one imperative sentence to append to the image prompt so the next renders fix the issues of the
  best candidate, or empty"}"""
 
+_SHOWN = {"video": "shown as a short still video", "image": "shown as an image"}
+
+
+def _fill(template: str, noun: str) -> str:
+    # The templates hold JSON braces, so no str.format here.
+    return (template.replace("{shown}", _SHOWN[noun]).replace("{nouns}", noun + "s")
+            .replace("{noun}", noun))
+
+
+# One prompt per media noun: "video" on fal (a still is a short clip there),
+# "image" on a local OpenAI-compatible server.
+_VISION_PROMPTS = {noun: _fill(_VISION_PROMPT_TEMPLATE, noun) for noun in _SHOWN}
+_RANK_PROMPTS = {noun: _fill(_RANK_PROMPT_TEMPLATE, noun) for noun in _SHOWN}
+VISION_PROMPT = _VISION_PROMPTS["video"]
+RANK_PROMPT = _RANK_PROMPTS["video"]
+
+
+def vision_prompt(noun: str = "video") -> str:
+    """The per-shot check prompt, with media named ``noun``."""
+    return _VISION_PROMPTS[noun]
+
+
+def rank_prompt(noun: str = "video") -> str:
+    """The candidate ranking prompt, with media named ``noun``."""
+    return _RANK_PROMPTS[noun]
+
 
 class StoryboardJudgeError(RuntimeError):
     pass
@@ -96,16 +126,22 @@ class StoryboardJudgeError(RuntimeError):
 
 
 def settings(services: Mapping[str, Any] | None, params: Mapping[str, Any] | None,
-             fal_key: str = "") -> dict:
-    """Whether the stage runs and how.
+             fal_key: str = "", backend: JudgeBackend | None = None) -> dict:
+    """Whether the stage runs and how: {enabled, vision, fal_key, model, backend, provider}.
 
     The services flag ``director_storyboard_judge`` (default on) and the
     project param of the same name (``off``/``on``, the param wins) enable
-    the stage; the vision check also needs a fal key, else only the free
-    duplicate check runs.
+    the stage; the vision check also needs a usable backend (a fal key, or
+    the local server's URL), else only the free duplicate check runs.
+    ``fal_key`` is the credential the fal backend uses (``fal_key`` of the
+    result is the credential of whichever backend runs); ``backend``
+    defaults to the one ``services`` configure.
     """
     services = services or {}
     params = params or {}
+    backend = backend or judge_backend.settings(services)
+    if backend.provider == "fal":
+        backend = judge_backend.with_key(backend, fal_key)
 
     def flag(value: Any) -> bool | None:
         if isinstance(value, bool):
@@ -122,9 +158,11 @@ def settings(services: Mapping[str, Any] | None, params: Mapping[str, Any] | Non
     enabled = project if project is not None else (service if service is not None else True)
     return {
         "enabled": enabled,
-        "vision": bool(enabled and fal_key),
-        "fal_key": fal_key if enabled else "",
-        "model": str(services.get("director_storyboard_judge_model") or DEFAULT_MODEL),
+        "vision": bool(enabled and backend.available),
+        "fal_key": backend.key if enabled else "",
+        "model": backend.resolve_model(str(services.get("director_storyboard_judge_model") or DEFAULT_MODEL)),
+        "backend": backend,
+        "provider": backend.provider,
     }
 
 
@@ -232,11 +270,14 @@ def duplicate_hint(shot: Mapping[str, Any], original: int) -> str:
             f"shot {original + 1} of the same scene.")
 
 
-# ── Vision check (fal) ────────────────────────────────────────────────
+# ── Vision check ──────────────────────────────────────────────────────
+
+
+FAL_BACKEND = JudgeBackend(provider="fal")
 
 
 def still_as_video(path: str, dest: str) -> str:
-    """A two-frame mp4 of a still: the video router accepts only video."""
+    """A two-frame mp4 of a still: fal's video router accepts only video."""
     command = ["ffmpeg", "-v", "error", "-y", "-loop", "1", "-t", "2", "-i", path,
                "-vf", "scale='min(768,iw)':-2,format=yuv420p", "-r", "1", "-c:v", "libx264",
                "-preset", "veryfast", "-crf", "24", dest]
@@ -322,27 +363,33 @@ def shot_plan_text(shot: Mapping[str, Any]) -> str:
 
 
 def check_shot(shot: Mapping[str, Any], *, fal_key: str, model: str = DEFAULT_MODEL,
-               ask: Callable[..., tuple[str, float | None]] = _ask, http: Any = None) -> dict:
-    """One vision verdict {pass, issues, fix_hint, cost_usd}; one retry on bad JSON."""
+               ask: Callable[..., tuple[str, float | None]] | None = None, http: Any = None,
+               backend: JudgeBackend | None = None) -> dict:
+    """One vision verdict {pass, issues, fix_hint, cost_usd}; one retry on bad JSON.
+
+    ``fal_key`` is the credential of ``backend`` (fal by default); ``ask``
+    overrides the backend's call (tests).
+    """
     import httpx
 
+    backend = backend or FAL_BACKEND
+    ask = ask or backend.ask
+    noun = backend.media_noun
     sheets = [s for s in shot.get("cast_sheets") or [] if s.get("path") and os.path.isfile(s["path"])]
     prompt = ""
     if sheets:
         prompt += "Character sheets: " + ", ".join(
-            f"video {n + 2} = {sheet.get('name') or 'cast member'}" for n, sheet in enumerate(sheets)) + ".\n"
+            f"{noun} {n + 2} = {sheet.get('name') or 'cast member'}" for n, sheet in enumerate(sheets)) + ".\n"
     prompt += "Shot plan:\n" + shot_plan_text(shot)
     owns_http = http is None
     http = http or httpx.Client(timeout=120)
     cost = 0.0
     try:
         with tempfile.TemporaryDirectory(prefix="director-storyboard-") as tmp:
-            urls = [data_uri(still_as_video(shot["path"], os.path.join(tmp, "shot.mp4")))]
-            for n, sheet in enumerate(sheets):
-                urls.append(data_uri(still_as_video(sheet["path"], os.path.join(tmp, f"sheet_{n}.mp4"))))
+            urls = backend.media_for_images([shot["path"]] + [sheet["path"] for sheet in sheets], tmp)
             last_error: Exception | None = None
             for _ in range(2):
-                text, call_cost = ask(http, fal_key, model, VISION_PROMPT, prompt, urls, time.sleep,
+                text, call_cost = ask(http, fal_key, model, vision_prompt(noun), prompt, urls, time.sleep,
                                       max_tokens=4000, timeout=180)
                 cost += float(call_cost or 0)
                 try:
@@ -359,33 +406,34 @@ def check_shot(shot: Mapping[str, Any], *, fal_key: str, model: str = DEFAULT_MO
 
 
 def rank_candidates(shot: Mapping[str, Any], paths: Sequence[str], *, fal_key: str, model: str = DEFAULT_MODEL,
-                    ask: Callable[..., tuple[str, float | None]] = _ask, http: Any = None) -> dict:
+                    ask: Callable[..., tuple[str, float | None]] | None = None, http: Any = None,
+                    backend: JudgeBackend | None = None) -> dict:
     """One vision call ranking a shot's candidate images: {best, verdicts, fix_hint, cost_usd}.
 
-    The candidates are videos 1 to N, the shot's character sheets follow, as
-    in ``check_shot``; one retry on bad JSON.
+    The candidates are media 1 to N (videos on fal, images locally), the
+    shot's character sheets follow, as in ``check_shot``; one retry on bad JSON.
     """
     import httpx
 
+    backend = backend or FAL_BACKEND
+    ask = ask or backend.ask
+    noun = backend.media_noun
     sheets = [s for s in shot.get("cast_sheets") or [] if s.get("path") and os.path.isfile(s["path"])]
     count = len(paths)
-    prompt = "Candidates: " + ", ".join(f"video {n + 1} = candidate {n + 1}" for n in range(count)) + ".\n"
+    prompt = "Candidates: " + ", ".join(f"{noun} {n + 1} = candidate {n + 1}" for n in range(count)) + ".\n"
     if sheets:
         prompt += "Character sheets: " + ", ".join(
-            f"video {count + n + 1} = {sheet.get('name') or 'cast member'}" for n, sheet in enumerate(sheets)) + ".\n"
+            f"{noun} {count + n + 1} = {sheet.get('name') or 'cast member'}" for n, sheet in enumerate(sheets)) + ".\n"
     prompt += "Shot plan:\n" + shot_plan_text(shot)
     owns_http = http is None
     http = http or httpx.Client(timeout=120)
     cost = 0.0
     try:
         with tempfile.TemporaryDirectory(prefix="director-storyboard-rank-") as tmp:
-            urls = [data_uri(still_as_video(path, os.path.join(tmp, f"candidate_{n}.mp4")))
-                    for n, path in enumerate(paths)]
-            for n, sheet in enumerate(sheets):
-                urls.append(data_uri(still_as_video(sheet["path"], os.path.join(tmp, f"sheet_{n}.mp4"))))
+            urls = backend.media_for_images(list(paths) + [sheet["path"] for sheet in sheets], tmp)
             last_error: Exception | None = None
             for _ in range(2):
-                text, call_cost = ask(http, fal_key, model, RANK_PROMPT, prompt, urls, time.sleep,
+                text, call_cost = ask(http, fal_key, model, rank_prompt(noun), prompt, urls, time.sleep,
                                       max_tokens=4000, timeout=180)
                 cost += float(call_cost or 0)
                 try:
@@ -417,6 +465,7 @@ def judge_storyboard(
     model: str | None = None,
     max_attempts: int = MAX_ATTEMPTS,
     workers: int = VISION_WORKERS,
+    backend: str = "fal",
 ) -> dict:
     """Judge every shot image, regenerate failures, flag what stays bad.
 
@@ -432,6 +481,7 @@ def judge_storyboard(
     attempts_allowed = max_attempts if vision else DUPLICATE_ONLY_ATTEMPTS
     report: dict[str, Any] = {
         "status": "running", "mode": "vision" if vision else "duplicates_only", "model": model if vision else None,
+        "backend": backend if vision else None,
         "started_at": time.time(), "cost_usd": 0.0,
         "shots": [{"index": i, "verdict": "pending" if shot.get("path") else "skipped", "attempts": 0,
                    "issues": [], "fix_hint": "", "duplicate_of": None,
@@ -559,7 +609,7 @@ def shots_from_plans(clip_plans: Sequence[Mapping[str, Any]], clip_images: Seque
 
 
 def stage_config(params: Mapping[str, Any] | None) -> dict:
-    """``settings`` of the running server: its services flags and its fal key."""
+    """``settings`` of the running server: its services flags, judge backend and fal key."""
     from services import cloud_image
     from services import director_pipeline as pipeline
 
@@ -584,7 +634,8 @@ def run_stage(pid: str, params: dict, clip_plans: list[dict], clip_images: list[
         shots = shots_from_plans(clip_plans, clip_images, out_dir, params)
         if not any(shot["path"] for shot in shots):
             return None
-        mode = "vision + duplicates" if config["vision"] else "duplicates only (no fal key)"
+        mode = (f"vision ({config['provider']}, {config['model']}) + duplicates" if config["vision"]
+                else "duplicates only (no usable judge backend)")
         print(f"[Pipeline {pid}] Storyboard judge: {len(shots)} shot(s), {mode}")
 
         def is_cancelled() -> bool:
@@ -603,7 +654,7 @@ def run_stage(pid: str, params: dict, clip_plans: list[dict], clip_images: list[
             return filename if os.path.isabs(filename) else os.path.join(out_dir, filename)
 
         def record_cost(index: int, verdict: dict) -> None:
-            cost_ledger.record(pid, "cloud", stage=STAGE, provider="fal", model=config["model"],
+            cost_ledger.record(pid, "cloud", stage=STAGE, provider=config["provider"], model=config["model"],
                                shot=index, usd=verdict.get("cost_usd"))
 
         def publish(report: dict) -> None:
@@ -615,9 +666,9 @@ def run_stage(pid: str, params: dict, clip_plans: list[dict], clip_images: list[
         check = None
         if config["vision"]:
             def check(shot: dict) -> dict:
-                return check_shot(shot, fal_key=config["fal_key"], model=config["model"])
+                return check_shot(shot, fal_key=config["fal_key"], model=config["model"], backend=config["backend"])
         report = judge_storyboard(shots, rerun=rerun, check=check, record_cost=record_cost, on_progress=publish,
-                                  is_cancelled=is_cancelled, model=config["model"])
+                                  is_cancelled=is_cancelled, model=config["model"], backend=config["provider"])
         print(f"[Pipeline {pid}] Storyboard judge: regenerated {report['regenerated']}, "
               f"flagged {report['flagged']}, cost ${report['cost_usd']}")
         return report

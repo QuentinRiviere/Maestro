@@ -111,6 +111,23 @@ class TestApiKeySaving(unittest.TestCase):
         self.assertEqual(self.services["enhance_fidelity_retries"], 0)
         self.assertFalse(self.services["enhance_fidelity_auto_continue"])
 
+    def test_director_judge_backend_settings_are_validated_and_the_key_is_masked(self):
+        result = self.save({"director_judge_provider": "openai", "director_judge_url": " https://spark.tailnet/v1 ",
+                            "director_judge_api_key": "llama-swap-secret-key", "director_judge_model": "judge"})
+        self.assertEqual(self.services["director_judge_provider"], "openai")
+        self.assertEqual(self.services["director_judge_url"], "https://spark.tailnet/v1")
+        self.assertEqual(self.services["director_judge_api_key"], "llama-swap-secret-key")
+        self.assertEqual(self.services["director_judge_model"], "judge")
+        self.assertNotIn("llama-swap-secret-key", json.dumps(result))
+        self.assertEqual(result["updated"]["director_judge_api_key"], "llam...-key")
+        for payload in ({"director_judge_provider": "replicate"}, {"director_judge_url": "spark:8080"},
+                        {"director_judge_url": 5}, {"director_judge_model": "x" * 201}):
+            with self.subTest(payload=payload), self.assertRaises(HTTPError) as error:
+                self.save(payload)
+            self.assertEqual(error.exception.status_code, 400)
+        self.save({"director_judge_url": ""})
+        self.assertEqual(self.services["director_judge_url"], "")
+
     def test_fidelity_preferences_reject_invalid_types_and_limits(self):
         for value in (-1, 6, 1.5, True, "3", None):
             with self.subTest(retries=value), self.assertRaises(HTTPError):
