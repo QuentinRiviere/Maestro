@@ -175,7 +175,9 @@ LIGHTING_RULE = """LIGHTING (live-action / photographic looks): the light is mot
 scene's time of day. Name the visible light sources (practicals: lamps, pendants, windows, neon, streetlights,
 screens) and where the shadows fall on the faces. Night and interior drama scenes are low-key: most of the frame
 dark, deep shadows, faces partly in shadow. Never "balanced", "even", "soft natural lighting" or "natural skin
-tones" as the whole description."""
+tones" as the whole description. Colour stays within one muted family per scene: a warm practical against a
+cool window is fine when the cool side is dim and desaturated, but never a saturated teal-and-orange split,
+never "cyan rim light" on every face, never bokeh circles filling the background (the generic AI look)."""
 
 SCENE_DESIGN_SYSTEM = """You are the director preparing the scenes of a short production before shooting.
 From the brief, the skill rules and the cast, design the scenes. Return ONLY a JSON array, one object per scene:
