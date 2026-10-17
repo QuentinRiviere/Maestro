@@ -91,8 +91,11 @@ function showTab(name) {
   document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
   document.querySelectorAll(".tab").forEach((t) => (t.hidden = t.id !== "tab-" + name));
   clearInterval(S.jobsTimer);
+  clearInterval(S.memoryTimer);
   ({ catalog: loadCatalog, explore: initExplore, downloads: loadJobs, installed: loadInstalled, config: loadConfig })[name]();
   if (name === "downloads") S.jobsTimer = setInterval(loadJobs, 1500);
+  // The memory view follows the worker's loads and llama-swap's swaps while the tab is open.
+  if (name === "installed") S.memoryTimer = setInterval(loadRunning, 5000);
 }
 
 async function refreshStatus() {
