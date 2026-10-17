@@ -38,3 +38,17 @@ class NameAliasTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_a_descriptor_word_is_not_a_hallucinated_name():
+    from app.services.director.prompt_polish import _strip_hallucinated_names
+
+    name_to_desc = {"Cha Hae-won": "A slender young Korean woman with guarded eyes"}
+    text, found = _strip_hallucinated_names(
+        "Cha Hae-won's pale hands tremble around the mug.",
+        "A slender young Korean woman with guarded eyes trembles, her pale hands around the mug.",
+        name_to_desc,
+        ["the pale hands of the Korean woman"],
+    )
+    assert found == []
+    assert text == "A slender young Korean woman with guarded eyes trembles, her pale hands around the mug."

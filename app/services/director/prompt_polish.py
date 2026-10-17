@@ -585,6 +585,11 @@ def _strip_hallucinated_names(
     # Any word of the input counts, in any case: a sentence the polish
     # starts with an input word ("Medium close-up ...") is no new name.
     in_input_lower = {t.lower() for t in re.findall(r"[A-Za-z]+", input_text or "")}
+    # The polish is told to write the descriptors in place of the names,
+    # so a capitalised descriptor word ("Korean", "Parisian") that the
+    # input never had is no invented name either.
+    for desc in list(name_to_descriptor.values()) + list(fallback_descriptors or []):
+        in_input_lower |= {t.lower() for t in re.findall(r"[A-Za-z]+", str(desc or ""))}
     known_names_lower = {n.lower() for n in name_to_descriptor.keys() if n}
     stoplist_lower = {s.lower() for s in _NAME_HARVEST_STOPLIST}
 
