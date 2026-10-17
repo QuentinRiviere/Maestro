@@ -934,12 +934,16 @@ def _strip_orphan_before_boilerplate(text: str) -> tuple[str, int]:
 #   whether to fold it into the noun phrase based on a verb blocklist —
 #   "X's hand reaches" must NOT capture "reaches" into the noun.
 # The descriptor starts at a word boundary (never inside a word such as
-# "over-the-shoulder") and holds no other "the", so the match is the
-# possessor's own noun phrase, not a run of the sentence before it.
+# "over-the-shoulder") and holds no other "the" and no word that places
+# one person against another ("over", "beside", "behind"...), so the match
+# is the possessor's own noun phrase, not a run of the sentence before it
+# ("the woman with guarded eyes over A friendly young man's shoulder" once
+# became "the shoulder of the woman with guarded eyes over A friendly...").
 _MAX_DESCRIPTOR_WORDS = 14
+_DESCRIPTOR_STOP_WORDS = r"the|over|on|onto|beside|behind|across|between|opposite|toward|towards|facing|at|from|near"
 
 _LONG_POSSESSIVE_RE = re.compile(
-    r"(?:\b(?:the|a|an)\s+)?(?<![\w\-'])(\w(?:(?!\bthe\b)[\w\s\-]){7,79}?)'s\s+(\w+)(\s+\w+)?",
+    r"(?:\b(?:the|a|an)\s+)?(?<![\w\-'])(?!(?:" + _DESCRIPTOR_STOP_WORDS + r")\b)(\w(?:(?!\b(?:" + _DESCRIPTOR_STOP_WORDS + r")\b)[\w\s\-]){7,79}?)'s\s+(\w+)(\s+\w+)?",
     re.IGNORECASE,
 )
 

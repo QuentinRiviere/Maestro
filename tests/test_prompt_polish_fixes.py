@@ -133,6 +133,16 @@ class TestLongPossessiveRewrite(unittest.TestCase):
         # The original possessive form must be gone.
         self.assertNotIn("breasts's", cleaned)
 
+    def test_the_descriptor_stops_at_a_placing_word(self):
+        # Run 3087cc42: the possessor is the man, not the whole framing
+        # phrase from the woman onward.
+        text = ("close-up on A slender young Korean woman with guarded eyes over "
+                "A friendly Korean young man with round spectacles's shoulder, vertical")
+        cleaned, count = _rewrite_long_possessives(text)
+        self.assertEqual(count, 1)
+        self.assertEqual(cleaned, "close-up on A slender young Korean woman with guarded eyes over "
+                                  "the shoulder of the friendly Korean young man with round spectacles, vertical")
+
     def test_with_leading_the_still_works(self):
         # Backward-compat — old behavior must continue.
         text = "the woman in middle with massive breasts's chest tightens."
