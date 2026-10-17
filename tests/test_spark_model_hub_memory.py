@@ -16,6 +16,9 @@ MEMINFO = """MemTotal:       130000000 kB
 MemFree:         6000000 kB
 MemAvailable:   28000000 kB
 Buffers:          100000 kB
+Cached:         20000000 kB
+Shmem:          40000000 kB
+SReclaimable:     500000 kB
 SwapTotal:      16000000 kB
 SwapFree:        4000000 kB
 """
@@ -24,8 +27,8 @@ SwapFree:        4000000 kB
 class MeminfoTests(unittest.TestCase):
     def test_figures_in_gb(self):
         host = memory.parse_meminfo(MEMINFO)
-        self.assertEqual(host, {"total_gb": 133.1, "available_gb": 28.7, "used_gb": 104.4,
-                                "swap_total_gb": 16.4, "swap_used_gb": 12.3})
+        self.assertEqual(host, {"total_gb": 133.1, "available_gb": 28.7, "used_gb": 104.4, "cache_gb": 21.1,
+                                "shmem_gb": 41.0, "swap_total_gb": 16.4, "swap_used_gb": 12.3})
 
     def test_unreadable_is_empty(self):
         self.assertEqual(memory.parse_meminfo(""), {})

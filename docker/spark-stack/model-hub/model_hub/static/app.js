@@ -462,7 +462,8 @@ async function loadRunning() {
     const header = host.total_gb
       ? h("div", {}, `Host: ${gbs(host.used_gb)} used, ${gbs(host.available_gb)} available of ${gbs(host.total_gb)}`,
           host.swap_used_gb ? h("span", { class: host.swap_used_gb > 1 ? "warn" : "muted" }, `, swap ${gbs(host.swap_used_gb)}`) : null,
-          m.other_gb != null ? h("span", { class: "muted" }, ` (${gbs(m.other_gb)} page cache and others)`) : null)
+          m.other_gb != null ? h("span", { class: "muted" }, ` · ${gbs(m.other_gb)} other processes and kernel`) : null,
+          host.cache_gb != null ? h("span", { class: "muted" }, ` · ${gbs(host.cache_gb)} page cache (reclaimable)`) : null)
       : h("div", { class: "muted" }, "Host memory unknown.");
     const models = m.llama_swap && m.llama_swap.models || [];
     const list = !m.llama_swap || !m.llama_swap.reachable ? h("span", {}, "llama-swap not reachable: " + (m.llama_swap && m.llama_swap.error || ""))

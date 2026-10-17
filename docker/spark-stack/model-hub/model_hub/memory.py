@@ -37,10 +37,14 @@ def parse_meminfo(text: str) -> dict[str, float]:
     available = values.get("MemAvailable", values.get("MemFree", 0))
     swap_total = values.get("SwapTotal", 0)
     swap_free = values.get("SwapFree", 0)
+    cached = values.get("Cached", 0) + values.get("Buffers", 0) + values.get("SReclaimable", 0)
     return {
         "total_gb": round(total / GB, 1),
         "available_gb": round(available / GB, 1),
+        # used = what cannot be reclaimed: processes, shared/unified allocations, kernel.
         "used_gb": round((total - available) / GB, 1),
+        "cache_gb": round(cached / GB, 1),
+        "shmem_gb": round(values.get("Shmem", 0) / GB, 1),
         "swap_total_gb": round(swap_total / GB, 1),
         "swap_used_gb": round(max(0, swap_total - swap_free) / GB, 1),
     }
@@ -106,8 +110,10 @@ def memory_view(
     ``estimate_gb(model_id)`` and ``resident(model_id)`` come from the hub's
     entries. The worker entry of llama-swap carries the worker summary, so
     its models appear under it. ``accounted_gb`` sums the known estimates and
-    the worker's process size; the rest of ``used_gb`` is page cache, other
-    processes or models the hub cannot size.
+    the worker's process size; the rest of ``used_gb`` (``other_gb``) is
+    other processes and containers, kernel and shared memory the hub cannot
+    name. Page cache is not in ``used_gb`` (it is reclaimable) and shows
+    apart as ``cache_gb``.
     """
     models: list[dict[str, Any]] = []
     accounted = 0.0
