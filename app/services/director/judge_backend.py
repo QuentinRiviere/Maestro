@@ -333,7 +333,11 @@ def load_json_object(text: str, who: str = "The judge") -> dict:
         if isinstance(value, dict):
             return value
         error = ValueError("the JSON is not an object")
-    raise JudgeError(f"{who} returned invalid JSON: {error}") from error
+    where = getattr(error, "pos", None)
+    excerpt = ""
+    if isinstance(where, int):
+        excerpt = " near: " + repr(body[max(0, where - 120):where + 120])
+    raise JudgeError(f"{who} returned invalid JSON: {error}{excerpt}") from error
 
 
 def _content_text(body: Mapping[str, Any]) -> str:
