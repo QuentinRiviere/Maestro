@@ -9443,14 +9443,11 @@ def _split_h3_sequence_outputs(
 
 def _build_tight_edit(pid: str, clip_plans: list[dict], clip_videos: list, out_dir: str) -> Optional[str]:
     """Join each shot's planned keep range into ``*_edit.mp4``; the full join stays."""
-    from services.director.edit_cut import EDIT_SUFFIX, build_edit, has_cuts, normalize_keep
+    from services.director.edit_cut import EDIT_SUFFIX, build_edit, has_cuts, plan_keeps
 
     if not clip_videos or len(clip_videos) != len(clip_plans) or not all(clip_videos):
         return None
-    keeps = [
-        normalize_keep(plan.get("_director_keep_sec"), plan.get("_director_duration_sec"))
-        for plan in clip_plans
-    ]
+    keeps = plan_keeps(clip_plans)
     if not has_cuts(keeps):
         return None
     paths = [os.path.join(out_dir, os.path.basename(str(name))) for name in clip_videos]

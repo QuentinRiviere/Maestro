@@ -608,12 +608,17 @@ def concat_shots(paths: list[str], dest: str) -> str:
     return dest
 
 
-def episode_source(clips: list[dict], output_files: list[str], out_dir: str) -> tuple[list[str], str] | None:
+def episode_source(clips: list[dict], output_files: list[str], out_dir: str,
+                   edit_file: str | None = None) -> tuple[list[str], str] | None:
     """(paths, kind) of the episode to judge.
 
-    ``kind`` is "multiclip" (the stitched join), "concat" (per-shot files to
-    join here) or "joined" (a single seamless render); None when nothing exists.
+    ``kind`` is "edit" (the tight edit, what the viewer gets), "multiclip"
+    (the stitched join), "concat" (per-shot files to join here) or "joined"
+    (a single seamless render); None when nothing exists.
     """
+    edit = _resolve(out_dir, edit_file) if edit_file else None
+    if edit:
+        return [edit], "edit"
     stitched = find_stitched_video(output_files, out_dir)
     if stitched:
         return [stitched], "multiclip"
@@ -636,13 +641,19 @@ def _probe_duration(path: str) -> float | None:
 
 
 def episode_timeline(clips: list[dict], out_dir: str,
-                     probe: Callable[[str], float | None] = _probe_duration) -> list[dict]:
-    """Shot time ranges in the stitched episode: real file lengths, else planned ones."""
+                     probe: Callable[[str], float | None] = _probe_duration,
+                     keeps: Sequence[tuple[float, float] | None] | None = None) -> list[dict]:
+    """Shot time ranges in the stitched episode: real file lengths, else planned ones.
+
+    With ``keeps`` (the tight edit's windows, see ``edit_cut.plan_keeps``) a
+    kept shot lasts its window.
+    """
     timeline, cursor = [], 0.0
     for index, clip in enumerate(clips):
         planned = clip.get("planned_clip") or {}
         path = _resolve(out_dir, clip.get("video_filename"))
-        duration = (probe(path) if path else None) or float(
+        keep = keeps[index] if keeps and index < len(keeps) else None
+        duration = (keep[1] - keep[0]) if keep else (probe(path) if path else None) or float(
             planned.get("duration_sec") or clip.get("_director_duration_sec")
             or max(0.0, float(planned.get("end") or 0) - float(planned.get("start") or 0)))
         timeline.append({"shot": index + 1, "start_sec": round(cursor, 2), "end_sec": round(cursor + duration, 2)})
@@ -809,17 +820,20 @@ def review_episode(
     judge: Callable[..., dict] = judge_episode,
     probe: Callable[[str], float | None] = _probe_duration,
     backend: "JudgeBackend | None" = None,
+    edit_file: str | None = None,
 ) -> dict:
-    """Judge the stitched episode as one scene. Failures are recorded, never raised."""
+    """Judge the episode as one scene: the tight edit when there is one, else the join. Failures are recorded, never raised."""
+    from services.director.edit_cut import plan_keeps
+
     review: dict[str, Any] = {"status": "running", "model": model, "backend": backend_name(backend),
                               "started_at": time.time()}
-    source = episode_source(clips, output_files, out_dir)
+    source = episode_source(clips, output_files, out_dir, edit_file=edit_file)
     if source is None:
         review.update(status="failed", error="No rendered episode to review", finished_at=time.time())
         return review
     paths, kind = source
     review["source"] = kind
-    timeline = episode_timeline(clips, out_dir, probe)
+    timeline = episode_timeline(clips, out_dir, probe, keeps=plan_keeps(clips) if kind == "edit" else None)
     try:
         with tempfile.TemporaryDirectory(prefix="director-episode-") as tmp:
             dest = os.path.join(tmp, "episode.mp4")

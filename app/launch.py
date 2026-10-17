@@ -693,7 +693,7 @@ def _run_director_review(pid: str, base: str, wait_for_save: bool, takes: int = 
         review["episode"] = review_episode(
             state.get("clips") or [], state.get("output_files") or [], state_dir,
             context=episode_context(state), fal_key=fal_key, publish=publish, model=episode_model,
-            style_contract=contract, backend=backend)
+            style_contract=contract, backend=backend, edit_file=state.get("edit_file"))
         review["cost_usd"] = round(float(review.get("cost_usd") or 0)
                                    + float(review["episode"].get("cost_usd") or 0), 4)
         save_review(state_dir, pid, review)

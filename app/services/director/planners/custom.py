@@ -74,6 +74,10 @@ SCENE_CRAFT = """SCENE CRAFT (this is what separates a real scene from generated
   eyelines match across shot/reverse-shot.
 - Cut on action: a shot opens exactly where the previous shot of the same scene ended (same pose, same grip,
   same distance). Write opening_blocking and closing_blocking as concrete positions and poses.
+- Action is a visible transition: the shot's decisive gesture is NOT done yet at the first frame (a hand that
+  will grab a wrist starts on the table; a nod starts with the head still) and IS done by the last frame, so the
+  render shows the change itself; the action prompt names the start pose, the one move and the end pose, and
+  that move falls inside keep_sec.
 - Action is performance, second by second: a physical intention, the visible expression change it causes, the
   reaction. No filler motion (aimless walking, hair touching, looking around) to fill time.
 - Filmable action only: an action beat describes what a viewer can see at the shot's framing in a short, low

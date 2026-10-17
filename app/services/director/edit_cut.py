@@ -14,6 +14,11 @@ from typing import Any
 
 MIN_KEEP_SEC = 1.0
 EDIT_SUFFIX = "_edit.mp4"
+# The most screen time a shot keeps, by scene type (drama cutting rhythm):
+# planners write keep_sec but tend to keep nearly the whole render, and
+# both video judges called 6 s reactions dead air.
+KEEP_CAPS = {"insert": 3.0, "reaction": 3.0, "exchange": 4.0, "establishing": 5.0}
+DEFAULT_KEEP_CAP = 5.0
 
 
 def normalize_keep(value: Any, duration: float | None) -> tuple[float, float] | None:
@@ -78,3 +83,42 @@ def build_edit(video_paths: list[str], keeps: list[tuple[float, float] | None], 
             check=True, capture_output=True, timeout=600,
         )
     return output_path
+
+
+def keep_cap(scene_type: Any) -> float:
+    """The longest keep window of a scene type (``DEFAULT_KEEP_CAP`` for an unknown one)."""
+    return KEEP_CAPS.get(str(scene_type or "").strip().lower(), DEFAULT_KEEP_CAP)
+
+
+def cap_keep(keep: tuple[float, float] | None, scene_type: Any, duration: float | None) -> tuple[float, float] | None:
+    """``keep`` shortened to its scene type's cap around its centre; a whole shot over the cap gets a centred window.
+
+    None stays None when the shot already fits its cap (nothing to cut).
+    """
+    cap = keep_cap(scene_type)
+    length = float(duration or 0)
+    if keep is None:
+        if length <= cap + 0.05:
+            return None
+        start = (length - cap) / 2
+        return round(start, 3), round(start + cap, 3)
+    start, end = keep
+    if end - start <= cap + 0.05:
+        return keep
+    centre = (start + end) / 2
+    start = max(0.0, centre - cap / 2)
+    end = start + cap
+    if length and end > length:
+        end = length
+        start = max(0.0, end - cap)
+    return round(start, 3), round(end, 3)
+
+
+def plan_keeps(clip_plans: list[dict]) -> list[tuple[float, float] | None]:
+    """Each shot's keep window: the planner's, normalised and capped by its scene type."""
+    return [
+        cap_keep(normalize_keep(plan.get("_director_keep_sec"), plan.get("_director_duration_sec")),
+                 plan.get("_director_scene_type"), plan.get("_director_duration_sec"))
+        for plan in clip_plans
+    ]
+
