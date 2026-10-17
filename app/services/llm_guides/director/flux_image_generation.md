@@ -20,7 +20,7 @@ RULES:
 
 ALWAYS end every image_prompt with ONE identity sentence:
 - Stylized reference (drawn, painted, animated): "Preserve character identity, attire, body attributes, and the art style of the reference image."
-- Photographic / live-action reference: "Keep each person's face, hair, body and clothes and the set's layout from the reference images; take the lighting, colour and mood from this text, not from the references."
+- Photographic / live-action reference: "Keep each person's face, hair, body and clothes and the set's layout from the reference images; take the lighting, colour, mood and the expression on each face from this text, not from the references."
   Never the art-style sentence, and never "use lighting and color temp from reference image": the photos give identity and layout only, the light comes from your prompt.
 
 LIVE-ACTION LIGHTING — for a photographic / live-action look the light is motivated and contrasted, consistent with the time of day: name the visible light sources (lamps, pendants, windows, neon, streetlights, screens) and where the shadows fall on the faces. Night and interior drama scenes are low-key: most of the frame dark, deep shadows, faces partly in shadow. Never "balanced", "even", "soft natural lighting" or "natural skin tones" as the whole description.

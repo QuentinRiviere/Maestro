@@ -5835,8 +5835,9 @@ def layout_diagram_fits(image_model: str) -> bool:
 SCENE_SHOT_PREFIX = "Same place and same moment of the scene, from a new camera position and framing. "
 # Lead of an insert: the framing first, before the long shot text, so the
 # editor does not draw the people the text names (see ``scene_shot_refs``).
-INSERT_LEAD = ("Extreme close-up insert, macro framing: only hands, objects and the surface they rest on fill the "
-               "frame; no face, no head, no shoulders and no body anywhere in the image. ")
+INSERT_LEAD = ("Extreme close-up insert, macro framing, the camera angled down at the tabletop so the surface fills "
+               "the frame to its top edge: only hands, objects and the surface they rest on are in the image; no face, "
+               "no chin, no head, no shoulders and no torso anywhere, not even cropped at the frame edge. ")
 
 
 def shot_is_tight(plan: dict) -> bool:

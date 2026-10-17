@@ -854,7 +854,7 @@ ART_STYLE_IDENTITY_ENDING = (
 )
 PHOTOGRAPHIC_IDENTITY_ENDING = (
     "Keep each person's face, hair, body and clothes and the set's layout from the reference images; "
-    "take the lighting, colour and mood from this text, not from the references."
+    "take the lighting, colour, mood and the expression on each face from this text, not from the references."
 )
 # Either identity sentence (and the older "...from the reference image." form).
 IDENTITY_SENTENCE_RE = re.compile(

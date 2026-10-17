@@ -120,5 +120,5 @@ BAD EXAMPLES:
 
 ALWAYS end every image_prompt with ONE identity sentence:
 - Stylized reference (drawn, painted, animated): "Preserve character identity, attire, body attributes, and the art style of the reference image."
-- Photographic / live-action reference: "Keep each person's face, hair, body and clothes and the set's layout from the reference images; take the lighting, colour and mood from this text, not from the references."
+- Photographic / live-action reference: "Keep each person's face, hair, body and clothes and the set's layout from the reference images; take the lighting, colour, mood and the expression on each face from this text, not from the references."
   Never the art-style sentence, and never "use lighting and color temp from reference image": the photos give identity and layout only, the light comes from your prompt.

@@ -356,7 +356,7 @@ class ImageRefProfileTests(unittest.TestCase):
                                                 master="cafe.jpg", identity=["girl.jpg", "boy.jpg"], empty_set=True)
         self.assertEqual(refs, [])
         self.assertTrue(prompt.startswith("Extreme close-up insert"))
-        self.assertIn("no face, no head", prompt)
+        self.assertIn("no face, no chin, no head", prompt)
         self.assertNotIn("Same place and same moment", prompt)
         self.assertTrue(prompt.endswith("SHOT: tight insert"))
 
