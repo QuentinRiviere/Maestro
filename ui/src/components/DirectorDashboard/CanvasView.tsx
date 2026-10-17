@@ -19,6 +19,7 @@ import {
   targetForNode, type AnnotationCategory, type AnnotationTarget, type NodeBadge, type RunAnnotation,
 } from '../../lib/directorAnnotations'
 import { AnnotationForm, AnnotationList, NoteBadge } from './Annotations'
+import { DraftLightbox, DraftStrip, type DraftActions } from './DraftCandidates'
 import type { AnnotationActions } from './useRunAnnotations'
 import { StatusDot } from './runUi'
 import { STATUS_BORDER, STATUS_LABEL } from './runStyles'
@@ -37,6 +38,8 @@ type FlowData = {
   cellBadges?: ReadonlyMap<number, NodeBadge>
   /** Lists the notes of an anchor id. */
   onBadge?: (anchorId: string) => void
+  /** Opens a shot's draft candidate large. */
+  onPreviewDraft?: (shot: number, candidateIndex: number) => void
 }
 type FlowNode = Node<FlowData>
 
@@ -88,6 +91,7 @@ const StageNode = memo(function StageNode({ data }: NodeProps<FlowNode>) {
   const isVideo = node.kind === 'clip' || node.kind === 'final'
   const clickable = !!data.onAnnotate || (!!data.onOpen && (node.shot != null || node.kind === 'final'))
   const showThumb = !!node.media && node.kind !== 'prompt'
+  const drafts = node.kind === 'image' && node.shot != null && node.drafts?.candidates.length ? node.drafts : null
   return (
     <div className="relative h-full w-full">
     <div
@@ -107,7 +111,14 @@ const StageNode = memo(function StageNode({ data }: NodeProps<FlowNode>) {
           <span className="ml-auto"><StatusDot status={node.status} /></span>
         </div>
         {node.detail && (
-          <p className={`text-[10px] text-text-secondary ${node.kind === 'brief' ? 'line-clamp-3' : 'line-clamp-4'} break-words`}>{node.detail}</p>
+          <p className={`text-[10px] text-text-secondary ${node.kind === 'brief' ? 'line-clamp-3' : drafts ? 'line-clamp-1' : 'line-clamp-4'} break-words`}>{node.detail}</p>
+        )}
+        {drafts && (
+          <DraftStrip
+            drafts={drafts}
+            aspect={data.aspect}
+            onPreview={candidateIndex => data.onPreviewDraft?.(node.shot!, candidateIndex)}
+          />
         )}
         {node.kind !== 'brief' && node.kind !== 'cost' && (
           <span className="mt-auto text-[9px] uppercase tracking-wide text-text-muted">{STATUS_LABEL[node.status]}</span>
@@ -366,6 +377,8 @@ export interface CanvasViewProps {
   /** Post-analysis notes of the run; omit the actions to hide annotation tools. */
   annotations?: RunAnnotation[]
   annotationActions?: AnnotationActions
+  /** Switching a shot's chosen storyboard draft; omit to make the drafts view-only. */
+  draftActions?: DraftActions
 }
 
 /** Note popover anchored to a canvas node: a new note, or the node's notes. */
@@ -400,6 +413,7 @@ function CanvasBody(props: CanvasViewProps) {
   const [runNoteOpen, setRunNoteOpen] = useState(false)
   const [categoryFilter, setCategoryFilter] = useState<AnnotationCategory | 'all'>('all')
   const [showResolved, setShowResolved] = useState(false)
+  const [draftPreview, setDraftPreview] = useState<{ shot: number; index: number } | null>(null)
   const { fitView } = useReactFlow()
 
   const graph = useMemo(() => buildDirectorDag({
@@ -455,6 +469,10 @@ function CanvasBody(props: CanvasViewProps) {
 
   const onAnnotate = annotating && annotationActions ? startNote : undefined
   const onBadge = useCallback((anchor: string) => setPopover({ anchor, mode: 'list' }), [])
+  const onPreviewDraft = useCallback((shot: number, index: number) => setDraftPreview({ shot, index }), [])
+  const closeDraftPreview = useCallback(() => setDraftPreview(null), [])
+  const stepDraftPreview = useCallback((index: number) => setDraftPreview(current => current && { ...current, index }), [])
+  const previewShot = draftPreview ? shots[draftPreview.shot] : undefined
 
   const nodes: FlowNode[] = useMemo(() => graph.nodes.map(node => {
     const structural = node.kind === 'frame' || node.kind === 'column'
@@ -466,6 +484,7 @@ function CanvasBody(props: CanvasViewProps) {
         node, onOpen: structural ? undefined : onOpen, onToggle, aspect,
         onAnnotate, badge: badges.get(node.id), onBadge,
         cellBadges: node.kind === 'storyboard' ? cellBadges : undefined,
+        onPreviewDraft: node.kind === 'image' ? onPreviewDraft : undefined,
       },
       style: { width: node.width, height: node.height },
       width: node.width,
@@ -476,7 +495,7 @@ function CanvasBody(props: CanvasViewProps) {
       selectable: !structural,
       focusable: !structural,
     }
-  }), [graph, onOpen, onToggle, aspect, onAnnotate, badges, onBadge, cellBadges])
+  }), [graph, onOpen, onToggle, aspect, onAnnotate, badges, onBadge, cellBadges, onPreviewDraft])
 
   const edges: Edge[] = useMemo(() => graph.edges.map(edge => ({
     id: edge.id,
@@ -487,17 +506,19 @@ function CanvasBody(props: CanvasViewProps) {
     style: edge.animated ? { stroke: 'var(--color-accent-blue)', strokeWidth: 2 } : undefined,
   })), [graph])
 
-  // Esc closes the innermost layer: the popover, the run-note form, then annotate mode.
+  // Esc closes the innermost layer: the draft preview, the popover, the
+  // run-note form, then annotate mode.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return
-      if (popover) setPopover(null)
+      if (draftPreview) setDraftPreview(null)
+      else if (popover) setPopover(null)
       else if (runNoteOpen) setRunNoteOpen(false)
       else if (annotating) setAnnotating(false)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [popover, runNoteOpen, annotating])
+  }, [draftPreview, popover, runNoteOpen, annotating])
 
   const focusAnnotation = (annotation: RunAnnotation) => {
     const anchor = anchorNodeId(annotation.target, visibleAnchors, shotScenes)
@@ -717,6 +738,16 @@ function CanvasBody(props: CanvasViewProps) {
             </a>
           </footer>
         </aside>
+      )}
+      {draftPreview && previewShot?.drafts && (
+        <DraftLightbox
+          shot={previewShot}
+          index={Math.min(draftPreview.index, previewShot.drafts.candidates.length - 1)}
+          aspect={aspect}
+          actions={props.draftActions}
+          onIndex={stepDraftPreview}
+          onClose={closeDraftPreview}
+        />
       )}
     </div>
   )

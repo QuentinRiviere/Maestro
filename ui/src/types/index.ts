@@ -2048,6 +2048,49 @@ export interface DirectorV2PlanResponse {
 
 // ── Director Pipeline Dashboard ──────────────────────────────────────────
 
+/** One best-of-N storyboard draft rendered for a shot (`director_storyboard_drafts`). */
+export interface StoryboardDraftCandidate {
+  round: number
+  /** 1-based position within its round. */
+  candidate: number
+  seed?: number
+  /** Output file name of the draft image. */
+  file: string
+  verdict?: 'pass' | 'flagged' | string
+  issues?: string[]
+  /** Rendered in one batched job with the round's other candidates. */
+  batched?: boolean
+}
+
+export interface StoryboardDraftRound {
+  round: number
+  /** Fix hint applied on top of the prompt for this round. */
+  hint?: string
+  /** 1-based candidate the judge ranked best in this round. */
+  best?: number | null
+  fix_hint?: string
+  cost_usd?: number
+}
+
+/** Candidates, ranking, chosen draft and final pass of one shot's start image. */
+export interface StoryboardDrafts {
+  count?: number
+  resolution?: string
+  judge?: 'vision' | 'none' | string
+  candidates: StoryboardDraftCandidate[]
+  rounds?: StoryboardDraftRound[]
+  chosen?: { round?: number; candidate?: number; file: string; override?: boolean } | null
+  verdict?: 'pass' | 'flagged' | 'unranked' | string
+  issues?: string[]
+  fix_hint?: string
+  /** The full-size start image rendered from the chosen draft. */
+  final?: string
+  final_strength?: number
+  final_from?: string
+  final_error?: string
+  upscaled?: string
+}
+
 export interface PipelineClipState {
   index: number
   planned_clip: PlannedClip | null
@@ -2072,6 +2115,8 @@ export interface PipelineClipState {
   /** What rendered the start image / the clip, from their output sidecars. */
   image_provenance?: GenerationProvenance | null
   video_provenance?: GenerationProvenance | null
+  /** Best-of-N storyboard drafts of the start image; null when the stage is off. */
+  storyboard_drafts?: StoryboardDrafts | null
 }
 
 export interface PipelineLlmPass {

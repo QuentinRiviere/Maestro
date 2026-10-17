@@ -15,6 +15,7 @@
 import {
   formatSeconds, shotTimestamps, type RenderUnit, type RunShot, type SceneGroup, type StageStatus,
 } from './directorRun.ts'
+import type { StoryboardDrafts } from '../types'
 
 export type DagNodeKind =
   | 'column' | 'frame' | 'brief' | 'character' | 'location' | 'scene' | 'planning'
@@ -58,6 +59,8 @@ export interface DagNode {
   cells?: StoryboardCell[]
   /** Storyboard grid column count. */
   gridColumns?: number
+  /** Best-of-N draft candidates of a start-image node. */
+  drafts?: StoryboardDrafts | null
 }
 
 export interface DagEdge {
@@ -358,6 +361,7 @@ export function buildDirectorDag(input: DagInput): { nodes: DagNode[]; edges: Da
         id: `image-${shot.index}`, kind: 'image', x: xs[3], y, width: COL_WIDTH, height: nodeHeight,
         status: shot.imageStatus, label, media: shot.startImage, shot: shot.index,
         detail: shot.judge?.verdict && shot.judge.verdict !== 'skipped' ? `judge: ${shot.judge.verdict}` : undefined,
+        drafts: shot.drafts,
       })
       link(promptSource(shot.index), `image-${shot.index}`)
     }

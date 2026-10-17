@@ -1,8 +1,8 @@
 import { lazy, Suspense, useCallback, useMemo, useState, type ReactNode } from 'react'
 import { Loader2, Pause, Play, RefreshCw, Square } from 'lucide-react'
 import {
-  continuePipeline as apiContinuePipeline, directorCastImageUrl, stopPipeline as apiStopPipeline, updateClipPrompt,
-  type DirectorCastKind,
+  continuePipeline as apiContinuePipeline, directorCastImageUrl, selectClipDraft, stopPipeline as apiStopPipeline,
+  updateClipPrompt, type DirectorCastKind,
 } from '../../api/client'
 import { useStore } from '../../stores/useStore'
 import type { SavedPipelineState } from '../../types'
@@ -12,6 +12,7 @@ import {
 import type { CastRef } from '../../lib/directorDag'
 import type { DirectorView } from '../../lib/directorRoute'
 import { ShotDrawer, type PromptUpdate, type ShotActions } from './ShotDrawer'
+import type { DraftActions } from './DraftCandidates'
 import { StoryboardView } from './StoryboardView'
 import { frameAspect } from './runStyles'
 import { useLiveRun, useRunCosts } from './useLiveRun'
@@ -155,6 +156,19 @@ export function RunWorkspace({ pipeline, view, busy, details }: {
     tag: async (index, tag) => { await tagClip(pid, index, tag) },
   }
 
+  // Same guard as prompt edits: the chosen draft can change while the run
+  // waits at a review gate or once it has ended.
+  const draftActions: DraftActions = {
+    blockedReason: liveActive && !paused
+      ? 'The run is rendering: drafts can be switched while it is paused (review gate) or after it ends.'
+      : busy ? 'A repair is running on this project.' : null,
+    select: async (index, file) => {
+      await selectClipDraft(pid, index, file)
+      await refreshSaved(pid)
+      await refresh()
+    },
+  }
+
   const progress = live?.progress
   const shot = openShot != null ? shots[openShot] : null
   const stagedCount = Object.keys(staged).length
@@ -223,6 +237,7 @@ export function RunWorkspace({ pipeline, view, busy, details }: {
               onOpenShot={setOpenShot}
               annotations={annotations}
               annotationActions={annotationActions}
+              draftActions={draftActions}
             />
           </Suspense>
         ) : (

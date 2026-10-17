@@ -1450,6 +1450,27 @@ export async function rerunClipImage(pid: string, clipIndex: number, prompt?: st
   return res.json()
 }
 
+/**
+ * Make one of a clip's storyboard draft candidates its chosen draft and
+ * re-render the start image from it (`file` is the candidate's output name).
+ */
+export async function selectClipDraft(pid: string, clipIndex: number, file: string): Promise<{
+  filename: string
+  clip_index: number
+  chosen: { round?: number; candidate?: number; file: string; override?: boolean }
+}> {
+  const res = await fetch(`${BASE}/api/v1/director/pipelines/${encodeURIComponent(pid)}/clips/${clipIndex}/select-draft`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ file }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Select draft failed' }))
+    throw new Error(err.error || 'Select draft failed')
+  }
+  return res.json()
+}
+
 export async function rerunClipVideo(pid: string, clipIndex: number, prompt?: string): Promise<{ filename: string; clip_index: number }> {
   const res = await fetch(`${BASE}/api/v1/director/pipelines/${encodeURIComponent(pid)}/clips/${clipIndex}/rerun-video`, {
     method: 'POST',

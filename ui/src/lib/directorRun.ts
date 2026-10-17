@@ -8,7 +8,7 @@
  * the shots into scenes and into H3 render units, and derives per-stage
  * statuses. No React, no fetch: everything here is unit-tested.
  */
-import type { SavedPipelineState } from '../types'
+import type { SavedPipelineState, StoryboardDrafts } from '../types'
 import type { GenerationProvenance } from './provenance'
 
 export type StageStatus = 'pending' | 'running' | 'done' | 'failed' | 'flagged' | 'skipped'
@@ -25,6 +25,8 @@ export interface StoryboardJudgeShot {
   image?: string
   cost_usd?: number
   error?: string
+  /** Best-of-N draft record when the run drafted its storyboard (report mode "drafts"). */
+  drafts?: StoryboardDrafts | null
 }
 
 export interface StoryboardJudgeReport {
@@ -93,6 +95,8 @@ export interface RunShot {
   subjects: string[]
   sequence: SequenceInfo | null
   judge: StoryboardJudgeShot | null
+  /** Best-of-N storyboard drafts of the start image, when the run rendered some. */
+  drafts: StoryboardDrafts | null
   imageStatus: StageStatus
   videoStatus: StageStatus
   tag: 'good' | 'needs_work' | null
@@ -250,6 +254,21 @@ function provenanceOf(value: unknown): GenerationProvenance | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as GenerationProvenance : null
 }
 
+/** A draft record with at least one rendered candidate, or null. */
+export function draftsOf(value: unknown): StoryboardDrafts | null {
+  const record = asDict(value)
+  const candidates = Array.isArray(record.candidates)
+    ? record.candidates.map(asDict).filter(candidate => text(candidate.file))
+    : []
+  if (candidates.length === 0) return null
+  return { ...record, candidates } as unknown as StoryboardDrafts
+}
+
+/** The candidate the record keeps (judge's pick or the human override). */
+export function chosenDraftFile(drafts: StoryboardDrafts | null | undefined): string | null {
+  return text(drafts?.chosen?.file) || null
+}
+
 export function buildRunShots(
   saved: SavedPipelineState | null | undefined,
   live?: LiveRunStatus | null,
@@ -274,6 +293,9 @@ export function buildRunShots(
     const videoStale = savedClip.video_stale === true
     const sequence = sequenceInfo(plan)
     const judge = judgeShots.find(shot => shot?.index === index) || null
+    // Drafts: the live report while the worker runs, the saved clip afterwards.
+    const drafts = (isLiveRun(live) ? draftsOf(judge?.drafts) : null)
+      ?? draftsOf(savedClip.storyboard_drafts) ?? draftsOf(judge?.drafts)
     const videoPrompt = text(plan.video_prompt)
     const sourcePrompt = text(plan._director_h3_source_prompt)
     shots.push({
@@ -297,6 +319,7 @@ export function buildRunShots(
       subjects: subjectNames(plan),
       sequence,
       judge,
+      drafts,
       imageStatus: imageStatusOf(!!startImage, judge, needsImage, runStatus, false),
       videoStatus: videoStatusOf(!!video, videoStale, runStatus, false),
       tag: savedClip.tag === 'good' || savedClip.tag === 'needs_work' ? savedClip.tag : null,

@@ -1,7 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  buildRunShots, dialogueLines, finalEditFile, formatTimecode, groupScenes, renderUnits, shortAction, shotTimestamps,
+  buildRunShots, chosenDraftFile, dialogueLines, draftsOf, finalEditFile, formatTimecode, groupScenes, renderUnits,
+  shortAction, shotTimestamps,
 } from '../src/lib/directorRun.ts'
 import {
   buildDirectorDag, COL_WIDTH, COLLAPSED_COL_WIDTH, columnX, stageKey, STORYBOARD_KEY, STORYBOARD_WIDTH,
@@ -82,6 +83,37 @@ test('buildRunShots reads scene metadata, judge verdicts and statuses', () => {
   assert.equal(shots[1].imageStatus, 'flagged')
   assert.equal(shots[1].videoStatus, 'failed')
   assert.deepEqual(shots[1].judge?.issues, ['extra hand'])
+})
+
+test('buildRunShots keeps the storyboard drafts of a shot, live report first', () => {
+  const candidate = (round: number, index: number, verdict: string) => ({
+    round, candidate: index, seed: 100 + index, file: `r${round}c${index}.png`, verdict, issues: [], batched: true,
+  })
+  const savedDrafts = {
+    count: 2, resolution: '432x768', judge: 'vision',
+    candidates: [candidate(1, 1, 'flagged'), candidate(1, 2, 'pass')],
+    rounds: [{ round: 1, hint: '', best: 2, fix_hint: '', cost_usd: 0.001 }],
+    chosen: { round: 1, candidate: 2, file: 'r1c2.png' }, verdict: 'pass', issues: [], final: 'final.png',
+  }
+  const liveDrafts = { ...savedDrafts, candidates: [candidate(1, 1, 'pass')], chosen: { round: 1, candidate: 1, file: 'r1c1.png' } }
+  const state = saved([clip(0, { start_image_filename: 'final.png', storyboard_drafts: savedDrafts }), clip(1)])
+
+  // After the run: the saved clip's record.
+  const done = buildRunShots(state, { status: 'completed', recovered_from_disk: true })
+  assert.equal(done[0].drafts?.candidates.length, 2)
+  assert.equal(chosenDraftFile(done[0].drafts), 'r1c2.png')
+  assert.equal(done[1].drafts, null)
+
+  // While it runs: the live report's record wins.
+  const running = buildRunShots({ ...state, status: 'running' }, {
+    status: 'running', phase: 'generating_images', clip_plans: [{}, {}],
+    storyboard_judge: { mode: 'drafts', shots: [{ index: 0, verdict: 'pass', drafts: liveDrafts }] },
+  })
+  assert.equal(chosenDraftFile(running[0].drafts), 'r1c1.png')
+
+  // A record without rendered candidates is not drafts.
+  assert.equal(draftsOf({ candidates: [] }), null)
+  assert.equal(draftsOf(null), null)
 })
 
 test('live plans override the saved file and mark the active shot', () => {
