@@ -6192,6 +6192,10 @@ _OTS_FOREGROUND_RE = re.compile(
     r"\bforeground\b|\bback to (?:the )?camera\b|\bfrom behind\b|\bseen from the back\b|\bback turned\b",
     re.IGNORECASE,
 )
+# "over Jin-woo's shoulder", "over the shoulder of Jin-woo".
+_OTS_NAMED_RE = re.compile(
+    r"\bover\s+(?:the\s+shoulders?\s+of\s+)?([A-Z][\w\-]*(?:\s+[A-Z][\w\-]*)?)(?:['’]s\s+shoulders?)?",
+)
 
 
 def director_ots_foreground(plan: dict) -> str:
@@ -6204,10 +6208,21 @@ def director_ots_foreground(plan: dict) -> str:
     from services.director.blocking_map import is_over_the_shoulder, ots_foreground, parse_blocking_map
 
     framing = str(plan.get("_director_camera_framing") or "")
+    subjects = [s for s in plan.get("_director_subjects_on_screen") or [] if isinstance(s, dict)]
+    # "over Jin-woo's shoulder": the framing names the person itself, which
+    # beats the map's geometry (planners place the camera beside the people).
+    named = _OTS_NAMED_RE.search(framing) if is_over_the_shoulder(framing) else None
+    if named:
+        wanted = named.group(1).strip().casefold()
+        for subject in subjects:
+            who = str(subject.get("speaker_name") or subject.get("name") or subject.get("character_id") or "").strip()
+            if who and (who.casefold() == wanted or wanted in who.casefold().split()):
+                return who
     blocking = parse_blocking_map(plan.get("_director_blocking_map"))
     if blocking:
-        return ots_foreground(blocking, framing)
-    subjects = [s for s in plan.get("_director_subjects_on_screen") or [] if isinstance(s, dict)]
+        name = ots_foreground(blocking, framing)
+        if name or not is_over_the_shoulder(framing):
+            return name
     if not is_over_the_shoulder(framing) or len(subjects) < 2:
         return ""
     for subject in subjects:

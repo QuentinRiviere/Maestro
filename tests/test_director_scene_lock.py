@@ -350,6 +350,27 @@ class OverTheShoulderTests(unittest.TestCase):
         plan["_director_camera_framing"] = "medium two-shot"
         self.assertEqual(pipeline.director_ots_foreground(plan), "")
 
+    def test_the_framing_names_the_foreground_person(self):
+        # Seen on a real run: the map's camera stands beside both people, so
+        # the geometry shows no OTS, but the framing says whose shoulder it is.
+        subjects = [{"speaker_name": "Cha Hae-won", "visual_description": "a woman",
+                     "position_or_relation": "screen-left, facing right"},
+                    {"speaker_name": "Song Jin-woo", "visual_description": "a man",
+                     "position_or_relation": "screen-right, facing left toward her"}]
+        plan = {"_director_camera_framing": "close-up, over Jin-woo's shoulder framing Hae-won's face",
+                "_director_subjects_on_screen": subjects,
+                "_director_blocking_map": {
+                    "camera": {"x": 0.89, "y": 1.04, "facing_deg": 326.0, "framing": "close-up"},
+                    "subjects": [{"name": "Cha Hae-won", "x": 0.38, "y": 0.45, "facing_deg": 90.0},
+                                 {"name": "Song Jin-woo", "x": 0.62, "y": 0.45, "facing_deg": 270.0}],
+                    "props": [{"name": "table", "x": 0.5, "y": 0.45}]}}
+        self.assertEqual(pipeline.director_ots_foreground(plan), "Song Jin-woo")
+        plan["_director_camera_framing"] = "medium close-up, over the shoulder of Hae-won onto Jin-woo"
+        self.assertEqual(pipeline.director_ots_foreground(plan), "Cha Hae-won")
+        # Without a map the framing's name wins over the position words too.
+        del plan["_director_blocking_map"]
+        self.assertEqual(pipeline.director_ots_foreground(plan), "Cha Hae-won")
+
 
 if __name__ == "__main__":
     unittest.main()

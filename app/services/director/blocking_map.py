@@ -276,7 +276,8 @@ def subject_view(blocking: Optional[dict], name: str, faces: bool = False) -> st
     return "face_three_quarter" if faces else "back"
 
 
-_OTS_RE = re.compile(r"over[\s-]*(?:the[\s-]*)?shoulders?|\bo\.?t\.?s\b", re.IGNORECASE)
+# "over the shoulder", "over Jin-woo's shoulder", "over his left shoulder", "OTS".
+_OTS_RE = re.compile(r"\bover[\s-]+(?:[\w\-'’]+[\s-]+){0,3}shoulders?\b|\bo\.?t\.?s\b", re.IGNORECASE)
 # Framing words that ask to see the faces, and words that ask for a back view.
 _FACES_RE = re.compile(r"\bfaces?\b|\beyes\b|\breactions?\b|\bexpressions?\b", re.IGNORECASE)
 _BACK_VIEW_RE = re.compile(r"\bback\b|\bbehind\b|silhouett|walk(?:s|ing)? away", re.IGNORECASE)
