@@ -460,7 +460,8 @@ async function loadRunning() {
     const m = await api("/api/memory");
     const host = m.host || {};
     const header = host.total_gb
-      ? h("div", {}, `Host: ${gbs(host.used_gb)} used, ${gbs(host.available_gb)} available of ${gbs(host.total_gb)}`,
+      ? h("div", {}, h("strong", { class: host.available_gb < 15 ? "warn" : "" }, `${gbs(host.available_gb)} free`),
+          ` for a new model (kernel MemAvailable) · ${gbs(host.used_gb)} used of ${gbs(host.total_gb)}`,
           host.swap_used_gb ? h("span", { class: host.swap_used_gb > 1 ? "warn" : "muted" }, `, swap ${gbs(host.swap_used_gb)}`) : null,
           m.other_gb != null ? h("span", { class: "muted" }, ` · ${gbs(m.other_gb)} other processes and kernel`) : null,
           host.cache_gb != null ? h("span", { class: "muted" }, ` · ${gbs(host.cache_gb)} page cache (reclaimable)`) : null)
