@@ -86,7 +86,8 @@ Check every candidate:
 Stylisation that matches the rest of the plan is correct; minor differences (pose details, props in the
 background, colour nuances) pass. Pick as best the candidate that passes and reads the plan most clearly; when
 none passes, the one closest to passing.
-Return ONLY a JSON object, no prose, no markdown, candidates numbered from 1:
+Return ONLY a JSON object, no prose, no markdown, candidates numbered from 1. "issues" lists problems only
+(what is wrong against the plan or the sheets), never what is correct: an empty list for a clean candidate.
 {"best": 1, "verdicts": [{"index": 1, "verdict": "pass"|"flagged", "issues": ["short description", ...]}, ...],
  "fix_hint": "one imperative sentence to append to the image prompt so the next renders fix the issues of the
  best candidate, or empty"}"""

@@ -6317,6 +6317,63 @@ def _without_person_identity(prompt: str, cast: Optional[dict], name: str) -> st
     return re.sub(r"[ \t]{2,}", " ", text).strip()
 
 
+def _ots_subject_prompt(plan: dict, prompt: str, cast: Optional[dict], name: str, side: str) -> str:
+    """``prompt`` with its SUBJECT field rebuilt without the foreground person ("" without that field).
+
+    The planner's SUBJECT lists everyone with their face and clothes; with
+    the foreground person's face text removed their clothes floated next to
+    the other person, who was then drawn wearing them (run 63865d20: the
+    woman in the man's overshirt and glasses). The field is rebuilt from
+    the plan's subjects minus the foreground person, as the insert's is,
+    and that person is only "a shoulder and the back of a head".
+    """
+    from types import SimpleNamespace
+
+    from services.director.policies import resolve_subjects_text
+
+    match = _SUBJECT_FIELD_RE.search(prompt or "")
+    if not match:
+        return ""
+    wanted = name.strip().casefold()
+    characters = [c for c in (cast or {}).get("characters") or [] if isinstance(c, dict)]
+    profiles = {}
+    for index, character in enumerate(characters):
+        profile = SimpleNamespace(physical_description=str(character.get("description") or ""),
+                                  wardrobe=str(character.get("wardrobe") or ""))
+        profiles[f"char_{index}"] = profile
+        profiles[str(character.get("name") or "").strip().casefold()] = profile
+    by_name = {str(c.get("name") or "").strip().casefold() for c in characters}
+
+    def subject_name(subject: dict) -> str:
+        return str(subject.get("speaker_name") or subject.get("name") or "").strip().casefold()
+
+    def resolved(subject: dict) -> Optional[str]:
+        own = subject_name(subject)
+        if own in by_name:
+            return own
+        return str(subject.get("character_id") or "") or None
+
+    subjects = [s for s in plan.get("_director_subjects_on_screen") or [] if isinstance(s, dict)]
+    others = [s for s in subjects if subject_name(s) != wanted
+              and profiles.get(str(s.get("character_id") or "")) is not profiles.get(wanted)]
+    if len(others) == len(subjects):
+        return ""
+    shot = SimpleNamespace(
+        scene_type=str(plan.get("_director_scene_type") or ""),
+        camera_plan=SimpleNamespace(framing=str(plan.get("_director_camera_framing") or "")),
+        subjects_on_screen=[SimpleNamespace(visual_description=str(s.get("visual_description") or ""),
+                                            character_id=resolved(s),
+                                            position_or_relation=str(s.get("position_or_relation") or ""))
+                            for s in others],
+    )
+    text = resolve_subjects_text(shot, SimpleNamespace(get_character=profiles.get))
+    foreground = (f"the out-of-focus shoulder and back of the head of {name} in the {side} foreground, "
+                  "back to the camera")
+    action = str(plan.get("_director_opening_blocking") or "").strip()
+    subject = "; ".join(part.rstrip(". ") for part in (text, foreground, action) if part)
+    return f"{prompt[:match.start(2)]}{subject}.{prompt[match.end(2):]}"
+
+
 def director_ots_prompt(plan: dict, prompt: str, cast: Optional[dict]) -> str:
     """An OTS shot's prompt with its foreground person described without identity.
 
@@ -6336,7 +6393,7 @@ def director_ots_prompt(plan: dict, prompt: str, cast: Optional[dict]) -> str:
     side = _foreground_side(blocking, name) if blocking else _ots_text_side(plan, name)
     clothes = _ots_foreground_clothes(cast, name)
     known_by = f"their clothes ({clothes})" if clothes else "the clothes on that shoulder"
-    prompt = _without_person_identity(prompt, cast, name)
+    prompt = _ots_subject_prompt(plan, prompt, cast, name, side) or _without_person_identity(prompt, cast, name)
     line = (f"{name} appears only once in this shot, as that blurred foreground shape: a dark, out-of-focus "
             f"shoulder and the back of the head at the {side} edge of the frame, recognisable only by "
             f"{known_by}; {name}'s face is never shown and {name} is not drawn again anywhere else in the "

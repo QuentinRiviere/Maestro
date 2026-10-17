@@ -146,8 +146,19 @@ class OtsIdentityTests(unittest.TestCase):
         out = pipeline.director_ots_prompt(OTS_ON_HAE_WON, prompt, cast)
         self.assertNotIn("Round friendly face", out)
         self.assertNotIn("round spectacles and", out)
-        self.assertIn("toward Jin-woo, seen from behind,", out)
+        self.assertIn("the out-of-focus shoulder and back of the head of Jin-woo in the left foreground", out)
         self.assertIn("Jin-woo appears only once in this shot", out)
+
+    def test_a_free_form_prompt_keeps_the_fallback_rewrite(self):
+        cast = {"characters": [
+            {"name": "Jin-woo", "descriptor": "A friendly young man with round spectacles",
+             "description": "23 years old. Round friendly face, warm dark eyes.", "wardrobe": "a green overshirt"},
+            {"name": "Hae-won", "description": "a woman in her twenties", "wardrobe": "a red knit sweater"},
+        ]}
+        out = pipeline.director_ots_prompt(
+            OTS_ON_HAE_WON, "Hae-won faces A friendly young man with round spectacles, 23 years old. Round friendly "
+                            "face, warm dark eyes. across the table.", cast)
+        self.assertIn("Hae-won faces Jin-woo, seen from behind, across the table.", out)
 
 
 class InsertTextTests(unittest.TestCase):
@@ -169,3 +180,35 @@ class InsertTextTests(unittest.TestCase):
         self.assertTrue(prompt.startswith(pipeline.INSERT_LEAD))
         self.assertNotIn("faces half in shadow", prompt)
         self.assertIn("SUBJECT: two hands.", prompt)
+
+
+class OtsSubjectRebuildTests(unittest.TestCase):
+    CAST = {"characters": [
+        {"name": "Cha Hae-won", "description": "22 years old. Oval face, watchful dark eyes.",
+         "wardrobe": "an oversized cream wool sweater over a white collared shirt, a silver disc pendant"},
+        {"name": "Song Jin-woo", "description": "23 years old. Round friendly face, warm dark eyes.",
+         "wardrobe": "a forest green corduroy overshirt over a beige t-shirt, round tortoiseshell glasses"},
+    ]}
+    PLAN = {
+        "_director_camera_framing": "close-up over-the-shoulder on Cha Hae-won",
+        "_director_subjects_on_screen": [
+            {"speaker_name": "Cha Hae-won", "character_id": "char_0", "visual_description": "a woman",
+             "position_or_relation": "screen left, facing right"},
+            {"speaker_name": "Song Jin-woo", "character_id": "char_1", "visual_description": "a man",
+             "position_or_relation": "screen right foreground, back to camera"},
+        ],
+        "_director_opening_blocking": "She looks into his eyes.",
+    }
+
+    def test_the_subject_field_loses_the_foreground_person_and_their_clothes(self):
+        prompt = ("SHOT: close-up | SUBJECT: 22 years old. Oval face, watchful dark eyes., an oversized cream wool "
+                  "sweater, screen left, facing right toward 23 years old. Round friendly face, warm dark eyes., "
+                  "a forest green corduroy overshirt, round tortoiseshell glasses, screen right foreground. | MOOD: tense")
+        out = pipeline.director_ots_prompt(self.PLAN, prompt, self.CAST)
+        self.assertNotIn("Round friendly face", out)
+        self.assertNotIn("tortoiseshell glasses, screen right foreground", out)
+        self.assertIn("SUBJECT: 22 years old. Oval face, watchful dark eyes., an oversized cream wool sweater", out)
+        self.assertIn("the out-of-focus shoulder and back of the head of Song Jin-woo in the right foreground, "
+                      "back to the camera; She looks into his eyes.", out)
+        self.assertIn("| MOOD: tense", out)
+        self.assertIn("Song Jin-woo appears only once in this shot", out)
