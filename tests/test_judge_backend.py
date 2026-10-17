@@ -105,6 +105,7 @@ class AskTests(unittest.TestCase):
         self.assertEqual((body["model"], body["temperature"], body["max_tokens"], body["stream"]),
                          ("judge", 0.2, 400, False))
         self.assertEqual(body["messages"][0], {"role": "system", "content": "SYS"})
+        self.assertEqual(body["chat_template_kwargs"], {"enable_thinking": False})
         parts = body["messages"][1]["content"]
         self.assertEqual(parts[0], {"type": "text", "text": "Shot plan"})
         self.assertEqual(parts[1], {"type": "text", "text": "Image 1:"})

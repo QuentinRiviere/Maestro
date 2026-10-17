@@ -267,6 +267,11 @@ def ask_openai(http: httpx.Client, key: str, model: str, system: str, prompt: st
             "model": model or DEFAULT_OPENAI_MODEL,
             "messages": build_messages(system, prompt, media, tmp, http, frames),
             "temperature": TEMPERATURE, "max_tokens": max_tokens, "stream": False,
+            # Qwen3-class models think by default and spend the whole token
+            # budget on it with five images in the prompt (empty content,
+            # finish_reason "length"): the judge answers straight away. The
+            # verdicts were the same with and without thinking (2 s vs 9 s).
+            "chat_template_kwargs": {"enable_thinking": False},
         }
     last_error: str = ""
     for attempt in range(2):
@@ -288,5 +293,10 @@ def ask_openai(http: httpx.Client, key: str, model: str, system: str, prompt: st
             body = response.json()
         except ValueError as error:
             raise JudgeError("The local judge returned no JSON body") from error
-        return _content_text(body), 0.0
+        text = _content_text(body)
+        if not text:
+            choice = (body.get("choices") or [{}])[0] if isinstance(body, dict) else {}
+            raise JudgeError("The local judge returned an empty answer"
+                             f" (finish_reason {choice.get('finish_reason')!r})")
+        return text, 0.0
     raise JudgeError(f"The local judge failed: {last_error}")
