@@ -10420,6 +10420,27 @@ def _preflight_h3_director_prompts(
     return clip_plans
 
 
+# Closing sentence of a shot nobody speaks in, for models that make their
+# own sound: LTX-2.5 lip-syncs invented speech to any mouth it sees (run
+# 539b11e2: a silent nod became a long line), and the words tell it not to.
+SILENT_SHOT_NOTE = ("Nobody speaks in this shot: every mouth stays closed, no dialogue, no voice; "
+                    "only the ambient sound of the place.")
+
+
+def _plan_has_speech(plan: dict) -> bool:
+    """Whether a shot's dialogue beats carry any spoken text."""
+    return any(isinstance(beat, dict) and str(beat.get("spoken_text") or "").strip()
+               for beat in plan.get("_director_dialogue_beats") or [])
+
+
+def _silent_shot_prompt(plan: dict, prompt: str) -> str:
+    """``prompt`` with ``SILENT_SHOT_NOTE`` when the shot has no spoken line (unchanged otherwise)."""
+    text = str(prompt or "").strip()
+    if not text or _plan_has_speech(plan) or SILENT_SHOT_NOTE in text:
+        return prompt
+    return f"{text} {SILENT_SHOT_NOTE}"
+
+
 def _video_prompt_with_look(prompt: str, look: str, *, windowed: bool = False) -> str:
     """Append the bible's look verbatim to a video prompt (to each window of a windowed one).
 
@@ -10599,6 +10620,9 @@ def _run_video_generation(pid: str, params: dict, clip_plans: list[dict],
             wp = plan.get("window_prompts") or []
             wp = [w.get("prompt", w.get("text", str(w))) if isinstance(w, dict) else str(w) for w in wp]
             vp = str(plan.get("video_prompt", "") or "").strip()
+            if not is_h3_video:
+                wp = [_silent_shot_prompt(plan, w) for w in wp]
+                vp = _silent_shot_prompt(plan, vp)
             span_prompt = vp or " ".join(item.strip() for item in wp if item.strip())
             if span_prompt:
                 timeline_prompt_spans.append(
@@ -10778,11 +10802,15 @@ def _run_video_generation(pid: str, params: dict, clip_plans: list[dict],
         for i, plan in enumerate(clip_plans):
             wp = plan.get("window_prompts") or []
             wp = [w.get("prompt", w.get("text", str(w))) if isinstance(w, dict) else str(w) for w in wp]
+            if not is_h3_video:
+                wp = [_silent_shot_prompt(plan, w) for w in wp]
             if len(wp) > 1:
                 prompts.append("\n".join(wp))
                 per_clip_prompt_modes.append(1)
             else:
                 vp = plan.get("video_prompt", "")
+                if not is_h3_video:
+                    vp = _silent_shot_prompt(plan, vp)
                 pc = planned_clips[i] if i < len(planned_clips) else {}
                 dur = pc.get("duration_sec", pc.get("end", 0) - pc.get("start", 0))
                 if dur > 32 and vp:
