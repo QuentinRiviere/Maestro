@@ -23,7 +23,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import auth, catalog, fetcher, gguf_meta, ggufs, hf, registry, render
+from . import auth, catalog, fetcher, gguf_meta, ggufs, hf, memory, registry, render
 from .paths import SHA_RE, UnsafePathError, check_filename, check_repo_id, check_revision
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
@@ -51,6 +51,8 @@ class Settings:
     default_group: str = "on-demand"
     llama_swap_url: str = ""
     llama_swap_api_key: str = ""
+    worker_url: str = ""            # the Maestro worker behind llama-swap, for the memory view
+    worker_token: str = ""
     cookie_secure: bool = False
     remote_metadata: bool = True    # read GGUF headers from the Hub (Range requests) before a download
 
@@ -70,6 +72,8 @@ class Settings:
             default_group=env.get("MODEL_HUB_DEFAULT_GROUP") or "on-demand",
             llama_swap_url=env.get("LLAMA_SWAP_URL", "").rstrip("/"),
             llama_swap_api_key=env.get("LLAMA_SWAP_API_KEY", ""),
+            worker_url=env.get("MAESTRO_WORKER_URL", "").rstrip("/"),
+            worker_token=env.get("MAESTRO_WORKER_TOKEN", ""),
             cookie_secure=env.get("MODEL_HUB_COOKIE_SECURE", "0").lower() in ("1", "true", "yes"),
             remote_metadata=env.get("MODEL_HUB_REMOTE_METADATA", "1").lower() not in ("0", "false", "no"),
         )
@@ -200,17 +204,38 @@ class Hub:
                 continue
             if not ggufs.is_resident(serve.get("group"), groups, serve.get("preload", False)):
                 continue
-            size = lambda n: int((manifest.get(f"{entry['repo']}/{n}") or {}).get("size", 0))  # noqa: E731
-            # Split models: the manifest lists every part, the serve entry names the first.
-            weights = sum(size(n) for n in _split_parts(manifest, entry["repo"], serve["model"]))
-            info = self.arch_info(entry["repo"], str(entry.get("revision", "main")), serve["model"])
-            est = ggufs.estimate_memory(weights, serve.get("ctx_size", 0),
-                                        size(serve["mmproj"]) if serve.get("mmproj") else 0, info=info,
-                                        cache_type_k=serve.get("cache_type_k", "f16"),
-                                        cache_type_v=serve.get("cache_type_v", "f16"), parallel=serve.get("parallel", 1))
-            budget.resident_gb += est["total"] / ggufs.GB
+            budget.resident_gb += self.serve_estimate_gb(entry, manifest)
             budget.resident.append(serve["id"])
         return budget
+
+    def serve_estimate_gb(self, entry: dict, manifest: dict | None = None) -> float:
+        """The hub's memory estimate of an entry's served model (weights, mmproj, KV cache), in GB."""
+        serve = entry["serve"]
+        manifest = self.store.load_manifest() if manifest is None else manifest
+        size = lambda n: int((manifest.get(f"{entry['repo']}/{n}") or {}).get("size", 0))  # noqa: E731
+        # Split models: the manifest lists every part, the serve entry names the first.
+        weights = sum(size(n) for n in _split_parts(manifest, entry["repo"], serve["model"]))
+        info = self.arch_info(entry["repo"], str(entry.get("revision", "main")), serve["model"])
+        est = ggufs.estimate_memory(weights, serve.get("ctx_size", 0),
+                                    size(serve["mmproj"]) if serve.get("mmproj") else 0, info=info,
+                                    cache_type_k=serve.get("cache_type_k", "f16"),
+                                    cache_type_v=serve.get("cache_type_v", "f16"), parallel=serve.get("parallel", 1))
+        return est["total"] / ggufs.GB
+
+    def served_entries(self) -> dict[str, dict]:
+        """Entries by their served model id (and aliases), for the memory view."""
+        served: dict[str, dict] = {}
+        try:
+            for entry in self.entries():
+                serve = entry.get("serve")
+                if not serve or not serve.get("id"):
+                    continue
+                served[str(serve["id"])] = entry
+                for alias in serve.get("aliases") or []:
+                    served.setdefault(str(alias), entry)
+        except Exception:  # noqa: BLE001 - the view is advisory
+            pass
+        return served
 
 
 def _split_parts(manifest: dict, repo: str, first: str) -> list[str]:
@@ -683,6 +708,47 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         running_models = [{"model": m.get("model"), "state": m.get("state"), "name": m.get("name"), "ttl": m.get("ttl")}
                           for m in (data.get("running") or []) if isinstance(m, dict)]
         return {"reachable": True, "running": running_models}
+
+    @api.get("/memory")
+    def memory_overview():
+        """Host memory, llama-swap's running models with estimates, and the Maestro worker's own models."""
+        running: list | None = None
+        swap_error = ""
+        if not settings.llama_swap_url:
+            swap_error = "LLAMA_SWAP_URL not set"
+        else:
+            body, swap_error = memory.fetch_json(settings.llama_swap_url + "/running", settings.llama_swap_api_key)
+            if body is not None:
+                running = [m for m in (body.get("running") or []) if isinstance(m, dict)]
+        if not settings.worker_url:
+            worker = memory.worker_summary(None, "MAESTRO_WORKER_URL not set")
+        else:
+            state, worker_error = memory.fetch_json(settings.worker_url + "/api/v1/worker/state", settings.worker_token)
+            worker = memory.worker_summary(state, worker_error)
+        served = hub.served_entries()
+        try:
+            groups = render.base_groups(hub.base())
+        except Exception:  # noqa: BLE001
+            groups = {}
+        manifest = hub.store.load_manifest()
+
+        def estimate(model_id: str) -> float | None:
+            entry = served.get(model_id)
+            if not entry:
+                return None
+            try:
+                return hub.serve_estimate_gb(entry, manifest)
+            except Exception:  # noqa: BLE001
+                return None
+
+        def resident(model_id: str) -> bool:
+            entry = served.get(model_id)
+            if not entry:
+                return False
+            serve = entry["serve"]
+            return ggufs.is_resident(serve.get("group"), groups, serve.get("preload", False))
+
+        return memory.memory_view(memory.read_meminfo(), running, estimate, resident, worker, swap_error)
 
     app.include_router(public)
     app.include_router(api)

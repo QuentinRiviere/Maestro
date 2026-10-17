@@ -429,13 +429,48 @@ async function loadInstalled() {
   loadRunning();
 }
 
+const gbs = (v) => (v == null ? "?" : `${Number(v).toFixed(1)} GB`);
+
+function memoryBar(host, accounted) {
+  const total = Number(host.total_gb) || 0;
+  if (!total) return null;
+  const pct = (v) => `${Math.max(0, Math.min(100, (100 * Number(v || 0)) / total)).toFixed(1)}%`;
+  const other = Math.max(0, Number(host.used_gb || 0) - Number(accounted || 0));
+  return h("div", { class: "membar", title: `${gbs(host.used_gb)} used of ${gbs(host.total_gb)}` },
+    h("span", { class: "models", style: `width:${pct(accounted)}` }),
+    h("span", { class: "other", style: `width:${pct(other)}` }));
+}
+
+function workerLine(w) {
+  if (!w || !w.reachable) return h("span", { class: "muted" }, ` worker: ${w && w.error ? w.error : "unreachable"}`);
+  const models = w.loaded_models && w.loaded_models.length ? w.loaded_models.map((m) => h("code", {}, m)) : [h("span", { class: "muted" }, "nothing loaded")];
+  const parts = [" holds ", ...models.flatMap((m, i) => (i ? [", ", m] : [m]))];
+  if (w.process_rss_gb != null) parts.push(` (${gbs(w.process_rss_gb)} process)`);
+  if (w.gpu_free_gb != null) parts.push(`, ${gbs(w.gpu_free_gb)} free for it`);
+  if (w.running_job) parts.push(" ", badge(`job ${w.running_job.id || ""} ${w.running_job.phase || ""}`.trim(), "running"));
+  else if (w.paused) parts.push(" ", badge("paused", "muted"));
+  return h("span", {}, ...parts);
+}
+
 async function loadRunning() {
   try {
-    const r = await api("/api/llama-swap/running");
-    $("running").replaceChildren(!r.reachable ? h("span", {}, "llama-swap not reachable: " + r.error)
-      : !r.running.length ? h("span", {}, "No model loaded.")
-        : h("ul", {}, ...r.running.map((m) => h("li", {}, h("code", {}, m.model), " ", badge(m.state, m.state === "ready" ? "ok" : "running"), m.ttl ? ` ttl ${m.ttl}s` : ""))));
-  } catch (e) { $("running").textContent = e.message; }
+    const m = await api("/api/memory");
+    const host = m.host || {};
+    const header = host.total_gb
+      ? h("div", {}, `Host: ${gbs(host.used_gb)} used, ${gbs(host.available_gb)} available of ${gbs(host.total_gb)}`,
+          host.swap_used_gb ? h("span", { class: host.swap_used_gb > 1 ? "warn" : "muted" }, `, swap ${gbs(host.swap_used_gb)}`) : null,
+          m.other_gb != null ? h("span", { class: "muted" }, ` (${gbs(m.other_gb)} page cache and others)`) : null)
+      : h("div", { class: "muted" }, "Host memory unknown.");
+    const models = m.llama_swap && m.llama_swap.models || [];
+    const list = !m.llama_swap || !m.llama_swap.reachable ? h("span", {}, "llama-swap not reachable: " + (m.llama_swap && m.llama_swap.error || ""))
+      : !models.length ? h("span", {}, "No model loaded in llama-swap.")
+        : h("ul", {}, ...models.map((x) => h("li", {},
+            h("code", {}, x.model), " ", badge(x.state, x.state === "ready" ? "ok" : "running"),
+            x.resident ? " " + "resident" : "", x.ttl ? ` ttl ${x.ttl}s` : "",
+            x.estimated_gb != null ? ` ~${gbs(x.estimated_gb)}` : "",
+            x.worker ? workerLine(x.worker) : null)));
+    $("memory").replaceChildren(header, memoryBar(host, m.accounted_gb) || "", list);
+  } catch (e) { $("memory").textContent = e.message; }
 }
 
 async function verifyRepo(repo) {

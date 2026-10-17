@@ -67,6 +67,22 @@ def gpu_memory_stats(
     return stats
 
 
+def process_rss_gb(status_path: str = "/proc/self/status") -> float | None:
+    """This process's resident size in GB (Linux), what the worker's models cost the host; None elsewhere.
+
+    On the Spark the hub's memory view shows it next to the GGUF estimates:
+    the worker is one llama-swap entry whose own models llama-swap cannot see.
+    """
+    try:
+        with open(status_path, encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("VmRSS:"):
+                    return round(int(line.split()[1]) * 1024 / 1e9, 2)
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
 class WorkerControl:
     def __init__(
         self,
@@ -206,6 +222,7 @@ class WorkerControl:
             "queued": self.queued(),
             "loaded_models": self.loaded_models(),
             "memory": self.memory(),
+            "process_rss_gb": process_rss_gb(),
             "idle_unload_seconds": self.idle_unload_seconds,
         }
 

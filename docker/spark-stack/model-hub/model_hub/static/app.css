@@ -45,6 +45,10 @@ input[type=search] { min-width: 280px; flex: 1; }
 .badge { display: inline-block; border-radius: 10px; padding: 0 8px; font-size: 12px; border: 1px solid var(--line); color: var(--muted); }
 .badge.fits, .badge.ok, .badge.trusted, .badge.mapped { color: var(--ok); border-color: var(--ok); }
 .badge.tight, .badge.running { color: var(--warn); border-color: var(--warn); }
+.membar { display: flex; height: 10px; margin: 6px 0 8px; background: #2a2a2a; border-radius: 5px; overflow: hidden; }
+.membar .models { background: var(--ok, #4caf50); }
+.membar .other { background: #777; }
+.warn { color: var(--warn); }
 .badge.too-big, .badge.mismatch, .badge.untrusted, .badge.failed, .badge.error { color: var(--bad); border-color: var(--bad); }
 table.list { width: 100%; border-collapse: collapse; }
 table.list th, table.list td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }

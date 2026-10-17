@@ -94,8 +94,15 @@ Update: `git pull && docker compose up -d --build`.
   file stays in `$MODELS_DIR/.staging`), resume (HTTP Range).
 - **Installed**: files, disk use, commit, hash status (*Re-verify* re-hashes
   in the background), mapping status, *Delete* (type the repo id: removes the
-  mapping, re-renders, then deletes the files), and llama-swap's running models
-  (`GET /running`, read-only).
+  mapping, re-renders, then deletes the files), and the **Memory** view: the
+  host's figures (`/proc/meminfo`: used, available, swap), every model
+  running in llama-swap (`GET /running`) with the hub's memory estimate, and
+  under the `maestro-worker` entry what the Maestro worker itself holds
+  (its image and video models, its process size, the running job), read
+  from the worker's `GET /api/v1/worker/state` with `MAESTRO_WORKER_URL` /
+  `MAESTRO_WORKER_TOKEN` (the lease's values). llama-swap alone cannot see
+  past that proxy entry. A green bar is the accounted memory (estimates plus
+  the worker's process), grey the rest (page cache, other processes).
 - **llama-swap config**: the rendered file, pending changes, *Re-render*
   (after editing `llama-swap.base.yaml`).
 
@@ -368,7 +375,7 @@ with `.env` filled in. Set `K=<LLAMA_SWAP_API_KEY>`, `T=<MODEL_HUB_TOKEN>`,
    ```
    Expect a JSON answer with `choices[0].message.content` (the first request
    loads the model, a few seconds), then `qwen3-1.7b` with state `ready`. The
-   hub's *Installed* tab lists it under *Running in llama-swap*.
+   hub's *Installed* tab lists it under *Memory*.
 9. **Re-verify**: *Installed* → *Re-verify hashes* → badge `hash ok`.
 10. **Delete**: *Installed* → *Delete* → type `ggml-org/Qwen3-1.7B-GGUF`.
     Expect `freed 1.28 GB`, the directory gone from `$MODELS_DIR`, a new
