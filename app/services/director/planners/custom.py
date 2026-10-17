@@ -78,6 +78,10 @@ SCENE_CRAFT = """SCENE CRAFT (this is what separates a real scene from generated
   will grab a wrist starts on the table; a nod starts with the head still) and IS done by the last frame, so the
   render shows the change itself; the action prompt names the start pose, the one move and the end pose, and
   that move falls inside keep_sec.
+- Hand contact is a short close, not a reach: a hand that takes a wrist, a cup or another hand starts already
+  beside it (fingertips a few centimetres away) and closes that gap slowly, then tightens; never a reach across
+  the frame, never two hands crossing (short clips morph the fingers on a long reach). On an insert the camera
+  holds still and nothing else moves.
 - Action is performance, second by second: a physical intention, the visible expression change it causes, the
   reaction. No filler motion (aimless walking, hair touching, looking around) to fill time.
 - Filmable action only: an action beat describes what a viewer can see at the shot's framing in a short, low
