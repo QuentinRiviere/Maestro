@@ -169,6 +169,34 @@ _PREPOSITION_TAIL_RE = re.compile(
 )
 
 
+# Name parts too short or too common to stand for a person on their own.
+_ALIAS_STOPWORDS = {"the", "mr", "mrs", "ms", "dr", "miss", "sir", "lady", "lord", "van", "von", "de", "da",
+                    "del", "della", "di", "la", "le", "du", "jr", "sr", "ii", "iii"}
+
+
+def expand_name_aliases(name_to_desc: dict) -> dict:
+    """Add each unambiguous part of a multi-word name as an alias of that name.
+
+    "Song Jin-woo" also maps "Song" and "Jin-woo", "Blaine Carter" maps
+    "Blaine" and "Carter": prompts name people by given name or surname
+    alone, and the replacement block and the normalizer only know the
+    keys. A part shared by two names, already a key, shorter than three
+    letters or a title is skipped.
+    """
+    aliases: dict[str, str] = dict(name_to_desc)
+    seen: dict[str, str | None] = {}
+    for name in name_to_desc:
+        for part in str(name).replace(",", " ").split():
+            key = part.strip(".'\u2019\"")
+            if len(key) < 3 or key.lower() in _ALIAS_STOPWORDS or not key[0].isalpha():
+                continue
+            seen[key] = None if key in seen and seen[key] != name else name
+    for part, owner in seen.items():
+        if owner is not None and part not in aliases and name_to_desc.get(owner):
+            aliases[part] = name_to_desc[owner]
+    return aliases
+
+
 def _descriptor_pronoun(descriptor: str, *, object_form: bool = False) -> str:
     """Pick a pronoun based on gender keywords in the descriptor.
 
@@ -1469,6 +1497,11 @@ def polish_prompts_third_pass(
                         f"speaker_name on the right subject."
                     )
 
+        # Prose names people by a part of their name ("Jin-woo" for "Song
+        # Jin-woo"): without the alias the replacement block is empty and the
+        # polish LLM invents an identity (seen: Jin-woo given the woman's
+        # descriptor in an insert).
+        name_to_desc = expand_name_aliases(name_to_desc)
         # Inverse: descriptor (lowercased for case-insensitive matching) → name
         desc_to_name = {desc.lower(): name for name, desc in name_to_desc.items() if desc}
         # NOTE: the system-prompt character_reference_block is no longer
