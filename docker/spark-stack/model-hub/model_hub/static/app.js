@@ -101,6 +101,7 @@ async function refreshStatus() {
     const st = S.status, b = st.budget;
     $("status").textContent = `disk free ${gb(st.disk.free)} · memory ${b.total_gb} GB − ${b.reserved_gb} reserved − ` +
       `${b.resident_gb.toFixed(1)} resident = ${b.available_gb.toFixed(1)} GB for on-demand models` +
+      (b.swap_reserve_gb ? ` (${b.resident_available_gb.toFixed(1)} GB for resident ones: ${b.swap_reserve_gb} GB swap reserve)` : "") +
       (st.base_error ? " · base config error: " + st.base_error : "");
   } catch (e) { report(e); }
 }
@@ -188,12 +189,14 @@ async function openRepo(repo, revision, catalogItem, ctx) {
   const ctxRow = h("div", { class: "row small" }, "Memory estimate for context ", ctxInput, " tokens ",
     h("button", { onclick: () => openRepo(repo, revision, catalogItem, Number(ctxInput.value) || 0) }, "Recompute"),
     h("span", { class: "muted" }, ` · ${d.budget.available_gb.toFixed(1)} GB available (resident: ${d.budget.resident.join(", ") || "none"})`));
+  const archRow = h("div", { class: "muted small" }, archSummary(d.arch, d.kv_source));
 
+  const exact = d.kv_source === "metadata";
   const rows = models.map((g) => h("tr", {},
     h("td", {}, h("input", { type: "radio", name: "gguf", checked: g === selected, onchange: () => { selected = g; form.setModel(g); } })),
     h("td", {}, h("code", {}, g.key), g.parts > 1 ? h("span", { class: "muted small" }, ` (${g.parts} parts${g.complete ? "" : ", INCOMPLETE"})`) : null),
     h("td", {}, g.quant), h("td", { class: "num" }, gb(g.size)),
-    h("td", { class: "num" }, g.memory ? `~${g.memory.total.toFixed(1)} GB` : ""),
+    h("td", { class: "num", title: g.memory ? `KV ${g.memory.kv.toFixed(1)} GB (${g.memory.kv_source})` : "" }, g.memory ? `${exact ? "" : "~"}${g.memory.total.toFixed(1)} GB` : ""),
     h("td", {}, g.fit ? badge(g.fit) : null, g.installed ? badge("installed", "ok") : null)));
   const table = h("table", { class: "list" },
     h("tr", {}, h("th", {}, ""), h("th", {}, "File"), h("th", {}, "Quant"), h("th", { class: "num" }, "Size"), h("th", { class: "num" }, "Memory"), h("th", {}, "")), ...rows);
@@ -202,7 +205,7 @@ async function openRepo(repo, revision, catalogItem, ctx) {
     g.kind === "mtp" || g.kind === "draft" ? h("span", { class: "muted" }, " (draft model, not wired automatically)") : null));
 
   const form = serveForm({
-    repo: d.repo, models, mmprojs, mtp: d.mtp,
+    repo: d.repo, revision: d.commit, models, mmprojs, mtp: d.mtp,
     serve: preset || { id: suggestId(d.repo), ctx_size: d.ctx, parallel: 1, ttl: 600, mtp: d.mtp.mtp, mtp_draft_n_max: d.mtp.draft_n_max || 6 },
     defaultMmproj: preset ? preset.mmproj || "" : d.default_mmproj || "",
   });
@@ -226,7 +229,7 @@ async function openRepo(repo, revision, catalogItem, ctx) {
   const previewBtn = h("button", { onclick: () => preview(d.repo, form.value(), out) }, "Preview llama-swap.yaml diff");
 
   $("repo-body").replaceChildren(
-    ctxRow, models.length ? table : h("p", { class: "muted" }, "No loadable GGUF model in this repository."),
+    ctxRow, archRow, models.length ? table : h("p", { class: "muted" }, "No loadable GGUF model in this repository."),
     extra.length ? h("ul", {}, extra) : null,
     h("h3", {}, "Serve with llama-swap"),
     h("label", { class: "inline" }, mapCheck, "Map into llama-swap after the download"),
@@ -237,6 +240,21 @@ async function openRepo(repo, revision, catalogItem, ctx) {
 function suggestId(repo) {
   return repo.split("/")[1].toLowerCase().replace(/-gguf$/, "").replace(/[^a-z0-9._-]+/g, "-").slice(0, 60);
 }
+
+// One line about the architecture read from the GGUF header (null when unreadable).
+function archSummary(a, source) {
+  if (!a || source !== "metadata") return "GGUF metadata unavailable: KV cache guessed from the weights size (~6 KB per token per GB).";
+  const heads = Array.isArray(a.head_count_kv) ? "per-layer" : a.head_count_kv;
+  const parts = [`${a.architecture} · ${a.block_count} layers`, `KV heads ${heads} × ${a.key_length}/${a.value_length}`];
+  if (a.expert_count) parts.push(`${a.expert_count} experts`);
+  if (a.sliding_window) parts.push(`sliding window ${a.sliding_window}`);
+  if (a.full_attention_interval) parts.push(`full attention every ${a.full_attention_interval} layers`);
+  if (a.context_length) parts.push(`trained context ${num(a.context_length)}`);
+  return parts.join(" · ");
+}
+
+const CACHE_TYPES = ["f16", "q8_0", "q4_0"];
+const cacheSelect = (value) => h("select", {}, ...CACHE_TYPES.map((t) => h("option", { value: t, selected: t === (value || "f16") }, t)));
 
 async function preview(repo, serve, out) {
   try {
@@ -253,7 +271,8 @@ function diffView(text) {
 }
 
 // Serve settings editor. models: [{key, first, files}], mmprojs: same shape.
-function serveForm({ models, mmprojs, serve, defaultMmproj }) {
+// repo + revision let it ask /api/context for the largest --ctx-size that fits.
+function serveForm({ repo, revision, models, mmprojs, serve, defaultMmproj }) {
   const s = Object.assign({ parallel: 1, ttl: 600, ctx_size: 32768, mtp: false, mtp_draft_n_max: 6, preload: false, enabled: true, aliases: [], extra_args: [] }, serve || {});
   const groups = (S.status && S.status.groups) || [];
   const group = s.group || (S.status && S.status.default_group) || "on-demand";
@@ -264,6 +283,8 @@ function serveForm({ models, mmprojs, serve, defaultMmproj }) {
     mmproj: h("select", {}, h("option", { value: "" }, "none"), ...mmprojs.map((g) => h("option", { value: g.first }, g.key))),
     ctx_size: h("input", { type: "number", min: 0, step: 1024, value: s.ctx_size }),
     parallel: h("input", { type: "number", min: 1, max: 64, value: s.parallel }),
+    cache_type_k: cacheSelect(s.cache_type_k),
+    cache_type_v: cacheSelect(s.cache_type_v),
     ttl: h("input", { type: "number", min: -1, value: s.ttl }),
     group: h("input", { value: group, list: "group-list" }),
     aliases: h("input", { value: (s.aliases || []).join(", "), placeholder: "comma separated" }),
@@ -277,19 +298,61 @@ function serveForm({ models, mmprojs, serve, defaultMmproj }) {
   f.mmproj.value = s.mmproj !== undefined ? s.mmproj || "" : defaultMmproj || "";
   const lab = (text, el, title) => h("label", { title }, text, el);
   const chk = (text, el, title) => h("label", { class: "check", title }, el, text);
+
+  // "max N (fits / trained limit), KV x.x GB" for the chosen file, cache types, parallel and group.
+  const ctxHint = h("span", { class: "muted" });
+  const useMax = h("button", { type: "button", hidden: true, onclick: () => { if (useMax.max) f.ctx_size.value = useMax.max; } }, "Use max");
+  let ctxTimer = null, ctxSeq = 0;
+  async function updateContext() {
+    if (!repo || !f.model.value) return;
+    const seq = ++ctxSeq;
+    ctxHint.textContent = "computing max...";
+    const params = new URLSearchParams({
+      revision: revision || "main", file: f.model.value, mmproj: f.mmproj.value, parallel: f.parallel.value || 1,
+      cache_type_k: f.cache_type_k.value, cache_type_v: f.cache_type_v.value, group: f.group.value.trim(), preload: f.preload.checked,
+      ctx: Number(f.ctx_size.value) || 0,
+    });
+    try {
+      const r = await api(`/api/context/${repo}?` + params);
+      if (seq !== ctxSeq) return;
+      const m = r.max, exact = r.kv_source === "metadata";
+      useMax.max = m.ctx;
+      useMax.hidden = false;
+      ctxHint.textContent = `max ${num(m.ctx)} (${m.fits ? (m.limited_by === "trained" ? "trained limit" : "fits " + r.budget_gb.toFixed(1) + " GB") : "does not fit"}` +
+        (r.parallel > 1 ? `, ${num(m.per_slot)} per slot` : "") + `), KV ${m.kv_gb.toFixed(1)} GB` +
+        (exact ? ` · ${(r.kv_per_token / 1024).toFixed(1)} KB/token` : " · estimated, no GGUF metadata") +
+        (r.resident ? " · resident budget" : "");
+      ctxHint.title = `at ${num(r.estimate.ctx)}: weights ${r.estimate.weights} + mmproj ${r.estimate.mmproj} + KV ${r.estimate.kv} + overhead ${r.estimate.overhead} = ${r.estimate.total} GB`;
+    } catch (e) {
+      if (seq !== ctxSeq) return;
+      useMax.hidden = true;
+      ctxHint.textContent = e instanceof ApiError ? "max unavailable: " + e.message : "";
+    }
+  }
+  const scheduleContext = () => { clearTimeout(ctxTimer); ctxTimer = setTimeout(updateContext, 300); };
+  for (const el of [f.model, f.mmproj, f.parallel, f.cache_type_k, f.cache_type_v, f.group, f.preload]) el.addEventListener("change", scheduleContext);
+  f.parallel.addEventListener("input", scheduleContext);
+
   const el = h("div", {},
     h("datalist", { id: "group-list" }, ...groups.map((g) => h("option", { value: g }))),
     h("div", { class: "form" },
       lab("Model id (llama-swap)", f.id), lab("Display name", f.name), lab("Model file", f.model), lab("Vision projector (mmproj)", f.mmproj),
       lab("Context size (--ctx-size, 0 = model default)", f.ctx_size), lab("Parallel slots (--parallel)", f.parallel),
+      lab("KV cache type K (--cache-type-k)", f.cache_type_k), lab("KV cache type V (--cache-type-v)", f.cache_type_v),
       lab("TTL seconds (0 = never unload, -1 = global)", f.ttl), lab("Group (from llama-swap.base.yaml)", f.group),
       lab("Aliases", f.aliases), lab("Extra llama-server args", f.extra_args),
       lab("MTP draft tokens (--spec-draft-n-max)", f.mtp_draft_n_max)),
+    h("div", { class: "row small" }, "Context: ", ctxHint, useMax),
     h("div", { class: "row" }, chk("MTP speculative decoding (--spec-type draft-mtp)", f.mtp), chk("Preload at llama-swap start", f.preload),
       chk("Enabled", f.enabled)));
+  if (repo) scheduleContext();
   return {
     el,
-    setModel(g, keepId) { f.model.value = g.first; if (!keepId && !f.id.value) f.id.value = g.first.replace(/\.gguf$/i, "").toLowerCase(); },
+    setModel(g, keepId) {
+      f.model.value = g.first;
+      if (!keepId && !f.id.value) f.id.value = g.first.replace(/\.gguf$/i, "").toLowerCase();
+      scheduleContext();
+    },
     value() {
       const split = (v, re) => v.split(re).map((x) => x.trim()).filter(Boolean);
       const out = {
@@ -299,6 +362,8 @@ function serveForm({ models, mmprojs, serve, defaultMmproj }) {
       };
       if (f.name.value.trim()) out.name = f.name.value.trim();
       if (f.mmproj.value) out.mmproj = f.mmproj.value;
+      if (f.cache_type_k.value !== "f16") out.cache_type_k = f.cache_type_k.value;
+      if (f.cache_type_v.value !== "f16") out.cache_type_v = f.cache_type_v.value;
       if (out.mtp) out.mtp_draft_n_max = Number(f.mtp_draft_n_max.value);
       return out;
     },
@@ -395,7 +460,7 @@ function editServe(r) {
   const toEntry = (n) => ({ key: n, first: n, files: [n] });
   const models = firstParts.filter((n) => !/mmproj/i.test(n)).map(toEntry);
   const mmprojs = firstParts.filter((n) => /mmproj/i.test(n)).map(toEntry);
-  const form = serveForm({ models, mmprojs, serve: r.serve || { id: suggestId(r.repo) }, defaultMmproj: "" });
+  const form = serveForm({ repo: r.repo, revision: r.commit || "main", models, mmprojs, serve: r.serve || { id: suggestId(r.repo) }, defaultMmproj: "" });
   const out = h("div", {});
   const box = document.getElementById("edit-" + r.repo);
   box.replaceChildren(form.el, h("div", { class: "row" },

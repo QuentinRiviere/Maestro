@@ -93,6 +93,9 @@ def build_cmd(entry: dict, serve: dict, models_root: str) -> str:
     if serve.get("ctx_size"):
         sizing.append(f"--ctx-size {serve['ctx_size']}")
     sizing.append(f"--parallel {serve['parallel']}")
+    for key, flag in (("cache_type_k", "--cache-type-k"), ("cache_type_v", "--cache-type-v")):
+        if serve.get(key) and serve[key] != "f16":
+            sizing.append(f"{flag} {serve[key]}")
     lines.append(" ".join(sizing))
     if serve.get("mtp"):
         lines.append(f"--spec-type draft-mtp --spec-draft-n-max {serve['mtp_draft_n_max']}")

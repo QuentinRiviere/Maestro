@@ -26,7 +26,9 @@ yet**, and the llama-swap image was not started: use the
 | `docker/spark-stack/model-hub/` | the app (`model_hub/`), its `Dockerfile` (python:3.12-slim, multi-arch), `catalog.yml`, pinned `requirements.txt` |
 | `model_hub/fetcher.py` | verified downloads, shared by the web app and the CLI |
 | `model_hub/render.py` | renders `llama-swap.yaml`, validates it against llama-swap's schema (`model_hub/vendor/`, MIT) |
-| `model_hub/cli.py` | `fetch` (download every entry of `models.yml`) and `render` |
+| `model_hub/cli.py` | `fetch` (download every entry of `models.yml`), `render` and `context` |
+| `model_hub/gguf_meta.py` | GGUF header parser (local file or Hub Range requests), cached per file |
+| `model_hub/ggufs.py` | file grouping, exact KV cache, memory estimates, max context, budgets |
 | `docker/spark-stack/llama-swap-standalone/` | stack without Maestro: `compose.yaml`, `.env.example`, `config/*.example.*` |
 | `docker/spark-stack/compose.model-hub.yaml` | adds the hub to the Maestro stack (`docker/spark-stack/compose.yaml`) |
 
@@ -57,10 +59,12 @@ Update: `git pull && docker compose up -d --build`.
 |---|---|---|
 | `MODEL_HUB_TOKEN` | required | login token (16+ characters; the hub refuses to start without it) |
 | `HF_TOKEN` | empty | optional read-only Hugging Face token, only given to the hub and `fetch`, only sent to `huggingface.co` |
-| `MODEL_HUB_MEMORY_GB` / `MODEL_HUB_RESERVED_GB` | 128 / 10 | memory budget for the fit badges |
+| `MODEL_HUB_MEMORY_GB` / `MODEL_HUB_RESERVED_GB` | 128 / 10 | memory budget for the fit badges and the max context |
+| `MODEL_HUB_SWAP_RESERVE_GB` | 0 | memory a resident model must leave free for on-demand ones (Maestro stack: ~70, the worker); see [Context size](#context-size-and-kv-cache) |
 | `MODEL_HUB_DEFAULT_GROUP` | `on-demand` (`gpu-heavy` with Maestro) | llama-swap group of new mappings |
 | `MODEL_HUB_TRUSTED_AUTHORS` | ggml-org, unsloth, bartowski, Qwen, huihui-ai, google, openai, mistralai, microsoft, nvidia, lmstudio-community, meta-llama | publishers Explore searches by default |
 | `MODEL_HUB_COOKIE_SECURE` | 0 | set to 1 behind HTTPS (e.g. `tailscale serve`) |
+| `MODEL_HUB_REMOTE_METADATA` | 1 | set to 0 to read GGUF headers from installed files only (no Range requests to the Hub) |
 
 ## Usage
 
@@ -77,12 +81,14 @@ Update: `git pull && docker compose up -d --build`.
   an estimated memory use for a chosen context against the budget: total −
   reserved − resident models (preloaded or in a `persistent` group). Badge:
   *fits* (≤ 85 % of what is left), *tight* (≤ 100 %), *too big*. The KV-cache
-  part is a rough rule (≈ 6 KB per token per GB of weights, f16 cache); real
-  values vary about 2× with the architecture.
+  part comes from the GGUF header when it can be read (see
+  [Context size](#context-size-and-kv-cache)), else from a rough rule (≈ 6 KB
+  per token per GB of weights, shown with `~`).
 - **Serve settings** (before downloading, or later in **Installed**): id,
-  display name, model file, mmproj, `--ctx-size`, `--parallel`, MTP
-  (`--spec-type draft-mtp --spec-draft-n-max N`), TTL, group, preload,
-  aliases, extra `llama-server` arguments. *Preview* shows the
+  display name, model file, mmproj, `--ctx-size` (with the largest value that
+  fits and a *Use max* button), `--parallel`, `--cache-type-k` /
+  `--cache-type-v`, MTP (`--spec-type draft-mtp --spec-draft-n-max N`), TTL,
+  group, preload, aliases, extra `llama-server` arguments. *Preview* shows the
   `llama-swap.yaml` diff.
 - **Downloads**: one job at a time, bytes, MB/s, ETA, cancel (the partial
   file stays in `$MODELS_DIR/.staging`), resume (HTTP Range).
@@ -127,6 +133,53 @@ schema, otherwise nothing is written; the previous file is kept as
 
 Model cards of the MTP GGUFs (May 2026) say MTP did not support `--mmproj`
 or `--parallel` > 1 yet; the hub warns about that combination but renders it.
+
+### Context size and KV cache
+
+The serve form shows, next to *Context size*, the largest `--ctx-size` that
+fits in memory for the chosen file, cache types, parallel slots and group
+(`GET /api/context/<owner>/<name>?file=...`), and `python -m model_hub.cli
+context <repo> [--file F] [--parallel N] [--cache q8_0]` prints the same
+numbers.
+
+- **Metadata**: `model_hub/gguf_meta.py` reads the key/value section of the
+  GGUF header (v2 and v3, stdlib only) from the installed file, or from the
+  Hub with HTTP Range requests of 2, 8, 32 then 64 MB (the same opener and
+  token rules as the downloads). Large arrays (the tokenizer) are kept as a
+  count. The result is cached as JSON per (repo, revision, file) in
+  `config/gguf-meta/`, so each file is read once.
+- **KV cache per token** = Σ over attention layers of
+  `kv_heads × (key_length × bytes(type_k) + value_length × bytes(type_v))`
+  with `<arch>.block_count`, `attention.head_count_kv` (a scalar or a
+  per-layer array where `0` means a linear / recurrent layer without KV
+  cache), `attention.key_length` / `value_length` (default
+  `embedding_length / head_count`). `qwen3next` / `qwen3.5`-style
+  `<arch>.full_attention_interval` keeps one attention layer in `n`.
+  Sliding-window layers (`<arch>.attention.sliding_window`, with
+  `sliding_window_pattern` or llama.cpp's built-in pattern for gemma2/3,
+  gpt-oss, cohere2, llama4) hold `min(ctx, window × (parallel + 1) + 512)`
+  tokens, as llama.cpp sizes its SWA cache. Bytes per element: f16/bf16 2,
+  f32 4, q8_0 34/32, q4_0 18/32, q4_1 20/32, q5_0 22/32, q5_1 24/32.
+  Without usable metadata the old weights-size rule applies, and the API
+  says so (`kv_source: heuristic`).
+- **Estimate** = weights + mmproj + KV(ctx) + overhead, where overhead stays
+  a heuristic for the compute buffers (0.5 GB + 3 % of the weights; with
+  `--flash-attn on`, llama-server needs no large extra buffer).
+- **Max context**: the largest multiple of 256 (at least 2048, at most the
+  trained `<arch>.context_length`) whose estimate fits the budget; the answer
+  says whether the budget or the trained length was the limit, and the
+  per-slot context (`ctx / parallel`, which is what each request gets).
+- **Budget** of a model: an on-demand one gets `total − reserved − residents`
+  (the estimates of the models that stay loaded: preloaded or in a
+  `persistent` group); a resident one gets `total − reserved −
+  MODEL_HUB_SWAP_RESERVE_GB − other residents`, so a big on-demand model (the
+  Maestro worker, ~70 GB) can still load next to it. The group comes from the
+  serve entry and the groups of `llama-swap.base.yaml`.
+- **Cache types**: `cache_type_k` / `cache_type_v` in the serve section
+  (`f16` default and left out; `q8_0`, `q4_0` in the UI, also `bf16`, `f32`,
+  `q4_1`, `q5_0`, `q5_1` in `models.yml`) render as `--cache-type-k` /
+  `--cache-type-v`. `q8_0` halves the KV cache at little quality cost;
+  quantized V needs `--flash-attn on` (the base macro sets it).
 
 ### Hot reload
 
@@ -179,9 +232,11 @@ docker compose run --rm fetch               # download + verify every entry
 docker compose run --rm fetch --verify      # re-hash files already in place
 docker compose run --rm fetch render        # re-render config/llama-swap.yaml
 docker compose run --rm fetch render --check
+docker compose run --rm fetch context ggml-org/gpt-oss-120b-GGUF --parallel 2 --cache q8_0
 ```
 
-Same checks as the web app; exit code 1 on any error.
+Same checks as the web app; exit code 1 on any error (for `context`, when
+even 2048 tokens do not fit).
 
 ## Security model
 
@@ -223,6 +278,16 @@ On a Mac (arm64), Python 3.12, 2026-10-16:
   grouping and quant names, MTP detection, path safety, auth (401 without
   login, cookie flags, CSRF 403, bearer, login rate limit, refusal to start
   without a token), memory estimates and badges, the CLI.
+- `tests/test_spark_model_hub_context.py` (20 tests, no network): GGUF
+  header parsing on synthetic v2/v3 files (every value type, nested arrays,
+  summarized large arrays, truncation), Range-chunk growth through a fake
+  opener, the JSON cache, KV per token for dense / MoE / hybrid (per-layer
+  `head_count_kv` with zeros, `full_attention_interval`) / sliding-window
+  models and quantized cache types, max context (budget and trained limits,
+  256 rounding, per-slot, monotonicity), resident vs on-demand budgets with
+  the swap reserve, `--cache-type-*` rendering, `/api/context`, the
+  `context` CLI. The parser was also run once on the real header of
+  `tinyllamas/stories260K.gguf` (llama, 5 layers, 4 KV heads × 8).
 - Network tests (skipped with `MODEL_HUB_OFFLINE=1`): real download of
   `ggml-org/models` `tinyllamas/stories260K.gguf` (1.2 MB, SHA-256) and
   `README.md` (git SHA-1), tamper detection, forged hash refused, Range

@@ -23,7 +23,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import auth, catalog, fetcher, ggufs, hf, registry, render
+from . import auth, catalog, fetcher, gguf_meta, ggufs, hf, registry, render
 from .paths import SHA_RE, UnsafePathError, check_filename, check_repo_id, check_revision
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
@@ -47,10 +47,12 @@ class Settings:
     trusted_authors: list[str] = field(default_factory=lambda: DEFAULT_TRUSTED.split(","))
     memory_gb: float = 128.0
     reserved_gb: float = 10.0
+    swap_reserve_gb: float = 0.0    # kept free for on-demand models (the Maestro worker: ~70)
     default_group: str = "on-demand"
     llama_swap_url: str = ""
     llama_swap_api_key: str = ""
     cookie_secure: bool = False
+    remote_metadata: bool = True    # read GGUF headers from the Hub (Range requests) before a download
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -64,10 +66,12 @@ class Settings:
                              if a.strip()],
             memory_gb=_env_float("MODEL_HUB_MEMORY_GB", 128.0),
             reserved_gb=_env_float("MODEL_HUB_RESERVED_GB", 10.0),
+            swap_reserve_gb=_env_float("MODEL_HUB_SWAP_RESERVE_GB", 0.0),
             default_group=env.get("MODEL_HUB_DEFAULT_GROUP") or "on-demand",
             llama_swap_url=env.get("LLAMA_SWAP_URL", "").rstrip("/"),
             llama_swap_api_key=env.get("LLAMA_SWAP_API_KEY", ""),
             cookie_secure=env.get("MODEL_HUB_COOKIE_SECURE", "0").lower() in ("1", "true", "yes"),
+            remote_metadata=env.get("MODEL_HUB_REMOTE_METADATA", "1").lower() not in ("0", "false", "no"),
         )
 
     @property
@@ -112,6 +116,7 @@ class Hub:
         self.limiter = auth.LoginLimiter()
         os.makedirs(settings.models_dir, exist_ok=True)
         self.store = fetcher.Store(settings.models_dir)
+        self.meta = gguf_meta.MetaStore(settings.config_dir, remote=settings.remote_metadata)
         self.queue = fetcher_queue(self)
         self._snap_cache: dict[tuple[str, str], tuple[float, fetcher.Snapshot, str]] = {}
         self._verify_lock = threading.Lock()
@@ -154,10 +159,35 @@ class Hub:
             self._snap_cache.pop(next(iter(self._snap_cache)))
         return snap, readme
 
+    def file_sizes(self, repo: str, revision: str) -> dict[str, int]:
+        """GGUF name -> bytes: the installed files of repo, else the Hub listing at revision (network)."""
+        sizes = {f["name"]: int(f["size"]) for f in self.store.installed().get(repo, []) if f["present"]}
+        if sizes:
+            return sizes
+        snap, _ = self.snapshot(repo, revision)
+        return {f.name: f.size for f in snap.files if f.name.lower().endswith(".gguf")}
+
     # -- memory -------------------------------------------------------------
+    def arch_info(self, repo: str, revision: str, name: str) -> gguf_meta.ArchInfo | None:
+        """GGUF metadata of an installed file, else of the remote one (cached). None when unreadable."""
+        try:
+            local = self.store.target(repo, name) if self.available(repo, name) else None
+            return self.meta.info(repo, revision, name, local)
+        except (UnsafePathError, ValueError):
+            return None
+
+    def groups(self) -> dict:
+        try:
+            return render.base_groups(self.base())
+        except Exception:  # noqa: BLE001 - advisory
+            return {}
+
+    def is_resident(self, group: str | None, preload: bool = False) -> bool:
+        return ggufs.is_resident(group or self.s.default_group, self.groups(), preload)
+
     def budget(self, exclude_repo: str | None = None) -> ggufs.Budget:
-        """Total minus reserved minus models that stay loaded (resident)."""
-        budget = ggufs.Budget(self.s.memory_gb, self.s.reserved_gb)
+        """Total minus reserved minus models that stay loaded (resident); residents also keep the swap reserve free."""
+        budget = ggufs.Budget(self.s.memory_gb, self.s.reserved_gb, swap_reserve_gb=self.s.swap_reserve_gb)
         try:
             groups = render.base_groups(self.base())
             entries = self.entries()
@@ -168,15 +198,30 @@ class Hub:
             serve = entry.get("serve")
             if not serve or entry["repo"] == exclude_repo or not serve.get("enabled", True):
                 continue
-            group = groups.get(serve.get("group")) or {}
-            if not (group.get("persistent") or serve.get("preload")):
+            if not ggufs.is_resident(serve.get("group"), groups, serve.get("preload", False)):
                 continue
             size = lambda n: int((manifest.get(f"{entry['repo']}/{n}") or {}).get("size", 0))  # noqa: E731
-            est = ggufs.estimate_memory(size(serve["model"]), serve.get("ctx_size", 0),
-                                        size(serve["mmproj"]) if serve.get("mmproj") else 0)
+            # Split models: the manifest lists every part, the serve entry names the first.
+            weights = sum(size(n) for n in _split_parts(manifest, entry["repo"], serve["model"]))
+            info = self.arch_info(entry["repo"], str(entry.get("revision", "main")), serve["model"])
+            est = ggufs.estimate_memory(weights, serve.get("ctx_size", 0),
+                                        size(serve["mmproj"]) if serve.get("mmproj") else 0, info=info,
+                                        cache_type_k=serve.get("cache_type_k", "f16"),
+                                        cache_type_v=serve.get("cache_type_v", "f16"), parallel=serve.get("parallel", 1))
             budget.resident_gb += est["total"] / ggufs.GB
             budget.resident.append(serve["id"])
         return budget
+
+
+def _split_parts(manifest: dict, repo: str, first: str) -> list[str]:
+    """Every part of a split model installed under repo, given its first part (or [first] when not split)."""
+    m = ggufs.SPLIT_RE.match(os.path.basename(first))
+    if not m:
+        return [first]
+    prefix = f"{repo}/"
+    names = [rel[len(prefix):] for rel in manifest if rel.startswith(prefix)]
+    group = next((g for g in ggufs.group_files([{"name": n, "size": 0} for n in names]) if first in g.files), None)
+    return group.files if group else [first]
 
 
 def fetcher_queue(hub: "Hub"):
@@ -308,14 +353,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         installed = hub.store.installed()
         entries = {e["repo"]: e for e in hub.entries()}
         budget = hub.budget()
-        for item in items:
+        # Headers are read once (cached JSON); the first visit fetches a few MB per catalog entry.
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            infos = list(pool.map(lambda i: hub.arch_info(i["repo"], i["revision"], i["serve"]["model"])
+                                  if i.get("serve") else None, items))
+        for item, info in zip(items, infos):
             files = installed.get(item["repo"], [])
             item["installed"] = bool(files) and all(f["present"] for f in files)
             item["in_models_yml"] = item["repo"] in entries
             serve = item.get("serve") or {}
-            est = ggufs.estimate_memory(int(item["size_gb"] * ggufs.GB), serve.get("ctx_size", 32768))
+            est = ggufs.estimate_memory(int(item["size_gb"] * ggufs.GB), serve.get("ctx_size", 32768), info=info,
+                                        cache_type_k=serve.get("cache_type_k", "f16"),
+                                        cache_type_v=serve.get("cache_type_v", "f16"), parallel=serve.get("parallel", 1))
             item["memory_gb"] = round(est["total"] / ggufs.GB, 1)
-            item["fit"] = ggufs.fit_badge(est["total"], budget)
+            item["kv_source"] = est["kv_source"]
+            item["resident"] = hub.is_resident(serve.get("group"), serve.get("preload", False))
+            item["fit"] = ggufs.fit_badge(est["total"], budget, item["resident"])
         return {"items": items, "budget": budget.as_dict()}
 
     # -- explore ------------------------------------------------------------
@@ -339,7 +392,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"results": results, "trusted_only": not all}
 
     @api.get("/repo/{owner}/{name}")
-    def repo_detail(owner: str, name: str, revision: str = "main", ctx: int = 32768):
+    def repo_detail(owner: str, name: str, revision: str = "main", ctx: int = 32768, group: str = ""):
         repo = f"{owner}/{name}"
         try:
             check_repo_id(repo)
@@ -354,14 +407,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                               mmprojs[0] if mmprojs else None)
         budget = hub.budget(exclude_repo=repo)
         tags = [t for t in snap.info.get("tags", []) if isinstance(t, str)]
+        for g in groups:
+            g.installed = all(hub.available(repo, f) for f in g.files)
+        # One header per repo: every quant shares the architecture. Prefer an installed file (local read).
+        candidates = [g for g in groups if g.kind == "model" and g.complete]
+        meta_entry = next((g for g in candidates if g.installed), candidates[0] if candidates else None)
+        info = hub.arch_info(repo, snap.commit, meta_entry.first) if meta_entry else None
+        resident = hub.is_resident(group, False)
         out = []
         for g in groups:
             item = g.as_dict()
             if g.kind == "model":
-                est = ggufs.estimate_memory(g.size, ctx, default_mmproj.size if default_mmproj else 0)
-                item["memory"] = {k: round(v / ggufs.GB, 2) if k != "kv_per_token" else v for k, v in est.items()}
-                item["fit"] = ggufs.fit_badge(est["total"], budget)
-            item["installed"] = all(hub.available(repo, f) for f in g.files)
+                est = ggufs.estimate_memory(g.size, ctx, default_mmproj.size if default_mmproj else 0, info=info)
+                item["memory"] = {k: round(v / ggufs.GB, 2) if k in ("weights", "mmproj", "kv", "overhead", "total")
+                                  else v for k, v in est.items()}
+                item["fit"] = ggufs.fit_badge(est["total"], budget, resident)
+            item["installed"] = g.installed
             out.append(item)
         refused = sorted(f.name for f in snap.files if fetcher.is_refused(f.name))
         author = owner.lower()
@@ -374,7 +435,46 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "ggufs": out, "default_mmproj": default_mmproj.first if default_mmproj else None,
             "mtp": ggufs.detect_mtp(repo, tags, readme), "refused": refused, "ctx": ctx,
             "budget": budget.as_dict(), "in_models_yml": registry.find(hub.entries(), repo) is not None,
+            "arch": info.as_dict() if info else None, "kv_source": "metadata" if info and info.complete else "heuristic",
+            "resident": resident,
         }
+
+    @api.get("/context/{owner}/{name}")
+    def context(owner: str, name: str, file: str, revision: str = "main", mmproj: str = "", cache_type_k: str = "f16",
+                cache_type_v: str = "f16", parallel: int = 1, group: str = "", preload: bool = False, ctx: int = 0):
+        """Exact KV cache and the largest --ctx-size that fits the budget of `group` for one GGUF."""
+        repo = f"{owner}/{name}"
+        try:
+            check_repo_id(repo)
+            check_revision(revision)
+            check_filename(file)
+            if mmproj:
+                check_filename(mmproj)
+            ggufs.cache_type_bytes(cache_type_k)
+            ggufs.cache_type_bytes(cache_type_v)
+            if not 1 <= parallel <= 64:
+                raise ValueError("parallel must be in [1, 64]")
+            sizes = hub.file_sizes(repo, revision)
+        except (UnsafePathError, ValueError) as exc:
+            raise _bad(exc)
+        except (hf.HubError, fetcher.FetchError) as exc:
+            raise _bad(exc, 502)
+        entry = next((g for g in ggufs.group_files([{"name": n, "size": s} for n, s in sizes.items()])
+                      if file in g.files), None)
+        if entry is None:
+            raise HTTPException(404, f"{file} is neither installed nor in {repo}@{revision}")
+        if mmproj and mmproj not in sizes:
+            raise HTTPException(404, f"{mmproj} is neither installed nor in {repo}@{revision}")
+        info = hub.arch_info(repo, revision, entry.first)
+        resident = hub.is_resident(group, preload)
+        budget = hub.budget(exclude_repo=repo)
+        report = ggufs.context_report(info, entry.size, sizes.get(mmproj, 0) if mmproj else 0,
+                                      budget.available_for(resident) * ggufs.GB, max(0, min(ctx, 1 << 21)),
+                                      cache_type_k, cache_type_v, parallel)
+        report.update({"repo": repo, "file": entry.first, "weights": entry.size, "resident": resident,
+                       "group": group or settings.default_group, "budget": budget.as_dict(),
+                       "metadata_error": None if info else hub.meta.last_error(repo, revision, entry.first)})
+        return report
 
     # -- downloads ------------------------------------------------------------
     @api.post("/downloads")

@@ -70,6 +70,8 @@ services:
       MODEL_HUB_CONFIG_DIR: /config
       MODEL_HUB_MEMORY_GB: ${MODEL_HUB_MEMORY_GB:-128}
       MODEL_HUB_RESERVED_GB: ${MODEL_HUB_RESERVED_GB:-10}
+      # Memory a resident model must leave free for the on-demand ones (the Maestro stack wants ~70).
+      MODEL_HUB_SWAP_RESERVE_GB: ${MODEL_HUB_SWAP_RESERVE_GB:-0}
       MODEL_HUB_DEFAULT_GROUP: ${MODEL_HUB_DEFAULT_GROUP:-on-demand}
       MODEL_HUB_TRUSTED_AUTHORS: ${MODEL_HUB_TRUSTED_AUTHORS:-}
       # Read-only view of llama-swap's running models (GET /running).

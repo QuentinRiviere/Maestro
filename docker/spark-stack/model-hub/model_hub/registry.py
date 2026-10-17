@@ -12,6 +12,8 @@ Each entry:
         mmproj: mmproj-model-f16.gguf    # optional
         ctx_size: 65536
         parallel: 1
+        cache_type_k: q8_0               # optional; f16 (llama-server's default) when absent
+        cache_type_v: q8_0
         mtp: true
         mtp_draft_n_max: 6
         extra_args: []
@@ -45,6 +47,8 @@ ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 # (`$` would let a value expand ${env.*} secrets into a command line).
 ARG_RE = re.compile(r"^[A-Za-z0-9_.,:=/+@-]{1,200}$")
 SERVE_FILE_RE = re.compile(r"^[A-Za-z0-9_./+-]+$")
+# --cache-type-k / --cache-type-v values llama-server accepts (and ggufs.py can size).
+CACHE_TYPES = ("f16", "bf16", "f32", "q8_0", "q4_0", "q4_1", "q5_0", "q5_1")
 
 LOCK = threading.RLock()
 
@@ -175,8 +179,8 @@ def normalize_serve(serve) -> dict:
     """Validated serve section with defaults filled in."""
     if not isinstance(serve, dict):
         raise ConfigError("serve must be a mapping")
-    known = {"id", "name", "model", "mmproj", "ctx_size", "parallel", "mtp", "mtp_draft_n_max", "extra_args",
-             "ttl", "group", "preload", "aliases", "enabled", "unlisted"}
+    known = {"id", "name", "model", "mmproj", "ctx_size", "parallel", "cache_type_k", "cache_type_v", "mtp",
+             "mtp_draft_n_max", "extra_args", "ttl", "group", "preload", "aliases", "enabled", "unlisted"}
     unknown = set(serve) - known
     if unknown:
         raise ConfigError(f"unknown serve keys: {', '.join(sorted(unknown))}")
@@ -194,6 +198,12 @@ def normalize_serve(serve) -> dict:
         out["mmproj"] = _gguf(serve["mmproj"], "mmproj")
     out["ctx_size"] = _int(serve, "ctx_size", 32768, 0, 1 << 21)
     out["parallel"] = _int(serve, "parallel", 1, 1, 64)
+    for key in ("cache_type_k", "cache_type_v"):
+        value = serve.get(key) or "f16"
+        if not isinstance(value, str) or value not in CACHE_TYPES:
+            raise ConfigError(f"serve.{key} must be one of {', '.join(CACHE_TYPES)}")
+        if value != "f16":
+            out[key] = value  # f16 is llama-server's default: left out of models.yml and the cmd
     out["mtp"] = _bool(serve, "mtp", False)
     if out["mtp"]:
         out["mtp_draft_n_max"] = _int(serve, "mtp_draft_n_max", 6, 1, 32)

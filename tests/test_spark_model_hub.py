@@ -315,7 +315,7 @@ class _AppCase(unittest.TestCase):
         with open(os.path.join(self.config, "models.example.yml"), "w", encoding="utf-8") as h:
             h.write("[]\n")
         settings = app_module.Settings(token=TOKEN, models_dir=self.models, config_dir=self.config,
-                                       catalog_path=os.path.join(_HUB_DIR, "catalog.yml"))
+                                       catalog_path=os.path.join(_HUB_DIR, "catalog.yml"), remote_metadata=False)
         self.app = app_module.create_app(settings)
         self.client = TestClient(self.app)
 

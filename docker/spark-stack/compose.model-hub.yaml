@@ -38,6 +38,9 @@ services:
       MODEL_HUB_CONFIG_DIR: /config
       MODEL_HUB_MEMORY_GB: ${MODEL_HUB_MEMORY_GB:-128}
       MODEL_HUB_RESERVED_GB: ${MODEL_HUB_RESERVED_GB:-10}
+      # Memory a resident model must leave free for the on-demand ones: the Maestro
+      # worker needs ~70 GB, so set MODEL_HUB_SWAP_RESERVE_GB=70 in .env (default 0).
+      MODEL_HUB_SWAP_RESERVE_GB: ${MODEL_HUB_SWAP_RESERVE_GB:-0}
       # On-demand models swap with the Maestro worker's lease (see llama-swap.yaml).
       MODEL_HUB_DEFAULT_GROUP: ${MODEL_HUB_DEFAULT_GROUP:-gpu-heavy}
       MODEL_HUB_TRUSTED_AUTHORS: ${MODEL_HUB_TRUSTED_AUTHORS:-}

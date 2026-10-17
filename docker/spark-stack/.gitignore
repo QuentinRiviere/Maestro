@@ -3,6 +3,7 @@
 **/config/llama-swap.yaml
 **/config/llama-swap.yaml.bak
 **/config/.*.tmp
+**/config/gguf-meta/
 # User-owned copies, created from the *.example files on the hub's first start.
 **/config/models.yml
 **/config/llama-swap.base.yaml
