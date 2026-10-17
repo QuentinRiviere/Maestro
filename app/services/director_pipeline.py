@@ -9675,6 +9675,8 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
         seed: int = -1,
         job_resolution: str = "",
         cost_stage: str = "image",
+        count: int = 1,
+        outputs: Optional[list[str]] = None,
     ) -> str:
         """Generate a single image using source_ref + optional extra refs.
 
@@ -9687,7 +9689,11 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
         model takes one; the prompt already names it reference 1).
         ``seed``, ``job_resolution`` and ``cost_stage`` serve the storyboard
         drafts (see storyboard_drafts): a seed per candidate, the draft
-        resolution and the ``image_draft`` cost stage.
+        resolution and the ``image_draft`` cost stage. ``count`` > 1 renders
+        that many images in the one job (``repeat_generation``: the prompt
+        and references are encoded once; seeds ``seed``, ``seed + 1``, ...)
+        and ``outputs``, when given, receives every output filename in
+        order; the first is returned.
         """
         nonlocal image_count
         _pre_strip = prompt
@@ -9722,7 +9728,7 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
             "seed": seed,
             "settings_version": 2.52,
             "generation_mode": "image",
-            "repeat_generation": 1,
+            "repeat_generation": max(1, int(count or 1)),
             "negative_prompt": "",
             "video_length": 1,
             "activated_loras": image_loras.get("activated_loras", []),
@@ -9746,6 +9752,8 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
             raise RuntimeError(
                 "Image generation completed without a recorded output."
             )
+        if outputs is not None:
+            outputs.extend(name for name in output_files if name)
         image_count += 1
         return output_files[0]
 
@@ -9894,6 +9902,13 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
             return render_start(text, seed=seed, job_resolution=drafts.resolution,
                                 cost_stage=storyboard_drafts.DRAFT_STAGE)
 
+        def render_batch(text: str, seed: int, count: int) -> list[str]:
+            """The round's candidates in one job (see storyboard_drafts.select_draft)."""
+            files: list[str] = []
+            render_start(text, seed=seed, count=count, outputs=files, job_resolution=drafts.resolution,
+                         cost_stage=storyboard_drafts.DRAFT_STAGE)
+            return files
+
         rank = None
         if draft_judge.get("vision"):
             def rank(paths: list[str]) -> dict:
@@ -9915,7 +9930,8 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
 
         record = storyboard_drafts.select_draft(
             shot_label=f"shot {index + 1}/{len(clip_plans)}", base_prompt=shot_prompt, settings=drafts,
-            render=render, out_dir=out_dir, rank=rank, others=others, on_progress=progress,
+            render=render, render_batch=render_batch, out_dir=out_dir, rank=rank, others=others,
+            on_progress=progress,
             is_cancelled=lambda: _pipelines[pid]["status"] == "cancelled",
             fatal=(_GenerationTimeoutError,), log=lambda message: print(f"[Pipeline {pid}] {message}"),
         )

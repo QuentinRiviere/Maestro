@@ -11,7 +11,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, PngImagePlugin
 
 _APP_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "app"))
 if _APP_DIR not in sys.path:
@@ -23,7 +23,7 @@ from services.director.image_refine import RefineSettings  # noqa: E402
 from services.director.video_judge import JudgeError  # noqa: E402
 
 
-def picture(path, size=(432, 768), kind=0):
+def picture(path, size=(432, 768), kind=0, settings=None):
     image = Image.new("RGB", size, (30, 30, 30))
     pen = ImageDraw.Draw(image)
     if kind % 3 == 0:
@@ -33,7 +33,12 @@ def picture(path, size=(432, 768), kind=0):
     else:
         for x in range(0, size[0], 40):
             pen.rectangle((x, 0, x + 18, size[1]), fill=(90, 160, 220))
-    image.save(path)
+    if settings is None:
+        image.save(path)
+    else:  # the engine embeds the generation settings as the image's comment
+        info = PngImagePlugin.PngInfo()
+        info.add_text("comment", json.dumps(settings))
+        image.save(path, pnginfo=info)
     return path
 
 
@@ -76,6 +81,19 @@ class SettingsTests(unittest.TestCase):
         seeds = storyboard_drafts.candidate_seeds(41, 4)
         self.assertEqual(seeds, [41, 42, 43, 44])
         self.assertEqual(len(set(storyboard_drafts.candidate_seeds(2 ** 31 - 2, 4))), 4)
+
+    def test_output_seed_reads_the_sidecar_then_the_image_comment_then_the_name(self):
+        with tempfile.TemporaryDirectory() as folder:
+            embedded = picture(os.path.join(folder, "a.png"), settings={"seed": 77, "prompt": "p"})
+            self.assertEqual(storyboard_drafts.output_seed(embedded), 77)
+            with open(os.path.join(folder, "a.json"), "w", encoding="utf-8") as handle:
+                json.dump({"seed": 78}, handle)
+            self.assertEqual(storyboard_drafts.output_seed(embedded), 78)
+            self.assertEqual(storyboard_drafts.output_seed(picture(os.path.join(folder, "x_seed91_shot.png"))), 91)
+            self.assertIsNone(storyboard_drafts.output_seed(picture(os.path.join(folder, "plain.png"))))
+            self.assertIsNone(storyboard_drafts.output_seed(os.path.join(folder, "missing.png")))
+            self.assertIsNone(storyboard_drafts.output_seed(picture(os.path.join(folder, "neg.png"),
+                                                                    settings={"seed": -1})))
 
 
 class RankParsingTests(unittest.TestCase):
@@ -145,9 +163,10 @@ class SelectDraftTests(unittest.TestCase):
     def select(self, rank, count=3, rounds=2, **kwargs):
         settings = storyboard_drafts.DraftSettings(count=count, rounds=rounds, resolution="432x768")
         seeds = iter([100, 200, 300])
+        kwargs.setdefault("log", lambda message: None)
         return storyboard_drafts.select_draft(shot_label="shot 1/1", base_prompt="A shot.", settings=settings,
                                               render=self.render, out_dir=self.dir, rank=rank,
-                                              seed_base=lambda: next(seeds), log=lambda message: None, **kwargs)
+                                              seed_base=lambda: next(seeds), **kwargs)
 
     def test_n_candidates_with_their_own_seeds_and_a_pass_stops(self):
         ranked = []
@@ -166,6 +185,67 @@ class SelectDraftTests(unittest.TestCase):
         self.assertEqual(len(record["rounds"]), 1)
         self.assertEqual([c["verdict"] for c in record["candidates"]], ["flagged", "pass", "pass"])
         self.assertIn("Storyboard drafts: shot 1/1, round 1, candidate 3/3", messages)
+
+    def batch(self, prompt, seed, count, files=None):
+        self.batches.append((prompt, seed, count))
+        names = []
+        for k in range(count if files is None else files):
+            name = f"batch_{len(self.batches)}_{k + 1}.png"
+            # The engine's own repeat seeds (seed, seed + 1, ...) embedded as the image's settings.
+            picture(os.path.join(self.dir, name), kind=k, settings={"seed": seed + k})
+            names.append(name)
+        return names
+
+    def test_a_batch_renders_the_round_in_one_job_with_the_engine_seeds(self):
+        self.batches = []
+        messages = []
+        record = self.select(lambda paths: ranking(2, ["flagged", "pass", "pass"]), render_batch=self.batch,
+                             on_progress=messages.append)
+        self.assertEqual(self.batches, [("A shot.", 100, 3)])
+        self.assertEqual(self.renders, [])
+        self.assertEqual([c["file"] for c in record["candidates"]], ["batch_1_1.png", "batch_1_2.png", "batch_1_3.png"])
+        self.assertEqual([c["seed"] for c in record["candidates"]], [100, 101, 102])
+        self.assertTrue(all(c["batched"] for c in record["candidates"]))
+        self.assertEqual(record["chosen"], {"round": 1, "candidate": 2, "file": "batch_1_2.png"})
+        self.assertIn("Storyboard drafts: shot 1/1, round 1, 3 candidates in one job", messages)
+
+    def test_the_engine_seeds_win_over_the_planned_ones(self):
+        self.batches = []
+
+        def batch(prompt, seed, count):
+            names = self.batch(prompt, seed, count)
+            # An engine drawing its own seeds for the repeats records them in each output.
+            for k, name in enumerate(names):
+                picture(os.path.join(self.dir, name), kind=k, settings={"seed": 5000 + 10 * k})
+            return names
+
+        record = self.select(lambda paths: ranking(1, ["pass", "pass", "pass"]), render_batch=batch)
+        self.assertEqual([c["seed"] for c in record["candidates"]], [5000, 5010, 5020])
+
+    def test_a_short_batch_falls_back_to_one_job_per_missing_candidate(self):
+        self.batches = []
+        logs = []
+        record = self.select(lambda paths: ranking(3, ["flagged", "flagged", "pass"]),
+                             render_batch=lambda prompt, seed, count: self.batch(prompt, seed, count, files=1),
+                             log=logs.append)
+        self.assertEqual(self.batches, [("A shot.", 100, 3)])
+        self.assertEqual(self.renders, [("A shot.", 101), ("A shot.", 102)])
+        self.assertEqual([c["file"] for c in record["candidates"]], ["batch_1_1.png", "draft_1.png", "draft_2.png"])
+        self.assertEqual([c["seed"] for c in record["candidates"]], [100, 101, 102])
+        self.assertEqual([c.get("batched", False) for c in record["candidates"]], [True, False, False])
+        self.assertEqual(record["chosen"]["file"], "draft_2.png")
+        self.assertTrue(any("returned 1/3 files" in line for line in logs))
+
+    def test_a_failed_batch_renders_every_candidate_one_job_each(self):
+        def batch(prompt, seed, count):
+            raise RuntimeError("worker refused the repeat")
+
+        logs = []
+        record = self.select(lambda paths: ranking(1, ["pass", "pass", "pass"]), render_batch=batch, log=logs.append)
+        self.assertEqual([seed for _, seed in self.renders], [100, 101, 102])
+        self.assertEqual(len(record["candidates"]), 3)
+        self.assertFalse(any(c.get("batched") for c in record["candidates"]))
+        self.assertTrue(any("worker refused the repeat" in line for line in logs))
 
     def test_a_flagged_best_reruns_with_the_fix_hint_and_caps_at_the_rounds(self):
         replies = iter([ranking(1, ["flagged", "flagged"], "Show Man only as a shoulder."),
@@ -265,16 +345,24 @@ class PipelineDraftTests(unittest.TestCase):
             "params": {}, "pause_reason": None, "out_dir": self.tmp.name,
         }
         self.jobs = []
+        self.outputs = 0
         cost = patch("services.director.cost_ledger.record")
         cost.start()
         self.addCleanup(cost.stop)
 
     def submit(self, gen_params, **_kwargs):
+        """The engine: one output per repeat, seeds seed, seed + 1, ... embedded as each output's settings."""
         self.jobs.append(gen_params)
         width, height = (int(v) for v in gen_params["resolution"].split("x"))
-        name = f"out_{len(self.jobs)}.png"
-        picture(os.path.join(self.tmp.name, name), size=(width, height), kind=len(self.jobs))
-        return [name]
+        names = []
+        for k in range(int(gen_params.get("repeat_generation") or 1)):
+            self.outputs += 1
+            name = f"out_{self.outputs}.png"
+            seed = int(gen_params.get("seed", -1))
+            picture(os.path.join(self.tmp.name, name), size=(width, height), kind=self.outputs,
+                    settings={"seed": (seed if seed >= 0 else 4242) + k})
+            names.append(name)
+        return names
 
     def params(self, **extra):
         anchor = picture(os.path.join(self.tmp.name, "anchor.png"))
@@ -302,22 +390,27 @@ class PipelineDraftTests(unittest.TestCase):
         params = self.params(director_storyboard_drafts=3)
         plans = self.plans()
         images, _ = self.generate(params, plans)
-        self.assertEqual(len(self.jobs), 6)
+        # One job per shot renders its three candidates (repeat_generation).
+        self.assertEqual(len(self.jobs), 2)
+        self.assertEqual({job["repeat_generation"] for job in self.jobs}, {3})
         self.assertEqual({job["resolution"] for job in self.jobs}, {"432x768"})
         self.assertEqual({job["_director_cost_stage"] for job in self.jobs}, {"image_draft"})
-        seeds = [job["seed"] for job in self.jobs[:3]]
-        self.assertEqual(len(set(seeds)), 3)
-        self.assertEqual(seeds, [seeds[0], seeds[0] + 1, seeds[0] + 2])
+        self.assertTrue(all(job["seed"] >= 0 for job in self.jobs))
         self.assertEqual(images, ["out_1.png", "out_4.png"])
         records = pipeline._pipelines[self.pid]["_clip_storyboard_drafts"]
         self.assertEqual([c["file"] for c in records[0]["candidates"]], ["out_1.png", "out_2.png", "out_3.png"])
+        # Each candidate records the seed its output carries: the job's seed, + 1, + 2.
+        base = self.jobs[0]["seed"]
+        self.assertEqual([c["seed"] for c in records[0]["candidates"]], [base, base + 1, base + 2])
+        self.assertEqual(len({c["seed"] for c in records[1]["candidates"]}), 3)
         report = storyboard_judge.load_report(self.tmp.name, self.pid)
         self.assertEqual(report["mode"], "drafts")
 
         with patch.object(pipeline, "_submit_and_wait", side_effect=self.submit):
             pipeline._run_draft_finals(self.pid, params, plans, images, out_dir=self.tmp.name)
-        finals = self.jobs[6:]
+        finals = self.jobs[2:]
         self.assertEqual(len(finals), 2)
+        self.assertEqual({job["repeat_generation"] for job in finals}, {1})
         self.assertEqual(os.path.basename(finals[0]["image_guide"]), "out_1_upscaled_720x1280.png")
         self.assertEqual(finals[0]["denoising_strength"], 0.55)
         self.assertEqual(finals[0]["resolution"], "720x1280")
@@ -333,7 +426,27 @@ class PipelineDraftTests(unittest.TestCase):
         # A finished shot is not re-rendered again (resume).
         with patch.object(pipeline, "_submit_and_wait", side_effect=self.submit):
             pipeline._run_draft_finals(self.pid, params, plans, images, out_dir=self.tmp.name)
-        self.assertEqual(len(self.jobs), 8)
+        self.assertEqual(len(self.jobs), 4)
+
+    def test_an_engine_returning_one_file_per_job_renders_the_other_candidates_one_job_each(self):
+        def single(gen_params, **kwargs):
+            names = self.submit({**gen_params, "repeat_generation": 1}, **kwargs)
+            self.jobs[-1] = gen_params  # the job as submitted (repeat_generation N), one output back
+            return names[:1]
+
+        params = self.params(director_storyboard_drafts=3)
+        with patch.object(pipeline, "_submit_and_wait", side_effect=single), \
+                patch.object(storyboard_judge, "stage_config",
+                             return_value={"enabled": True, "vision": False, "fal_key": "", "model": "m"}):
+            images, _ = pipeline._run_image_generation(self.pid, params, self.plans(), out_dir=self.tmp.name)
+        self.assertEqual(len(self.jobs), 6)
+        self.assertEqual([job["repeat_generation"] for job in self.jobs[:3]], [3, 1, 1])
+        seeds = [job["seed"] for job in self.jobs[:3]]
+        self.assertEqual(seeds, [seeds[0], seeds[0] + 1, seeds[0] + 2])
+        records = pipeline._pipelines[self.pid]["_clip_storyboard_drafts"]
+        self.assertEqual([c["file"] for c in records[0]["candidates"]], ["out_1.png", "out_2.png", "out_3.png"])
+        self.assertEqual([c["seed"] for c in records[0]["candidates"]], seeds)
+        self.assertEqual(images, ["out_1.png", "out_4.png"])
 
     def test_the_judge_ranks_the_candidates_of_each_shot(self):
         params = self.params(director_storyboard_drafts=2)

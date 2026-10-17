@@ -192,6 +192,19 @@ class ForwarderTests(unittest.TestCase):
         )
         self.assertEqual(len(result.output_files), 1)
 
+    def test_a_multi_repeat_job_returns_every_output_in_order_with_its_sidecar(self):
+        self.worker.final = {"status": "completed", "output_files": ["s1.png", "s2.png", "s3.png"],
+                             "files": ["s1.png", "s2.png", "s3.png"], "sidecars": ["s1.json", "s3.json"],
+                             "clip_output_files": {}, "join_output_file": None}
+        self.worker.contents = {"s1.png": b"1", "s2.png": b"2", "s3.png": b"3",
+                                "s1.json": b'{"seed": 10}', "s3.json": b'{"seed": 12}'}
+        result = self._run({"model_type": "qwen_image_21_7B", "prompt": "a shot", "repeat_generation": 3})
+        self.assertEqual(self.worker.submitted["repeat_generation"], 3)
+        self.assertEqual(result.output_files, ["s1.png", "s2.png", "s3.png"])
+        self.assertEqual(sorted(os.listdir(self.out_dir)), ["s1.json", "s1.png", "s2.png", "s3.json", "s3.png"])
+        with open(os.path.join(self.out_dir, "s3.json"), "rb") as handle:
+            self.assertEqual(json.load(handle), {"seed": 12})
+
     def test_no_preview_mode_keeps_the_worker_default(self):
         self._run({"model_type": "ltx2_22B_distilled_1_1", "prompt": "a cat"})
         self.assertNotIn("preview_mode", self.worker.submit_body)

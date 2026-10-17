@@ -3,7 +3,12 @@
 Off by default (``director_storyboard_drafts`` 0). With N >= 2 each shot's
 start image is first rendered N times at a draft resolution (the run's,
 scaled so its long side is 768: 432x768 for 720x1280), same prompt, refs and
-image model, one seed per candidate. The storyboard judge ranks the N
+image model, one seed per candidate. The N candidates of a round are
+rendered in one job when the stage has a batch renderer (``repeat_generation``
+N: the engine encodes the prompt and references once and denoises N times,
+seeds seed, seed + 1, ...); each candidate's seed is read back from the
+settings the engine embeds in its output. A batch that returns fewer files
+falls back to one job per missing candidate. The storyboard judge ranks the N
 candidates in one vision call (``storyboard_judge.rank_candidates``); when its
 best is still flagged, N new candidates are rendered with its fix hint
 appended to the prompt, up to ``director_draft_rounds`` rounds, and the best
@@ -21,6 +26,7 @@ rounds, final) is kept in the pipeline state and the storyboard report.
 """
 from __future__ import annotations
 
+import json
 import os
 import random
 import re
@@ -112,8 +118,44 @@ def draft_settings(params: Optional[dict], run_resolution: Any) -> DraftSettings
 
 
 def candidate_seeds(base: int, count: int) -> list[int]:
-    """``count`` distinct seeds from ``base``, one per candidate."""
+    """``count`` distinct seeds from ``base``, one per candidate (the engine's own repeat seeds)."""
     return [(int(base) + k) % (2 ** 31) for k in range(count)]
+
+def output_seed(path: str) -> Optional[int]:
+    """The seed the engine recorded for an output image, None when it cannot be read.
+
+    Read from the ``.json`` settings sidecar when the engine writes one, else
+    from the settings embedded in the image (its ``comment``), else from the
+    engine's ``_seed<N>_`` file name.
+    """
+    sources: list[Any] = []
+    try:
+        with open(os.path.splitext(path)[0] + ".json", "r", encoding="utf-8") as handle:
+            sources.append(json.load(handle))
+    except (OSError, ValueError):
+        pass
+    try:
+        from PIL import Image
+
+        with Image.open(path) as image:
+            comment = (getattr(image, "text", {}) or {}).get("comment") or image.info.get("comment")
+        if isinstance(comment, (bytes, bytearray)):
+            comment = comment.decode("utf-8", "ignore")
+        if comment:
+            sources.append(json.loads(comment))
+    except Exception:  # noqa: BLE001 - a missing or foreign comment is no seed
+        pass
+    for settings in sources:
+        if not isinstance(settings, dict):
+            continue
+        try:
+            seed = int(settings.get("seed"))
+        except (TypeError, ValueError):
+            continue
+        if seed >= 0:
+            return seed
+    match = re.search(r"_seed(\d+)_", os.path.basename(path))
+    return int(match.group(1)) if match else None
 
 
 def _score(verdict: str, issues: Sequence[str]) -> tuple[int, int]:
@@ -166,6 +208,7 @@ def select_draft(
     render: Callable[[str, int], str],
     out_dir: str,
     rank: Optional[Callable[[list[str]], dict]] = None,
+    render_batch: Optional[Callable[[str, int, int], Sequence[str]]] = None,
     others: Sequence[tuple[int, str]] = (),
     seed_base: Optional[Callable[[], int]] = None,
     on_progress: Callable[[str], None] = lambda message: None,
@@ -176,7 +219,12 @@ def select_draft(
     """Render, rank and pick one shot's draft; return its record.
 
     ``render(prompt, seed)`` renders one candidate at the draft resolution and
-    returns its filename in ``out_dir``. ``rank(paths)`` is the judge's
+    returns its filename in ``out_dir``. ``render_batch(prompt, seed, count)``
+    renders ``count`` candidates in one job (seeds ``seed``, ``seed + 1``, ...)
+    and returns their filenames in order; a round uses it when given, and
+    renders one job each for the candidates it does not return (fewer files,
+    or a failure). A candidate's recorded seed is the one its output carries
+    (``output_seed``), else the planned one. ``rank(paths)`` is the judge's
     ranking (``storyboard_judge.rank_candidates``), None without a fal key:
     candidate 1 is then kept. A failed candidate is skipped; an exception in
     ``fatal`` (a generation timeout) propagates. The record's ``chosen`` is
@@ -199,23 +247,46 @@ def select_draft(
                                        "cost_usd": 0.0}
         record["rounds"].append(round_entry)
         rendered: list[dict] = []
-        for number, seed in enumerate(candidate_seeds(seed_base(), settings.count), start=1):
+        seeds = candidate_seeds(seed_base(), settings.count)
+        batch_files: list[str] = []
+        if render_batch is not None and settings.count >= 2:
+            on_progress(f"Storyboard drafts: {shot_label}, round {round_number}, "
+                        f"{settings.count} candidates in one job")
+            try:
+                batch_files = [os.path.basename(name) for name in (render_batch(prompt, seeds[0], settings.count)
+                                                                   or []) if name][:settings.count]
+            except fatal:
+                raise
+            except Exception as error:  # noqa: BLE001 - the candidates render one job each instead
+                log(f"Storyboard drafts: {shot_label} round {round_number} batch of {settings.count} failed, "
+                    f"rendering one job per candidate: {error}")
+            if 0 < len(batch_files) < settings.count:
+                log(f"Storyboard drafts: {shot_label} round {round_number}: the batch returned "
+                    f"{len(batch_files)}/{settings.count} files, rendering the rest one job each")
+        for number, seed in enumerate(seeds, start=1):
             if is_cancelled():
                 break
-            on_progress(f"Storyboard drafts: {shot_label}, round {round_number}, "
-                        f"candidate {number}/{settings.count}")
             entry: dict[str, Any] = {"round": round_number, "candidate": number, "seed": seed, "file": "",
                                      "verdict": "unranked", "issues": []}
             record["candidates"].append(entry)
-            try:
-                entry["file"] = os.path.basename(render(prompt, seed) or "")
-            except fatal:
-                raise
-            except Exception as error:  # noqa: BLE001 - other candidates may still render
-                entry["error"] = str(error)[:300]
-                log(f"Storyboard drafts: {shot_label} round {round_number} candidate {number} failed: {error}")
-                continue
+            if number <= len(batch_files):
+                entry["file"] = batch_files[number - 1]
+                entry["batched"] = True
+            else:
+                on_progress(f"Storyboard drafts: {shot_label}, round {round_number}, "
+                            f"candidate {number}/{settings.count}")
+                try:
+                    entry["file"] = os.path.basename(render(prompt, seed) or "")
+                except fatal:
+                    raise
+                except Exception as error:  # noqa: BLE001 - other candidates may still render
+                    entry["error"] = str(error)[:300]
+                    log(f"Storyboard drafts: {shot_label} round {round_number} candidate {number} failed: {error}")
+                    continue
             if entry["file"]:
+                recorded = output_seed(os.path.join(out_dir, entry["file"]))
+                if recorded is not None:
+                    entry["seed"] = recorded
                 rendered.append(entry)
         if not rendered:
             round_entry["error"] = "no candidate rendered"
