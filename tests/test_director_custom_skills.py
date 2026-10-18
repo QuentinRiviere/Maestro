@@ -498,6 +498,13 @@ class InsertContactTests(unittest.TestCase):
         shots = self.shots()
         shots[1]["closing_blocking"] = "His hand rests on her forearm; the cup is still."
         self.assertEqual(move_contact_out_of_inserts(shots), 1)
+        shots = self.shots()
+        # Run 7bb9fc86: her hands already hold the cup, his hand is still on its way to the wrist.
+        shots[1]["opening_blocking"] = ("Cha Hae-won's slender pale hands tremble while holding the white ceramic cup; "
+                                        "Song Jin-woo's right hand enters smoothly from screen left, resting fingertips "
+                                        "inches from her right wrist.")
+        shots[1]["closing_blocking"] = "Jin-woo's fingers remain wrapped firmly around Hae-won's right wrist."
+        self.assertEqual(move_contact_out_of_inserts(shots), 1)
 
     def test_a_plan_without_closings_uses_the_last_beat(self):
         shots = self.shots()

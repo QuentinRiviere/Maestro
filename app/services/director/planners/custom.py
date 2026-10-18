@@ -233,10 +233,12 @@ _CONTACT_RE = re.compile(
     r"\b(?:h(?:olds?|olding|eld)|encircl\w*|grip(?:s|ped|ping)?|grasp\w*|clasp\w*|clos(?:es?|ed|ing)\s+(?:over|around)|"
     r"wrap(?:s|ped|ping)?\s+around|cover(?:s|ed|ing)?|t(?:akes?|aken|ook|aking)\s+(?:hold\s+of\s+)?|"
     r"catch(?:es|ing)?|caught|press(?:es|ed|ing)?\s+(?:on|against|over)|rest(?:s|ed|ing)?\s+on\s+(?:her|his|their))"
-    r"\b[^.;]*\b(?:wrist|hand|hands|fingers|cup|mug|arm|forearm)\b",
+    r"\b[^.;]*\b(wrist|hand|hands|fingers|cup|mug|arm|forearm)\b",
     re.IGNORECASE)
 _APPROACH_RE = re.compile(
     r"\b(?:inches|centimet\w+|away\s+from|beside|next\s+to|near|close\s+to|short\s+of|toward|towards|"
+    r"enter(?:s|ing)?|hover(?:s|ing)?|approach(?:es|ing)?|reach(?:es|ing)?|slid(?:es|ing)|extend(?:s|ing)?|"
+    r"drift(?:s|ing)?|mov(?:es|ing)|not\s+yet\s+touching|about\s+to|"
     r"rests?\s+(?:open\s+|flat\s+)?on\s+the\s+(?:table|wood|tabletop|surface))\b", re.IGNORECASE)
 _LAST_BEAT_RE = re.compile(r"^\s*([\d.]+)\s*-\s*([\d.]+)\s*s\s*:", re.IGNORECASE)
 
@@ -262,7 +264,14 @@ def move_contact_out_of_inserts(shot_dicts: list[dict], low: float = 3.0) -> int
             # A plan without closings (a repaired answer): the last beat says where the shot ends.
             beats = [str(beat) for beat in raw.get("action_beats") or [] if str(beat).strip()]
             closing = re.sub(r"^\s*[\d.]+\s*-\s*[\d.]+\s*s\s*:\s*", "", beats[-1]) if beats else ""
-        if not (_CONTACT_RE.search(closing) and _APPROACH_RE.search(opening) and not _CONTACT_RE.search(opening)):
+        # The hold the shot ends on (its target: wrist, cup...) must not be made yet
+        # at the first frame; her own hands around the cup are contact too, so
+        # only a hold of the same target counts as "already made".
+        target = _CONTACT_RE.search(closing)
+        if not target or not _APPROACH_RE.search(opening):
+            continue
+        noun = target.group(1).lower().rstrip("s")
+        if any(m.group(1).lower().rstrip("s") == noun for m in _CONTACT_RE.finditer(opening)):
             continue
         raw["closing_blocking"] = closing
         try:
@@ -283,7 +292,8 @@ def move_contact_out_of_inserts(shot_dicts: list[dict], low: float = 3.0) -> int
                 prev_beats = [str(beat) for beat in previous.get("action_beats") or [] if str(beat).strip()]
                 prev_closing = (re.sub(r"^\s*[\d.]+\s*-\s*[\d.]+\s*s\s*:\s*", "", prev_beats[-1])
                                 if prev_beats else "")
-            if _APPROACH_RE.search(prev_closing) and not _CONTACT_RE.search(prev_closing):
+            if _APPROACH_RE.search(prev_closing) and not any(
+                    m.group(1).lower().rstrip("s") == noun for m in _CONTACT_RE.finditer(prev_closing)):
                 previous["closing_blocking"] = closing
                 try:
                     prev_duration = float(previous.get("duration_sec") or low)
