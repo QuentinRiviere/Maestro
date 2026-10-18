@@ -1,100 +1,14 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Spark model hub</title>
-  <link rel="stylesheet" href="/static/app.css">
-  <script src="/static/app.js" defer></script>
-</head>
-<body>
-  <header>
-    <h1>Spark model hub</h1>
-    <nav id="tabs" hidden>
-      <button data-tab="catalog" class="active">Catalog</button>
-      <button data-tab="explore">Explore</button>
-      <button data-tab="downloads">Downloads</button>
-      <button data-tab="installed">Installed</button>
-      <button data-tab="config">llama-swap config</button>
-    </nav>
-    <div id="status" class="muted"></div>
-    <button id="logout" class="link" hidden>Log out</button>
-  </header>
-
-  <main>
-    <section id="login" hidden>
-      <form id="login-form" class="card narrow">
-        <label for="token">Access token (MODEL_HUB_TOKEN)</label>
-        <input id="token" type="password" autocomplete="current-password" required>
-        <button type="submit" class="primary">Log in</button>
-        <p id="login-error" class="error"></p>
-      </form>
-    </section>
-
-    <section id="tab-catalog" class="tab" hidden>
-      <div class="toolbar">
-        <select id="catalog-category">
-          <option value="">All categories</option>
-          <option>general</option><option>abliterated</option><option>vision</option>
-          <option>code</option><option>small</option>
-        </select>
-        <span id="catalog-budget" class="muted"></span>
-      </div>
-      <div id="catalog-list" class="grid"></div>
-    </section>
-
-    <section id="tab-explore" class="tab" hidden>
-      <form id="search-form" class="toolbar">
-        <input id="search-q" type="search" placeholder="Search GGUF models (e.g. qwen3, gemma, coder)">
-        <select id="search-sort">
-          <option value="downloads">Most downloads</option>
-          <option value="trendingScore">Trending</option>
-          <option value="likes">Most likes</option>
-          <option value="lastModified">Recently updated</option>
-        </select>
-        <label class="inline"><input id="search-all" type="checkbox"> All publishers</label>
-        <button type="submit" class="primary">Search</button>
-      </form>
-      <p id="search-warning" class="warning" hidden>
-        Showing every publisher. Anyone can upload a GGUF: prefer the trusted ones, check the model card,
-        and remember an unknown quant can be broken or mislabeled even though the hub verifies its hash.
-      </p>
-      <p id="trusted-note" class="muted"></p>
-      <table id="search-results" class="list"></table>
-    </section>
-
-    <section id="tab-downloads" class="tab" hidden>
-      <div id="jobs"></div>
-    </section>
-
-    <section id="tab-installed" class="tab" hidden>
-      <div class="toolbar"><span id="disk" class="muted"></span></div>
-      <div id="installed-list"></div>
-      <h3>Memory</h3>
-      <div id="memory" class="muted"></div>
-    </section>
-
-    <section id="tab-config" class="tab" hidden>
-      <div class="toolbar">
-        <button id="rerender">Re-render llama-swap.yaml</button>
-        <span id="config-msg" class="muted"></span>
-      </div>
-      <h3>Pending changes</h3>
-      <pre id="config-diff" class="code"></pre>
-      <h3>Current llama-swap.yaml</h3>
-      <pre id="config-rendered" class="code"></pre>
-    </section>
-
-    <section id="repo" class="overlay" hidden>
-      <div class="card wide">
-        <div class="row between">
-          <h2 id="repo-title"></h2>
-          <button id="repo-close" class="link">Close</button>
-        </div>
-        <div id="repo-meta" class="muted"></div>
-        <div id="repo-body"></div>
-      </div>
-    </section>
-  </main>
-</body>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <title>Spark model hub</title>
+    <script type="module" crossorigin src="/static/assets/index-DrgjMByt.js"></script>
+    <link rel="stylesheet" crossorigin href="/static/assets/index-CzMNq5OP.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
 </html>

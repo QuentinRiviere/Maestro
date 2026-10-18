@@ -29,6 +29,7 @@ yet**, and the llama-swap image was not started: use the
 | `model_hub/cli.py` | `fetch` (download every entry of `models.yml`), `render` and `context` |
 | `model_hub/gguf_meta.py` | GGUF header parser (local file or Hub Range requests), cached per file |
 | `model_hub/ggufs.py` | file grouping, exact KV cache, memory estimates, max context, budgets |
+| `model_hub/static/` | the built web UI (committed); sources in `web/` (Vite + React + Tailwind + shadcn/ui) |
 | `docker/spark-stack/llama-swap-standalone/` | stack without Maestro: `compose.yaml`, `.env.example`, `config/*.example.*` |
 | `docker/spark-stack/compose.model-hub.yaml` | adds the hub to the Maestro stack (`docker/spark-stack/compose.yaml`) |
 
@@ -101,10 +102,34 @@ Update: `git pull && docker compose up -d --build`.
   (its image and video models, its process size, the running job), read
   from the worker's `GET /api/v1/worker/state` with `MAESTRO_WORKER_URL` /
   `MAESTRO_WORKER_TOKEN` (the lease's values). llama-swap alone cannot see
-  past that proxy entry. A green bar is the accounted memory (estimates plus
-  the worker's process), grey the rest (page cache, other processes).
+  past that proxy entry. The memory card leads the tab: the free figure
+  (warning colour under 15 GB), a stacked bar (accounted models, other
+  processes and kernel, page cache hatched as reclaimable, free), swap
+  (warning above 1 GB), then one row per llama-swap model and the worker's
+  own models under its row. It refreshes every 5 s while the tab is open.
 - **llama-swap config**: the rendered file, pending changes, *Re-render*
   (after editing `llama-swap.base.yaml`).
+
+### Web UI
+
+The UI is a Vite + React + TypeScript app (Tailwind v4, shadcn/ui,
+lucide icons) in `docker/spark-stack/model-hub/web/`. Its production build
+is **committed** under `model_hub/static/` (`index.html` plus
+`assets/*`), which FastAPI serves as before (`/` and `/static/...`), so the
+Python image needs no Node and the `Dockerfile` is unchanged. After editing
+the sources, rebuild and commit the output:
+
+```bash
+cd docker/spark-stack/model-hub/web
+npm ci
+npm run build          # type-checks, then writes ../model_hub/static/
+```
+
+`npm run dev` serves the UI alone on Vite's port; point it at a running hub
+with a `server.proxy` entry for `/api` if needed. The hub's CSP
+(`style-src 'self'; script-src 'self'`) forbids inline styles and scripts,
+so keep styling in Tailwind classes and avoid libraries that inject
+`<style>` tags at runtime.
 
 ### models.yml and rendering
 
