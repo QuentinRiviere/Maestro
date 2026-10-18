@@ -10335,7 +10335,7 @@ def _run_draft_finals(pid: str, params: dict, clip_plans: list[dict], clip_image
                 pid=pid, index=index, record=records[index], out_dir=out_dir,
                 image_prompt=str((clip_plans[index] or {}).get("image_prompt") or ""),
                 identity_refs=identity_refs_for(index), settings=drafts, refine_settings=refine,
-                size=size, submit=submit,
+                size=size, submit=submit, crop_faces=director_is_insert(clip_plans[index] or {}),
             )
         except _GenerationTimeoutError:
             raise
@@ -10408,6 +10408,7 @@ def _select_storyboard_draft_impl(out_dir: str, pid: str, clip_index: int, candi
         image_prompt=str(clips[clip_index].get("image_prompt") or ""),
         identity_refs=_refine_identity_refs(params, clips, clip_out_dir)(clip_index),
         settings=drafts, refine_settings=image_refine.refine_settings(params), size=size, submit=submit,
+        crop_faces=director_is_insert(clips[clip_index] or {}),
     )
 
     def _update(s):

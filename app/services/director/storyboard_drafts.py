@@ -383,20 +383,28 @@ def build_final_job(*, source_path: str, out_dir: str, image_prompt: str, identi
 
 def run_final(*, pid: str, index: int, record: dict, out_dir: str, image_prompt: str,
               identity_refs: Sequence[str], settings: DraftSettings, refine_settings: Any,
-              size: tuple[int, int], submit: Callable[[dict], list]) -> str:
+              size: tuple[int, int], submit: Callable[[dict], list], crop_faces: bool = False) -> str:
     """Upscale shot ``index``'s chosen draft, re-render it at ``size``; return the final's filename.
 
     Records the final (and the draft it came from) in ``record``. Raises when
-    the shot has no chosen draft or the job records no output.
+    the shot has no chosen draft or the job records no output. With
+    ``crop_faces`` (an insert) a draft that still shows faces is cut back to
+    the band below them first (``insert_crop``), and the record says so.
     """
-    from . import image_refine
+    from . import image_refine, insert_crop
 
     draft = chosen_file(record)
     draft_path = os.path.join(out_dir, draft) if draft else ""
     if not draft_path or not os.path.isfile(draft_path):
         raise RuntimeError(f"shot {index + 1} has no chosen draft image")
     stem = re.sub(r"[^A-Za-z0-9_-]+", "_", os.path.splitext(draft)[0])
-    upscaled = upscale(draft_path, size, os.path.join(out_dir, f"{stem}_upscaled_{size[0]}x{size[1]}.png"))
+    source_path = draft_path
+    if crop_faces:
+        cropped = insert_crop.crop_below_faces(draft_path, os.path.join(out_dir, f"{stem}_below_faces.png"))
+        if cropped:
+            source_path = cropped
+            record["cropped_below_faces"] = os.path.basename(cropped)
+    upscaled = upscale(source_path, size, os.path.join(out_dir, f"{stem}_upscaled_{size[0]}x{size[1]}.png"))
     job = build_final_job(source_path=upscaled, out_dir=out_dir, image_prompt=image_prompt,
                           identity_refs=identity_refs, settings=settings, refine_settings=refine_settings,
                           size=size, pid=pid)
