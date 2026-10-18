@@ -4344,6 +4344,14 @@ def _measure_pipe_fit(pipe, output_type):
     return _pipe_fits_vram
 
 
+def _unified_memory_card():
+    """Whether the GPU shares the system RAM (DGX Spark GB10, Jetson): CUDA reports it as integrated."""
+    try:
+        return bool(getattr(torch.cuda.get_device_properties(0), "is_integrated", False))
+    except Exception:
+        return False
+
+
 def _keep_models_in_vram():
     """Remote worker setting: leave models in VRAM between generations, for a pipeline that fits the card.
 
@@ -4707,10 +4715,13 @@ def load_models(model_type, override_profile = -1, output_type="video", preview_
     if compile_modules == False:
         print("Pytorch compilation is not supported for this Model")
     # kwargs["pinnedMemory"] = "text_encoder"
-    if os.environ.get("MAESTRO_PINNED_MEMORY") == "0" and _pipe_fits_vram:
+    if os.environ.get("MAESTRO_PINNED_MEMORY") == "0" and (_pipe_fits_vram or _unified_memory_card()):
         # Remote worker setting: skip the page-locked RAM copy of a model that
         # fits the card. One that streams its blocks keeps it: pinned RAM is
-        # what makes the per-step transfers fast.
+        # what makes the per-step transfers fast. On a unified-memory card
+        # (DGX Spark) the pinned copy is a second copy of the weights in the
+        # same RAM the GPU reads from: MiniMax H3 (96.8 GB, streamed) then
+        # held 40 GB pinned next to its VRAM budget and filled the swap.
         kwargs["pinnedMemory"] = False
     previous_last_offload = getattr(offload, "last_offload_obj", None)
     preview_profile_failed = False
