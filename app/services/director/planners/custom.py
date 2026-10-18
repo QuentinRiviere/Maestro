@@ -230,8 +230,8 @@ def skill_rules_block(spec: dict, options: dict[str, str]) -> str:
 
 # A hand taking hold of a wrist, a hand or a cup, and a hand still on its way.
 _CONTACT_RE = re.compile(
-    r"\b(?:h(?:olds?|olding|eld)|encircl\w*|grip(?:s|ped|ping)?|grasp\w*|clasp\w*|clos(?:es?|ed|ing)\s+(?:over|around)|"
-    r"wrap(?:s|ped|ping)?\s+around|cover(?:s|ed|ing)?|t(?:akes?|aken|ook|aking)\s+(?:hold\s+of\s+)?|"
+    r"\b(?:h(?:olds?|olding|eld)|encircl\w*|grip(?:s|ped|ping)?|grasp\w*|clasp\w*|clos(?:es?|ed|ing)\s+(?:\w+\s+)?(?:over|around)|"
+    r"wrap(?:s|ped|ping)?\s+(?:\w+\s+)?around|cover(?:s|ed|ing)?|t(?:akes?|aken|ook|aking)\s+(?:hold\s+of\s+)?|"
     r"catch(?:es|ing)?|caught|press(?:es|ed|ing)?\s+(?:on|against|over)|rest(?:s|ed|ing)?\s+on\s+(?:her|his|their))"
     r"\b[^.;]*\b(wrist|hand|hands|fingers|cup|mug|arm|forearm)\b",
     re.IGNORECASE)
