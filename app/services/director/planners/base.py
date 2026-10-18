@@ -533,6 +533,9 @@ class BasePlanner(ABC):
         except json.JSONDecodeError as e:
             print(f"[Planner] Direct JSON parse failed: {e}")
             print(f"[Planner] Text starts with: {text[:200]!r}")
+            # The repaired result may lose fields (run 52b9c735 came back
+            # without any closing_blocking): keep the answer for a look.
+            print(f"[Planner] Full answer ({len(text)} chars) for the record:\n{text[:12000]}")
 
         # Try to find JSON array in text
         match = re.search(r'\[[\s\S]*\]', text)

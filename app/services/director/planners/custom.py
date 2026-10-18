@@ -256,8 +256,13 @@ def move_contact_out_of_inserts(shot_dicts: list[dict], low: float = 3.0) -> int
             continue
         opening = str(raw.get("opening_blocking") or "")
         closing = str(raw.get("closing_blocking") or raw.get("ending_beat") or "")
+        if not closing:
+            # A plan without closings (a repaired answer): the last beat says where the shot ends.
+            beats = [str(beat) for beat in raw.get("action_beats") or [] if str(beat).strip()]
+            closing = re.sub(r"^\s*[\d.]+\s*-\s*[\d.]+\s*s\s*:\s*", "", beats[-1]) if beats else ""
         if not (_CONTACT_RE.search(closing) and _APPROACH_RE.search(opening) and not _CONTACT_RE.search(opening)):
             continue
+        raw["closing_blocking"] = closing
         try:
             duration = float(raw.get("duration_sec") or low)
         except (TypeError, ValueError):
@@ -272,6 +277,10 @@ def move_contact_out_of_inserts(shot_dicts: list[dict], low: float = 3.0) -> int
         previous = shot_dicts[index - 1] if index > 0 and isinstance(shot_dicts[index - 1], dict) else None
         if previous and str(previous.get("scene_id") or "") == str(raw.get("scene_id") or ""):
             prev_closing = str(previous.get("closing_blocking") or previous.get("ending_beat") or "")
+            if not prev_closing:
+                prev_beats = [str(beat) for beat in previous.get("action_beats") or [] if str(beat).strip()]
+                prev_closing = (re.sub(r"^\s*[\d.]+\s*-\s*[\d.]+\s*s\s*:\s*", "", prev_beats[-1])
+                                if prev_beats else "")
             if _APPROACH_RE.search(prev_closing) and not _CONTACT_RE.search(prev_closing):
                 previous["closing_blocking"] = closing
                 try:
