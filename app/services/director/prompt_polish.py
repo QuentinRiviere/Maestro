@@ -197,6 +197,29 @@ def expand_name_aliases(name_to_desc: dict) -> dict:
     return aliases
 
 
+INSERT_POLISH_RULE = (
+    "\n\nTHIS SHOT IS A HANDS INSERT:\n"
+    "The frame shows hands, forearms, sleeves and objects on a surface, nothing above the "
+    "elbows. Keep it that way: no face, no hair, no eyes, no clothes beyond a sleeve or cuff, "
+    "no 'a man wearing', no 'a woman in', no one seated or leaning; never add a second "
+    "person around a hand. Name a person only as 'the woman' / 'the man' ('the man's hand "
+    "tightens on the mug'). Drop every sentence that describes a person rather than hands "
+    "and objects.\n\n"
+)
+
+
+def insert_person(descriptor: str) -> str:
+    """The name of a person in a hands insert: "the woman", "the man" or "the person"."""
+    pronoun = _descriptor_pronoun(descriptor)
+    return {"she": "the woman", "he": "the man"}.get(pronoun, "the person")
+
+
+def _is_insert_plan(plan: dict) -> bool:
+    """Whether a clip plan is a hands insert (the pipeline's key, else the planner's)."""
+    scene_type = plan.get("_director_scene_type") or plan.get("scene_type") or ""
+    return str(scene_type).strip().lower() == "insert"
+
+
 def _descriptor_pronoun(descriptor: str, *, object_form: bool = False) -> str:
     """Pick a pronoun based on gender keywords in the descriptor.
 
@@ -2257,6 +2280,13 @@ def polish_prompts_third_pass(
         # when both exist. Falls back to global for characters mentioned
         # in dialogue but not currently on-camera.
         shot_desc_to_name, shot_name_to_desc, _unused_ref_block = _build_per_shot_char_context(plan)
+        is_insert = _is_insert_plan(plan)
+        if is_insert:
+            # A hands insert: a name becomes "the woman" / "the man", never the
+            # face descriptor, which would redraw the person around the hands.
+            # (shot_desc_to_name keeps the face descriptors: it only reverts
+            # them back to names inside quoted dialogue.)
+            shot_name_to_desc = {name: insert_person(desc) for name, desc in shot_name_to_desc.items()}
         # Per-shot diagnostic. Shows which names are in the substitution
         # map for THIS shot — the map _normalize_names_descriptors will
         # use to convert names → descriptors in narrative AND descriptors
@@ -2274,13 +2304,15 @@ def polish_prompts_third_pass(
         # eliminates the reverse-substitution incitement bug where the
         # polish LLM saw "Blaine → strong man in black" in the system
         # prompt and inserted "Blaine" into output that had no name.
+        insert_rule = INSERT_POLISH_RULE if is_insert else ""
+
         def _build_video_system_for(text: str) -> str:
             if preserve_video_character_names:
-                return _video_system_base
-            return _video_system_base + _build_filtered_char_block(text, shot_name_to_desc)
+                return _video_system_base + insert_rule
+            return _video_system_base + insert_rule + _build_filtered_char_block(text, shot_name_to_desc)
 
         def _build_image_system_for(text: str) -> str:
-            return _image_system_base + _build_filtered_char_block(text, shot_name_to_desc)
+            return _image_system_base + insert_rule + _build_filtered_char_block(text, shot_name_to_desc)
 
         wps = plan.get("window_prompts", [])
         has_windows = bool(wps and len(wps) > 1)

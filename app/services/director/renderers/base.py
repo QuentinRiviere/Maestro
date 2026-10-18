@@ -155,7 +155,13 @@ class BaseRenderer(ABC):
 
     @staticmethod
     def _scene_map_text(shot: ShotPlan) -> str:
-        """The scene seen from the camera (what is left, right, behind; doors, windows, lights)."""
+        """The scene seen from the camera (what is left, right, behind; doors, windows, lights).
+
+        An insert gets none: the map seats both characters in the frame, and
+        the model then draws them instead of the hands.
+        """
+        if str(getattr(shot, "scene_type", "") or "").lower() == "insert":
+            return ""
         return str((shot.metadata or {}).get("scene_map") or "").strip()
 
     @staticmethod

@@ -45,16 +45,19 @@ class VisibleWardrobeTest(unittest.TestCase):
         self.assertNotIn("sneakers", visible_wardrobe(OUTFIT, "detail"))
         self.assertIsNone(visible_wardrobe(None, "upper"))
 
-    def test_an_insert_names_hands_and_sleeves_without_the_face(self):
-        char = SimpleNamespace(physical_description="22, oval face, almond eyes", wardrobe=OUTFIT)
+    def test_an_insert_names_hands_without_the_face_or_the_clothes(self):
+        char = SimpleNamespace(physical_description="22, oval face, almond eyes, a young woman", wardrobe=OUTFIT)
         plan = SimpleNamespace(get_character=lambda _id: char)
         shot = SimpleNamespace(scene_type="insert", camera_plan=SimpleNamespace(framing="close-up"),
                                subjects_on_screen=[SimpleNamespace(visual_description="", character_id="c1",
-                                                                   position_or_relation="")])
-        text = resolve_subjects_text(shot, plan)
-        self.assertTrue(text.startswith("hands of a person in"))
-        self.assertIn("cardigan", text)
-        self.assertNotIn("almond eyes", text)
+                                                                   position_or_relation="screen right")])
+        self.assertEqual(resolve_subjects_text(shot, plan), "a woman's hands, screen right")
+        # A person the plan cannot resolve: the planner's own words give the gender, nothing else.
+        shot.subjects_on_screen = [SimpleNamespace(visual_description="the man's hand in a green sleeve",
+                                                   character_id="", position_or_relation="")]
+        self.assertEqual(resolve_subjects_text(shot, None), "a man's hands")
+        shot.subjects_on_screen = [SimpleNamespace(visual_description="", character_id="", position_or_relation="")]
+        self.assertEqual(resolve_subjects_text(shot, None), "hands")
 
 
 if __name__ == "__main__":

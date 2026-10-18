@@ -136,6 +136,26 @@ def visible_wardrobe(wardrobe: str, reach: str) -> str:
     return ", ".join(kept)
 
 
+_WOMAN_RE = re.compile(r"\b(?:woman|women|girl|lady|female|she|her|mother|sister|wife|daughter)\b", re.IGNORECASE)
+_MAN_RE = re.compile(r"\b(?:man|men|boy|guy|male|he|his|father|brother|husband|son|gentleman)\b", re.IGNORECASE)
+
+
+def hands_subject(*descriptions: str) -> str:
+    """How an insert names a person: "a woman's hands", "a man's hands" or "hands".
+
+    No clothes and no face: a video or image model given a person's
+    wardrobe draws the person (LTX and H3 both pulled the Café Haru insert
+    back to a two-shot when the prompt dressed both characters). The
+    gender word is the only trace of who the hands belong to.
+    """
+    text = " ".join(d for d in descriptions if d)
+    if _WOMAN_RE.search(text):
+        return "a woman's hands"
+    if _MAN_RE.search(text):
+        return "a man's hands"
+    return "hands"
+
+
 def resolve_subjects_text(shot: ShotPlan, plan: Optional[ProductionPlan] = None) -> str:
     """Build a text description of all subjects on screen for prompt injection.
 
@@ -150,10 +170,10 @@ def resolve_subjects_text(shot: ShotPlan, plan: Optional[ProductionPlan] = None)
         desc = subj.visual_description
         char = plan.get_character(subj.character_id) if subj.character_id and plan else None
         if reach == "detail":
-            # Hands and sleeves only: a face description pulls an insert back to a portrait,
-            # including the planner's own description of a person the plan cannot resolve.
-            wardrobe = visible_wardrobe(char.wardrobe, reach) if char else ""
-            desc = f"hands of a person in {wardrobe}" if wardrobe else "hands"
+            # Hands only, no clothes: a face or a garment pulls an insert back to a
+            # portrait, including the planner's own description of a person the plan
+            # cannot resolve.
+            desc = hands_subject(char.physical_description if char else "", subj.visual_description)
         elif char:
             wardrobe = visible_wardrobe(char.wardrobe, reach)
             desc = ", ".join(p for p in (char.physical_description, wardrobe) if p)

@@ -83,11 +83,10 @@ class InsertRerunTest(unittest.TestCase):
         prompt = pipeline.director_insert_prompt(SHOT_10, SHOT_10["image_prompt"], CAST)
         self.assertNotIn("almond eyes", prompt)
         self.assertNotIn("oval face", prompt)
-        self.assertIn("SUBJECT: hands of a person in Oversized knitted cream-colored wool sweater over a crisp "
-                      "white cotton collared shirt, screen-left over the table and hands of a person in Forest "
-                      "green corduroy overshirt over a beige graphic t-shirt, screen-right reaching across the "
-                      "table, Hae-won's right hand shakes beside the mug; Jin-woo's hand enters screen-right "
-                      "swiftly. MOOD: Decisive", prompt)
+        self.assertIn("SUBJECT: a woman's hands, screen-left over the table and a man's hands, screen-right "
+                      "reaching across the table, Hae-won's right hand shakes beside the mug; Jin-woo's hand "
+                      "enters screen-right swiftly. MOOD: Decisive", prompt)
+        self.assertNotIn("sweater", prompt)
         # The setting and the mood stay as planned.
         self.assertTrue(prompt.startswith("SHOT: close-up insert. SETTING: Café Haru, small round oak table"))
 
@@ -95,14 +94,13 @@ class InsertRerunTest(unittest.TestCase):
         plan = {**SHOT_10, "_director_subjects_on_screen": SHOT_10["_director_subjects_on_screen"][:1]}
         piped = "SHOT: insert | SUBJECT: 22 years old, almond eyes, hands on a mug | MOOD: fragile"
         self.assertEqual(pipeline.director_insert_prompt(plan, piped, CAST),
-                         "SHOT: insert | SUBJECT: hands of a person in Oversized knitted cream-colored wool "
-                         "sweater over a crisp white cotton collared shirt, screen-left over the table, Hae-won's "
+                         "SHOT: insert | SUBJECT: a woman's hands, screen-left over the table, Hae-won's "
                          "right hand shakes beside the mug; Jin-woo's hand enters screen-right swiftly. | MOOD: "
                          "fragile")
         prose = "Close-up insert on a café table. A 22-year-old woman with almond eyes and black hair. Steam rises."
         rebuilt = pipeline.director_insert_prompt(plan, prose, CAST)
         self.assertNotIn("almond", rebuilt)
-        self.assertTrue(rebuilt.startswith("Close-up insert on a café table. Steam rises. SUBJECT: hands of"))
+        self.assertTrue(rebuilt.startswith("Close-up insert on a café table. Steam rises. SUBJECT: a woman's hands"))
 
     def test_other_shots_are_untouched(self):
         plan = {**SHOT_10, "_director_scene_type": "dialogue", "_director_camera_framing": "medium close-up"}
@@ -133,7 +131,7 @@ class InsertRerunTest(unittest.TestCase):
                     pipeline._rerun_clip_image_impl(folder, "fcd1e37f", 0)
         job = sent[0]
         self.assertNotIn("almond eyes", job["prompt"])
-        self.assertIn("SUBJECT: hands of a person in Oversized knitted", job["prompt"])
+        self.assertIn("SUBJECT: a woman's hands, screen-left over the table", job["prompt"])
         self.assertNotIn("Preserve character identity", job["prompt"])
         # The sampler the project saved reaches the job (see director_image_params).
         self.assertEqual((job["sample_solver"], job["num_inference_steps"], job["guidance_scale"]),
