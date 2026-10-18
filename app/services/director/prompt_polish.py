@@ -965,8 +965,14 @@ def _strip_orphan_before_boilerplate(text: str) -> tuple[str, int]:
 _MAX_DESCRIPTOR_WORDS = 14
 _DESCRIPTOR_STOP_WORDS = r"the|over|on|onto|beside|behind|across|between|opposite|toward|towards|facing|at|from|near"
 
+# A descriptor never carries a conjugated verb or a clause joiner: "his hand
+# is already wrapped around A slender woman's wrist" must find "A slender
+# woman", not "is already wrapped around A slender woman" (run e823ac19).
+_POSSESSIVE_BREAK_WORDS = (_DESCRIPTOR_STOP_WORDS
+                           + r"|is|are|was|were|has|have|had|and|but|while|then|already|still|around|into|under")
+_POSSESSIVE_BREAK_RE = re.compile(r"(?:" + _POSSESSIVE_BREAK_WORDS + r")$", re.IGNORECASE)
 _LONG_POSSESSIVE_RE = re.compile(
-    r"(?:\b(?:the|a|an)\s+)?(?<![\w\-'])(?!(?:" + _DESCRIPTOR_STOP_WORDS + r")\b)(\w(?:(?!\b(?:" + _DESCRIPTOR_STOP_WORDS + r")\b)[\w\s\-]){7,79}?)'s\s+(\w+)(\s+\w+)?",
+    r"(?:\b(?:the|a|an)\s+)?(?<![\w\-'])(?!(?:" + _POSSESSIVE_BREAK_WORDS + r")\b)(\w(?:(?!\b(?:" + _POSSESSIVE_BREAK_WORDS + r")\b)[\w\s\-]){7,79}?)'s\s+(\w+)((?:\s+\w+){0,2})",
     re.IGNORECASE,
 )
 
@@ -1019,18 +1025,20 @@ def _rewrite_long_possessives(text: str) -> tuple[str, int]:
         descriptor = m.group(1).strip()
         noun = m.group(2)
         extra_raw = m.group(3) or ""  # includes leading whitespace
-        extra = extra_raw.strip()
         if len(descriptor.split()) < 4:
             return m.group(0)
-        # Decide whether the trailing word belongs to the noun phrase or
-        # is the next clause's verb. Verbs get pulled out and appended
-        # AFTER the rewritten possessive so the sentence still parses.
-        if extra and extra.lower() not in _POSSESSIVE_TRIM_VERBS:
-            noun_phrase = f"{noun} {extra}"
-            tail = ""
-        else:
-            noun_phrase = noun
-            tail = extra_raw if extra else ""  # preserves the leading space
+        # The noun phrase runs up to three words ("pale right wrist") and stops
+        # at the next clause's verb or joiner, which is appended after the
+        # rewrite so the sentence still parses.
+        words = extra_raw.split()
+        kept = []
+        for word in words:
+            if word.lower() in _POSSESSIVE_TRIM_VERBS or _POSSESSIVE_BREAK_RE.match(word):
+                break
+            kept.append(word)
+        noun_phrase = " ".join([noun] + kept)
+        rest = words[len(kept):]
+        tail = (" " + " ".join(rest)) if rest else ""
         rewrites += 1
         return f"the {noun_phrase} of the {descriptor}{tail}"
 

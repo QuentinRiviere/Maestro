@@ -78,19 +78,19 @@ SCENE_CRAFT = """SCENE CRAFT (this is what separates a real scene from generated
   will grab a wrist starts on the table; a nod starts with the head still) and IS done by the last frame, so the
   render shows the change itself; the action prompt names the start pose, the one move and the end pose, and
   that move falls inside keep_sec.
-- Contact between two people is never filmed while it happens: on a short render two hands that meet
-  melt into each other at any framing. Stage it around the touch. The shot before ends with the hand still
-  short of its target (fingertips a few centimetres away, or the hand leaving the bottom of the frame) and the
-  next shot opens with the hold ALREADY made at its first frame, both hands still and small in a two-shot or
-  an over-the-shoulder shot where the faces carry the beat. Or keep the holding hand off-frame: in an
-  over-the-shoulder shot no arm crosses the foreground shoulder, the hand that holds the other person stays
-  out of frame and still, and her face shows the grip. Or play it through sound and a look: a mug set down
-  hard, her eyes dropping to the table, cut. A hand on its way to a wrist, a hand closing around a hand, two
-  hands crossing: never in any shot's action beats. Her own hand taking a cup is fine: it starts beside it and
-  closes slowly. A person-to-person hold is never the subject of an insert. An insert shows ONE person's hand
-  and one object (her fingers tightening on the mug, then going still; his hand setting the cup down; a hand
-  on a door handle), already on the object at the first frame, one small move, the camera still and nothing
-  else moving. An insert names no face and no clothes: hands, sleeves, the object, the surface, the light.
+- Contact between two people is never in frame: on a short render two hands that meet melt into each
+  other at any framing, and a hold already made comes out as one fused mass even when it stays still. Stage it
+  around the touch, out of sight. The shot before ends with the hand still short of its target and dropping
+  below the bottom edge of the frame (never a hand hovering in frame, never a hand crossing a foreground
+  shoulder). The next shot is framed from the chest up with every hand below the bottom edge of the frame:
+  the hold exists below the frame and the faces carry it, the held one feels the grip, the holder's eyes stay
+  on them. Or play it through sound and a look: a mug set down hard, her eyes dropping to the table, cut. A
+  hand on its way to a wrist, a hand closing around a hand, two joined hands, two hands crossing: never in any
+  shot's frame or action beats. Her own hand taking a cup is fine: it starts beside it and closes slowly. A
+  person-to-person hold is never the subject of an insert. An insert shows ONE person's hand and one object
+  (her fingers tightening on the mug, then going still; his hand setting the cup down; a hand on a door
+  handle), already on the object at the first frame, one small move, the camera still and nothing else
+  moving. An insert names no face and no clothes: hands, sleeves, the object, the surface, the light.
 - Action is performance, second by second: a physical intention, the visible expression change it causes, the
   reaction. No filler motion (aimless walking, hair touching, looking around) to fill time.
 - Filmable action only: an action beat describes what a viewer can see at the shot's framing in a short, low
@@ -269,18 +269,23 @@ def _duration_of(raw: dict, low: float) -> float:
         return float(low)
 
 
+OFF_FRAME_FRAMING = "from the chest up, every hand below the bottom edge of the frame"
+
+
 def keep_contact_off_screen(shot_dicts: list[dict], low: float = 3.0) -> int:
-    """Never render the moment a hand takes hold of another person; open on the hold instead.
+    """Never render a hand taking hold of another person, nor the hold itself.
 
     Short video models fuse the fingers when a hand takes a wrist, in
-    close-up and in a two-shot alike (LTX, every Café Haru run). A shot
-    whose opening has the hand on its way and whose closing has it holding
-    the other person now opens on the hold, with the hands still for the
-    whole shot and the faces carrying the beat; the previous shot of the
-    same scene keeps its hand short of the target and is locked there, so
-    the touch itself falls between the two cuts. An insert that ends on a
-    hold of an object (a cup) opens on it too and only tightens, and the
-    shot before takes the closing move, where the hands are small.
+    close-up and in a two-shot alike, and a hold already made at the first
+    frame still comes out as one melted mass (LTX, every Café Haru run,
+    e823ac19 included). A shot whose opening has the hand on its way and
+    whose closing has it holding the other person is reframed from the
+    chest up with every hand below the frame: the hold exists out of
+    sight and the faces carry it. The previous shot of the same scene
+    keeps its hand short of the target and is locked below the frame, so
+    the touch falls between the two cuts. An insert that ends on a hold
+    of an object (a cup) opens on it and only tightens, and the shot
+    before takes the closing move, where the hands are small.
     Returns the number of shots rewritten.
     """
     moved = 0
@@ -302,19 +307,31 @@ def keep_contact_off_screen(shot_dicts: list[dict], low: float = 3.0) -> int:
             continue
         if any(m.group(1).lower().rstrip("s") == noun for m in _CONTACT_RE.finditer(opening)):
             continue
-        raw["closing_blocking"] = closing
         duration = _duration_of(raw, low)
-        raw["opening_blocking"] = f"Already at the first frame: {closing.strip().rstrip('.')}."
         locks = [str(lock).strip() for lock in raw.get("locks") or [] if str(lock).strip()]
         if person:
+            hold = closing.strip().rstrip(".")
+            raw["opening_blocking"] = (f"Framed {OFF_FRAME_FRAMING}; faces and shoulders only, no hand in sight. "
+                                       "The held one has just felt the grip on the wrist below the frame; the "
+                                       "holder's eyes are fixed on them.")
+            raw["closing_blocking"] = ("Same framing, no hand in sight; their eyes are locked, neither has moved "
+                                       "except the faces.")
             kept = [str(beat) for beat in raw.get("action_beats") or []
                     if str(beat).strip() and not (_HAND_WORD_RE.search(str(beat))
                                                   and (_CONTACT_RE.search(str(beat)) or _APPROACH_RE.search(str(beat))))]
-            raw["action_beats"] = [f"0.0-{duration:.1f}s: the hold stays exactly as it is at the first frame; neither "
-                                   "hand moves, nothing travels across the frame; the faces carry the beat."] + kept
-            raw["locks"] = locks + ["the hold is already made at the first frame; neither hand moves for the whole "
-                                    "shot; the hands stay small in the frame"]
+            raw["action_beats"] = [f"0.0-{duration:.1f}s: nothing moves below the shoulders; the faces carry the "
+                                   "hold that exists below the frame: a caught breath, eyes that lock."] + kept
+            raw["locks"] = locks + [f"the hold ({hold}) stays below the bottom edge of the frame and is never "
+                                    "shown; no hand in frame for the whole shot"]
+            cam = raw.get("camera_plan") if isinstance(raw.get("camera_plan"), dict) else {}
+            framing = str(cam.get("framing") or "").strip().rstrip(",")
+            cam["framing"] = f"{framing}, {OFF_FRAME_FRAMING}" if framing else f"medium close-up {OFF_FRAME_FRAMING}"
+            raw["camera_plan"] = cam
+            if is_insert:
+                raw["scene_type"] = "reaction"
         else:
+            raw["closing_blocking"] = closing
+            raw["opening_blocking"] = f"Already at the first frame: {closing.strip().rstrip('.')}."
             raw["action_beats"] = [f"0.0-{duration:.1f}s: nothing moves but the fingers: the holding hand tightens "
                                    "slightly and a thumb shifts; the other hand and the objects stay still; the camera "
                                    "is still."]
@@ -329,8 +346,9 @@ def keep_contact_off_screen(shot_dicts: list[dict], low: float = 3.0) -> int:
             continue
         if person:
             prev_locks = [str(lock).strip() for lock in previous.get("locks") or [] if str(lock).strip()]
-            previous["locks"] = prev_locks + ["the hand stops short of the other person; no contact is made in "
-                                              "this shot"]
+            previous["locks"] = prev_locks + ["the reaching hand stops short of the other person and drops below "
+                                              "the bottom edge of the frame; no contact is made in this shot; no "
+                                              "hand crosses a foreground shoulder"]
             continue
         previous["closing_blocking"] = closing
         prev_duration = _duration_of(previous, low)

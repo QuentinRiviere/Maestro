@@ -175,6 +175,17 @@ class TestLongPossessiveRewrite(unittest.TestCase):
         self.assertIn("the hand of the woman in white silk gown reaches", cleaned)
         self.assertNotIn("hand reaches of the", cleaned)
 
+    def test_the_descriptor_stops_at_a_verb_and_the_noun_phrase_takes_three_words(self):
+        # Run e823ac19: "Jin-woo's warm hand is already wrapped firmly around Hae-won's pale
+        # right wrist" came out as "the pale right of the is already wrapped firmly around ...".
+        text = ("the friendly Korean young man with round spectacles's warm hand is already wrapped firmly "
+                "around A slender young Korean woman with guarded eyes's pale right wrist above the table.")
+        cleaned, count = _rewrite_long_possessives(text)
+        self.assertEqual(count, 2)
+        self.assertEqual(cleaned, "the warm hand of the friendly Korean young man with round spectacles is already "
+                                  "wrapped firmly around the pale right wrist of the slender young Korean woman "
+                                  "with guarded eyes above the table.")
+
     def test_short_descriptor_not_rewritten(self):
         # The 4-word minimum still applies — short possessives like
         # "the man's hand" must not be rewritten.
