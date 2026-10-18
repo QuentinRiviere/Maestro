@@ -400,7 +400,14 @@ def run_final(*, pid: str, index: int, record: dict, out_dir: str, image_prompt:
     stem = re.sub(r"[^A-Za-z0-9_-]+", "_", os.path.splitext(draft)[0])
     source_path = draft_path
     if crop_faces:
-        cropped = insert_crop.crop_below_faces(draft_path, os.path.join(out_dir, f"{stem}_below_faces.png"))
+        try:
+            flagged = insert_crop.judge_saw_faces(record.get("issues") or [])
+            cropped = insert_crop.crop_below_faces(
+                draft_path, os.path.join(out_dir, f"{stem}_below_faces.png"),
+                assume_faces_above=insert_crop.ASSUMED_FACES_ABOVE if flagged else None)
+        except Exception as error:  # noqa: BLE001 - the crop is a repair, never the reason a final fails
+            cropped = None
+            record["crop_error"] = str(error)[:200]
         if cropped:
             source_path = cropped
             record["cropped_below_faces"] = os.path.basename(cropped)

@@ -46,6 +46,17 @@ class CropTests(unittest.TestCase):
                 self.assertAlmostEqual(image.width / image.height, 432 / 768, places=2)
                 self.assertLess(image.height, 768 - 192)
 
+    def test_the_judges_word_stands_in_for_a_detector(self):
+        self.assertTrue(insert_crop.judge_saw_faces(["framing is a medium shot showing faces and torsos"]))
+        self.assertFalse(insert_crop.judge_saw_faces(["the mug is empty"]))
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, "draft.png")
+            Image.new("RGB", (432, 768), "white").save(src)
+            dest = insert_crop.crop_below_faces(src, os.path.join(tmp, "band.png"), detect=lambda p: [],
+                                                assume_faces_above=0.45)
+            with Image.open(dest) as image:
+                self.assertEqual(image.size, (221, 393))  # 768 - (345 + 30) = 393 high at 9:16 -> 221 wide
+
     def test_nothing_to_cut_without_faces(self):
         with tempfile.TemporaryDirectory() as tmp:
             src = os.path.join(tmp, "draft.png")
