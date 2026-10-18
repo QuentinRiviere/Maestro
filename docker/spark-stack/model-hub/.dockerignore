@@ -1,2 +1,4 @@
 __pycache__/
 *.pyc
+# The web UI's sources: its build is committed under model_hub/static/.
+web/

@@ -13,6 +13,10 @@ ui/node_modules/
 # React build output
 ui/dist/
 
+# Spark model hub web UI (its build is committed under model_hub/static/)
+docker/spark-stack/model-hub/web/node_modules/
+docker/spark-stack/model-hub/web/dist/
+
 # Pinokio runtime
 logs/
 cache/
