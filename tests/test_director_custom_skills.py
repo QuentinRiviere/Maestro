@@ -15,7 +15,7 @@ if _APP_DIR not in sys.path:
 
 from services.director import custom_skills, skill_creator  # noqa: E402
 from services.director.blocking_map import subjects_in_view  # noqa: E402
-from services.director.planners.custom import (CustomSkillPlanner, move_contact_out_of_inserts,  # noqa: E402
+from services.director.planners.custom import (CustomSkillPlanner, keep_contact_off_screen,  # noqa: E402
                                                skill_rules_block)
 
 SPEC = {
@@ -468,25 +468,64 @@ class InsertContactTests(unittest.TestCase):
              "opening_blocking": "Hae-won looks up.", "closing_blocking": "She nods."},
         ]
 
-    def test_the_insert_opens_on_the_hold_and_the_grab_moves_to_the_shot_before(self):
+    def test_the_insert_opens_on_the_hold_and_the_shot_before_stops_short(self):
         shots = self.shots()
-        self.assertEqual(move_contact_out_of_inserts(shots), 1)
+        self.assertEqual(keep_contact_off_screen(shots), 1)
         insert, previous = shots[1], shots[0]
         self.assertTrue(insert["opening_blocking"].startswith("Already at the first frame: Jin-woo's hand securely encircles"))
-        self.assertIn("nothing moves but the fingers", insert["action_beats"][0])
+        self.assertIn("neither hand moves", insert["action_beats"][0])
+        self.assertEqual(len(insert["action_beats"]), 1)
         self.assertEqual(insert["locks"][0], "only two pairs of hands")
         self.assertIn("already made at the first frame", insert["locks"][1])
-        self.assertEqual(previous["closing_blocking"], "Jin-woo's hand securely encircles Hae-won's wrist; her fingers stay around the mug.")
-        self.assertEqual(previous["action_beats"][-1], "4.5-6.0s: the hand closes the last centimetres and takes hold, slowly; nothing else moves.")
+        # The touch itself falls between the cuts: the shot before keeps its hand short of the wrist.
+        self.assertEqual(previous["closing_blocking"], "Jin-woo's right hand rests inches from her wrist on the tabletop.")
+        self.assertEqual(previous["action_beats"][-1], "3.0-6.0s: his hand slides toward her wrist")
+        self.assertIn("no contact is made in this shot", previous["locks"][0])
         self.assertEqual(shots[2]["opening_blocking"], "Hae-won looks up.")
+
+    def test_a_two_shot_that_ends_on_the_grab_opens_on_the_hold_too(self):
+        # Run 830926ff: the wrist grab moved to the medium close-up two-shot and still morphed there.
+        shots = self.shots()
+        shots[1] = {"scene_id": "cafe", "scene_type": "exchange", "duration_sec": 6,
+                    "opening_blocking": "Jin-woo screen-left, his right hand resting on the table short of her wrist.",
+                    "closing_blocking": "Jin-woo's right hand is wrapped around Hae-won's left wrist on the table.",
+                    "action_beats": ["0.0-2.0s: she says the line and looks away",
+                                     "2.0-4.0s: his hand slides across the table and closes around her wrist",
+                                     "4.0-6.0s: she looks up at him, lips parted"]}
+        self.assertEqual(keep_contact_off_screen(shots), 1)
+        two_shot = shots[1]
+        self.assertTrue(two_shot["opening_blocking"].startswith("Already at the first frame: Jin-woo's right hand is wrapped"))
+        self.assertEqual(two_shot["action_beats"], [
+            "0.0-6.0s: the hold stays exactly as it is at the first frame; neither hand moves, nothing travels "
+            "across the frame; the faces carry the beat.",
+            "0.0-2.0s: she says the line and looks away",
+            "4.0-6.0s: she looks up at him, lips parted"])
+        self.assertIn("hands stay small", two_shot["locks"][-1])
+        self.assertIn("no contact is made in this shot", shots[0]["locks"][0])
+
+    def test_an_insert_on_an_object_still_takes_its_closing_move_from_the_shot_before(self):
+        shots = self.shots()
+        shots[0]["closing_blocking"] = "Hae-won's right hand rests flat on the table beside the mug."
+        shots[0]["action_beats"] = ["0.0-6.0s: she listens, her hand drifting toward the mug"]
+        shots[1]["opening_blocking"] = "Hae-won's hand lies open on the table, fingertips inches from the mug."
+        shots[1]["closing_blocking"] = "Her fingers are wrapped around the mug."
+        self.assertEqual(keep_contact_off_screen(shots), 1)
+        self.assertIn("nothing moves but the fingers", shots[1]["action_beats"][0])
+        self.assertEqual(shots[0]["closing_blocking"], "Her fingers are wrapped around the mug.")
+        self.assertTrue(shots[0]["action_beats"][-1].endswith("takes hold, slowly; nothing else moves."))
+        # The same hold of a cup in an exchange is left alone: a single hand on an object renders.
+        shots = self.shots()
+        shots[1]["scene_type"] = "exchange"
+        shots[1]["closing_blocking"] = "Her fingers are wrapped around the mug."
+        self.assertEqual(keep_contact_off_screen(shots), 0)
 
     def test_an_insert_that_already_holds_or_never_touches_is_left_alone(self):
         shots = self.shots()
         shots[1]["opening_blocking"] = "Jin-woo's hand already holds her wrist on the table."
-        self.assertEqual(move_contact_out_of_inserts(shots), 0)
+        self.assertEqual(keep_contact_off_screen(shots), 0)
         shots = self.shots()
         shots[1]["closing_blocking"] = "The mug sits alone on the table, steam rising."
-        self.assertEqual(move_contact_out_of_inserts(shots), 0)
+        self.assertEqual(keep_contact_off_screen(shots), 0)
         self.assertEqual(shots[0]["closing_blocking"], "Jin-woo's right hand rests inches from her wrist on the tabletop.")
 
     def test_every_form_of_taking_hold_counts(self):
@@ -494,28 +533,29 @@ class InsertContactTests(unittest.TestCase):
         shots[1]["opening_blocking"] = ("Jin-woo's right hand enters from the left edge of frame, hovering just "
                                         "inches from her left wrist.")
         shots[1]["closing_blocking"] = "Jin-woo's fingers are securely and gently wrapped around Hae-won's left wrist."
-        self.assertEqual(move_contact_out_of_inserts(shots), 1)
+        self.assertEqual(keep_contact_off_screen(shots), 1)
         shots = self.shots()
         shots[1]["closing_blocking"] = "His hand rests on her forearm; the cup is still."
-        self.assertEqual(move_contact_out_of_inserts(shots), 1)
+        self.assertEqual(keep_contact_off_screen(shots), 1)
         shots = self.shots()
         # Run 7bb9fc86: her hands already hold the cup, his hand is still on its way to the wrist.
         shots[1]["opening_blocking"] = ("Cha Hae-won's slender pale hands tremble while holding the white ceramic cup; "
                                         "Song Jin-woo's right hand enters smoothly from screen left, resting fingertips "
                                         "inches from her right wrist.")
         shots[1]["closing_blocking"] = "Jin-woo's fingers remain wrapped firmly around Hae-won's right wrist."
-        self.assertEqual(move_contact_out_of_inserts(shots), 1)
+        self.assertEqual(keep_contact_off_screen(shots), 1)
 
     def test_a_plan_without_closings_uses_the_last_beat(self):
         shots = self.shots()
         for shot in shots:
             shot.pop("closing_blocking")
         shots[1]["action_beats"] = ["0.0-1.0s: her hands tremble", "1.0-4.0s: his hand closes around her wrist"]
-        self.assertEqual(move_contact_out_of_inserts(shots), 1)
+        self.assertEqual(keep_contact_off_screen(shots), 1)
         self.assertEqual(shots[1]["closing_blocking"], "his hand closes around her wrist")
         self.assertTrue(shots[1]["opening_blocking"].startswith("Already at the first frame: his hand closes"))
-        # The previous shot ended "his hand slides toward her wrist" (approach): it now ends on the hold.
-        self.assertEqual(shots[0]["closing_blocking"], "his hand closes around her wrist")
+        # The previous shot ended "his hand slides toward her wrist" (approach): it stays short of it.
+        self.assertNotIn("closing_blocking", shots[0])
+        self.assertIn("no contact is made in this shot", shots[0]["locks"][0])
 
 
 class RevisionTests(unittest.TestCase):

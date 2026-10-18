@@ -78,16 +78,19 @@ SCENE_CRAFT = """SCENE CRAFT (this is what separates a real scene from generated
   will grab a wrist starts on the table; a nod starts with the head still) and IS done by the last frame, so the
   render shows the change itself; the action prompt names the start pose, the one move and the end pose, and
   that move falls inside keep_sec.
-- Hand contact is a short close, not a reach: a hand that takes a wrist, a cup or another hand starts already
-  beside it (fingertips a few centimetres away) and closes that gap slowly, then tightens; never a reach across
-  the frame, never two hands crossing (short clips morph the fingers on a long reach). Contact between two
-  people (a hand taking a wrist or another hand) is played in a two-shot or an over-the-shoulder shot where the
-  hands are small and both faces react; it is never the subject of an insert (two people's hands in close-up
-  melt into each other). An insert shows ONE person's hand and one object (her fingers tightening on the mug,
-  then going still; his hand setting the cup down; a hand on a door handle), already on the object at the
-  first frame, one small move, the camera still and nothing else moving. An insert names no face and no
-  clothes: hands, sleeves, the object, the surface, the light. In an over-the-shoulder shot no arm crosses
-  the foreground shoulder: a hand that holds the other person stays off-frame and still.
+- Contact between two people is never filmed while it happens: on a short render two hands that meet
+  melt into each other at any framing. Stage it around the touch. The shot before ends with the hand still
+  short of its target (fingertips a few centimetres away, or the hand leaving the bottom of the frame) and the
+  next shot opens with the hold ALREADY made at its first frame, both hands still and small in a two-shot or
+  an over-the-shoulder shot where the faces carry the beat. Or keep the holding hand off-frame: in an
+  over-the-shoulder shot no arm crosses the foreground shoulder, the hand that holds the other person stays
+  out of frame and still, and her face shows the grip. Or play it through sound and a look: a mug set down
+  hard, her eyes dropping to the table, cut. A hand on its way to a wrist, a hand closing around a hand, two
+  hands crossing: never in any shot's action beats. Her own hand taking a cup is fine: it starts beside it and
+  closes slowly. A person-to-person hold is never the subject of an insert. An insert shows ONE person's hand
+  and one object (her fingers tightening on the mug, then going still; his hand setting the cup down; a hand
+  on a door handle), already on the object at the first frame, one small move, the camera still and nothing
+  else moving. An insert names no face and no clothes: hands, sleeves, the object, the surface, the light.
 - Action is performance, second by second: a physical intention, the visible expression change it causes, the
   reaction. No filler motion (aimless walking, hair touching, looking around) to fill time.
 - Filmable action only: an action beat describes what a viewer can see at the shot's framing in a short, low
@@ -246,27 +249,47 @@ _APPROACH_RE = re.compile(
 _LAST_BEAT_RE = re.compile(r"^\s*([\d.]+)\s*-\s*([\d.]+)\s*s\s*:", re.IGNORECASE)
 
 
-def move_contact_out_of_inserts(shot_dicts: list[dict], low: float = 3.0) -> int:
-    """Start every insert with its hand contact already made; the grab moves to the shot before.
+_PERSON_NOUNS = {"wrist", "hand", "finger", "arm", "forearm"}
+_HAND_WORD_RE = re.compile(r"\b(?:wrist|hands?|fingers?|arms?|forearms?)\b", re.IGNORECASE)
 
-    Short video models fuse the fingers at the moment a hand takes a wrist
-    in close-up (LTX, every Café Haru run). An insert whose opening has the
-    hand on its way and whose closing has it holding now opens on the hold
-    and only tightens; the previous shot of the same scene, when it ended
-    with the hand short of its target, ends on the hold instead and gets
-    the closing move as its last beat (the hands are small there).
-    Returns the number of inserts rewritten.
+
+def _closing_of(raw: dict) -> str:
+    closing = str(raw.get("closing_blocking") or raw.get("ending_beat") or "")
+    if not closing:
+        # A plan without closings (a repaired answer): the last beat says where the shot ends.
+        beats = [str(beat) for beat in raw.get("action_beats") or [] if str(beat).strip()]
+        closing = re.sub(r"^\s*[\d.]+\s*-\s*[\d.]+\s*s\s*:\s*", "", beats[-1]) if beats else ""
+    return closing
+
+
+def _duration_of(raw: dict, low: float) -> float:
+    try:
+        return float(raw.get("duration_sec") or low)
+    except (TypeError, ValueError):
+        return float(low)
+
+
+def keep_contact_off_screen(shot_dicts: list[dict], low: float = 3.0) -> int:
+    """Never render the moment a hand takes hold of another person; open on the hold instead.
+
+    Short video models fuse the fingers when a hand takes a wrist, in
+    close-up and in a two-shot alike (LTX, every Café Haru run). A shot
+    whose opening has the hand on its way and whose closing has it holding
+    the other person now opens on the hold, with the hands still for the
+    whole shot and the faces carrying the beat; the previous shot of the
+    same scene keeps its hand short of the target and is locked there, so
+    the touch itself falls between the two cuts. An insert that ends on a
+    hold of an object (a cup) opens on it too and only tightens, and the
+    shot before takes the closing move, where the hands are small.
+    Returns the number of shots rewritten.
     """
     moved = 0
     for index, raw in enumerate(shot_dicts):
-        if not isinstance(raw, dict) or str(raw.get("scene_type") or "").strip().lower() != "insert":
+        if not isinstance(raw, dict):
             continue
+        is_insert = str(raw.get("scene_type") or "").strip().lower() == "insert"
         opening = str(raw.get("opening_blocking") or "")
-        closing = str(raw.get("closing_blocking") or raw.get("ending_beat") or "")
-        if not closing:
-            # A plan without closings (a repaired answer): the last beat says where the shot ends.
-            beats = [str(beat) for beat in raw.get("action_beats") or [] if str(beat).strip()]
-            closing = re.sub(r"^\s*[\d.]+\s*-\s*[\d.]+\s*s\s*:\s*", "", beats[-1]) if beats else ""
+        closing = _closing_of(raw)
         # The hold the shot ends on (its target: wrist, cup...) must not be made yet
         # at the first frame; her own hands around the cup are contact too, so
         # only a hold of the same target counts as "already made".
@@ -274,46 +297,55 @@ def move_contact_out_of_inserts(shot_dicts: list[dict], low: float = 3.0) -> int
         if not target or not _APPROACH_RE.search(opening):
             continue
         noun = target.group(1).lower().rstrip("s")
+        person = noun in _PERSON_NOUNS
+        if not person and not is_insert:
+            continue
         if any(m.group(1).lower().rstrip("s") == noun for m in _CONTACT_RE.finditer(opening)):
             continue
         raw["closing_blocking"] = closing
-        try:
-            duration = float(raw.get("duration_sec") or low)
-        except (TypeError, ValueError):
-            duration = float(low)
+        duration = _duration_of(raw, low)
         raw["opening_blocking"] = f"Already at the first frame: {closing.strip().rstrip('.')}."
-        raw["action_beats"] = [f"0.0-{duration:.1f}s: nothing moves but the fingers: the holding hand tightens "
-                               "slightly and a thumb shifts; the other hand and the objects stay still; the camera "
-                               "is still."]
         locks = [str(lock).strip() for lock in raw.get("locks") or [] if str(lock).strip()]
-        raw["locks"] = locks + ["the hold is already made at the first frame; no hand travels across the frame"]
+        if person:
+            kept = [str(beat) for beat in raw.get("action_beats") or []
+                    if str(beat).strip() and not (_HAND_WORD_RE.search(str(beat))
+                                                  and (_CONTACT_RE.search(str(beat)) or _APPROACH_RE.search(str(beat))))]
+            raw["action_beats"] = [f"0.0-{duration:.1f}s: the hold stays exactly as it is at the first frame; neither "
+                                   "hand moves, nothing travels across the frame; the faces carry the beat."] + kept
+            raw["locks"] = locks + ["the hold is already made at the first frame; neither hand moves for the whole "
+                                    "shot; the hands stay small in the frame"]
+        else:
+            raw["action_beats"] = [f"0.0-{duration:.1f}s: nothing moves but the fingers: the holding hand tightens "
+                                   "slightly and a thumb shifts; the other hand and the objects stay still; the camera "
+                                   "is still."]
+            raw["locks"] = locks + ["the hold is already made at the first frame; no hand travels across the frame"]
         moved += 1
         previous = shot_dicts[index - 1] if index > 0 and isinstance(shot_dicts[index - 1], dict) else None
-        if previous and str(previous.get("scene_id") or "") == str(raw.get("scene_id") or ""):
-            prev_closing = str(previous.get("closing_blocking") or previous.get("ending_beat") or "")
-            if not prev_closing:
-                prev_beats = [str(beat) for beat in previous.get("action_beats") or [] if str(beat).strip()]
-                prev_closing = (re.sub(r"^\s*[\d.]+\s*-\s*[\d.]+\s*s\s*:\s*", "", prev_beats[-1])
-                                if prev_beats else "")
-            if _APPROACH_RE.search(prev_closing) and not any(
-                    m.group(1).lower().rstrip("s") == noun for m in _CONTACT_RE.finditer(prev_closing)):
-                previous["closing_blocking"] = closing
+        if not previous or str(previous.get("scene_id") or "") != str(raw.get("scene_id") or ""):
+            continue
+        prev_closing = _closing_of(previous)
+        if not _APPROACH_RE.search(prev_closing) or any(
+                m.group(1).lower().rstrip("s") == noun for m in _CONTACT_RE.finditer(prev_closing)):
+            continue
+        if person:
+            prev_locks = [str(lock).strip() for lock in previous.get("locks") or [] if str(lock).strip()]
+            previous["locks"] = prev_locks + ["the hand stops short of the other person; no contact is made in "
+                                              "this shot"]
+            continue
+        previous["closing_blocking"] = closing
+        prev_duration = _duration_of(previous, low)
+        beats = [str(beat) for beat in previous.get("action_beats") or []]
+        start = max(0.0, prev_duration - 1.5)
+        if beats:
+            match = _LAST_BEAT_RE.match(beats[-1])
+            if match:
                 try:
-                    prev_duration = float(previous.get("duration_sec") or low)
-                except (TypeError, ValueError):
-                    prev_duration = float(low)
-                beats = [str(beat) for beat in previous.get("action_beats") or []]
-                start = max(0.0, prev_duration - 1.5)
-                if beats:
-                    match = _LAST_BEAT_RE.match(beats[-1])
-                    if match:
-                        try:
-                            start = max(float(match.group(1)), min(start, float(match.group(2))))
-                        except ValueError:
-                            pass
-                beats.append(f"{start:.1f}-{prev_duration:.1f}s: the hand closes the last centimetres and takes "
-                             "hold, slowly; nothing else moves.")
-                previous["action_beats"] = beats
+                    start = max(float(match.group(1)), min(start, float(match.group(2))))
+                except ValueError:
+                    pass
+        beats.append(f"{start:.1f}-{prev_duration:.1f}s: the hand closes the last centimetres and takes "
+                     "hold, slowly; nothing else moves.")
+        previous["action_beats"] = beats
     return moved
 
 
@@ -468,7 +500,7 @@ OUTPUT FORMAT — respond with ONLY a JSON array of shot objects:
             raise ValueError("The LLM returned no shots")
         if clip_durations:
             shot_dicts = (list(shot_dicts) + [shot_dicts[-1]] * len(clip_durations))[: len(clip_durations)]
-        move_contact_out_of_inserts(shot_dicts, float(low))
+        keep_contact_off_screen(shot_dicts, float(low))
 
         shots = []
         for i, raw in enumerate(shot_dicts):
