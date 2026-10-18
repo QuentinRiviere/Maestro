@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ToastProvider, useToast } from "@/components/toast";
-import { api, errorMessage, isLoginRequired, onUnauthorized, setCsrf } from "@/lib/api";
+import { api, errorMessage, forgetToken, isLoginRequired, login, onUnauthorized, setCsrf, storedToken } from "@/lib/api";
 import { gb } from "@/lib/format";
 import type { Status } from "@/lib/types";
 import { Login } from "@/views/Login";
@@ -57,7 +57,16 @@ function Hub() {
   }, [report]);
 
   const boot = useCallback(async () => {
-    const s = await api<{ authenticated: boolean; csrf?: string } | null>("/api/session", { allow401: true, allowError: true });
+    let s = await api<{ authenticated: boolean; csrf?: string } | null>("/api/session", { allow401: true, allowError: true });
+    if (!s || !s.authenticated) {
+      // A token kept in this tab logs in again (the hub forgot the session, e.g. after a restart).
+      const token = storedToken();
+      if (token && (await login(token)).ok) {
+        s = await api<{ authenticated: boolean; csrf?: string } | null>("/api/session", { allow401: true, allowError: true });
+      } else if (token) {
+        forgetToken();
+      }
+    }
     if (!s || !s.authenticated) {
       setAuthed(false);
       return;
@@ -82,6 +91,7 @@ function Hub() {
     } catch {
       /* ignore */
     }
+    forgetToken();
     setCsrf("");
     setAuthed(false);
     setStatus(null);

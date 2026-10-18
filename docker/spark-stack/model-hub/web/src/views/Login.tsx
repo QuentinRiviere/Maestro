@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { api, errorMessage } from "@/lib/api";
+import { errorMessage, login } from "@/lib/api";
 
 export function Login({ onLoggedIn }: { onLoggedIn: () => Promise<void> }) {
   const [token, setToken] = useState("");
@@ -16,14 +16,9 @@ export function Login({ onLoggedIn }: { onLoggedIn: () => Promise<void> }) {
     setError("");
     setBusy(true);
     try {
-      const r = await api<{ authenticated?: boolean; detail?: string } | null>("/api/login", {
-        method: "POST",
-        body: { token },
-        allow401: true,
-        allowError: true,
-      });
-      if (!r || !r.authenticated) {
-        setError((r && r.detail) || "Login failed");
+      const r = await login(token);
+      if (!r.ok) {
+        setError(r.detail || "Login failed");
         return;
       }
       setToken("");

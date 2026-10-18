@@ -60,6 +60,48 @@ export async function api<T = unknown>(path: string, opts: ApiOptions = {}): Pro
   return data as T;
 }
 
+// The hub's sessions live in its memory: a hub restart (or a new tab after
+// one) would ask for the token again. The token stays in sessionStorage,
+// per tab and gone when the tab closes, and the app logs in again with it.
+const TOKEN_KEY = "model_hub_token";
+
+export function rememberToken(token: string) {
+  try {
+    sessionStorage.setItem(TOKEN_KEY, token);
+  } catch {
+    /* storage blocked: the session cookie still works until the tab closes */
+  }
+}
+
+export function storedToken(): string {
+  try {
+    return sessionStorage.getItem(TOKEN_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+export function forgetToken() {
+  try {
+    sessionStorage.removeItem(TOKEN_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+/** POST /api/login with a token; true when the hub accepted it. */
+export async function login(token: string): Promise<{ ok: boolean; detail?: string }> {
+  const r = await api<{ authenticated?: boolean; detail?: string } | null>("/api/login", {
+    method: "POST",
+    body: { token },
+    allow401: true,
+    allowError: true,
+  });
+  if (!r || !r.authenticated) return { ok: false, detail: (r && r.detail) || "Login failed" };
+  rememberToken(token);
+  return { ok: true };
+}
+
 export const isLoginRequired = (err: unknown) => err instanceof ApiError && err.message === LOGIN_REQUIRED;
 
 export const errorMessage = (err: unknown) =>
