@@ -316,10 +316,6 @@ class VideoJudgeBackendTests(unittest.TestCase):
         self.assertEqual([len(r["messages"][1]["content"]) for r in requests], [5, 5])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class LoadJsonObjectTests(unittest.TestCase):
     def test_a_clean_object_with_text_around_it(self):
         self.assertEqual(judge_backend.load_json_object('Here: {"score": 7, "issues": []} done {"x": 1}'),
@@ -349,3 +345,16 @@ class LoadJsonObjectTests(unittest.TestCase):
         verdict = video_judge.parse_episode_verdict(text, 20.0, [])
         self.assertEqual(verdict["score"], 4)
         self.assertEqual(len(verdict["defects"]), 1)
+
+
+class BadEscapeTest(unittest.TestCase):
+    def test_a_prose_escape_in_a_string_is_dropped(self):
+        # Run f36ffbb5: the episode judge wrote "the model\'s inability" and the review failed.
+        text = "Here: {\"summary\": \"hides the model\\'s inability to hold\", \"score\": 5}\n```"
+        self.assertEqual(judge_backend.load_json_object(text), {"summary": "hides the model's inability to hold", "score": 5})
+        # Real escapes survive.
+        self.assertEqual(judge_backend.load_json_object('{"a": "line\\nbreak \\"q\\""}'), {"a": 'line\nbreak "q"'})
+
+
+if __name__ == "__main__":
+    unittest.main()

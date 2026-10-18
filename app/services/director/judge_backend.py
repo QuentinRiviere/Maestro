@@ -255,6 +255,9 @@ def build_messages(system: str, prompt: str, media: Sequence[str], tmp: str, htt
 
 
 _TRAILING_COMMA_RE = re.compile(r",\s*([}\]])")
+# A backslash before anything JSON cannot escape ("the model\'s hand"): the
+# judge wrote prose escapes, the backslash goes.
+_BAD_ESCAPE_RE = re.compile(r"\\(?![\"\\/bfnrtu])")
 
 
 def _json_depth_scan(text: str) -> tuple[list[str], list[tuple[int, int]], int]:
@@ -318,7 +321,7 @@ def load_json_object(text: str, who: str = "The judge") -> dict:
         raise JudgeError(f"{who} returned no JSON")
     body = text[start:]
     decoder = json.JSONDecoder()
-    candidates = [body, _TRAILING_COMMA_RE.sub(r"\1", body)]
+    candidates = [body, _TRAILING_COMMA_RE.sub(r"\1", _BAD_ESCAPE_RE.sub("", body))]
     error: Exception | None = None
     try:
         candidates.append(_TRAILING_COMMA_RE.sub(r"\1", _close_open_json(candidates[1])))
