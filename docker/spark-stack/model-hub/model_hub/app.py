@@ -53,6 +53,7 @@ class Settings:
     llama_swap_api_key: str = ""
     worker_url: str = ""            # the Maestro worker behind llama-swap, for the memory view
     worker_token: str = ""
+    meminfo_path: str = "/proc/meminfo"   # MODEL_HUB_MEMINFO_PATH: a saved copy for development on macOS
     cookie_secure: bool = False
     remote_metadata: bool = True    # read GGUF headers from the Hub (Range requests) before a download
 
@@ -74,6 +75,7 @@ class Settings:
             llama_swap_api_key=env.get("LLAMA_SWAP_API_KEY", ""),
             worker_url=env.get("MAESTRO_WORKER_URL", "").rstrip("/"),
             worker_token=env.get("MAESTRO_WORKER_TOKEN", ""),
+            meminfo_path=env.get("MODEL_HUB_MEMINFO_PATH", "/proc/meminfo"),
             cookie_secure=env.get("MODEL_HUB_COOKIE_SECURE", "0").lower() in ("1", "true", "yes"),
             remote_metadata=env.get("MODEL_HUB_REMOTE_METADATA", "1").lower() not in ("0", "false", "no"),
         )
@@ -748,7 +750,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             serve = entry["serve"]
             return ggufs.is_resident(serve.get("group"), groups, serve.get("preload", False))
 
-        return memory.memory_view(memory.read_meminfo(), running, estimate, resident, worker, swap_error)
+        return memory.memory_view(memory.read_meminfo(settings.meminfo_path), running, estimate, resident, worker,
+                                  swap_error)
 
     app.include_router(public)
     app.include_router(api)
