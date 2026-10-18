@@ -289,6 +289,30 @@ replaces the run's rows, so re-running it is safe.
   and `python -m services.director.insights summary <outputs> [--days N]
   [--image-model M] [--video-model M] [--skill S]` (JSON on stdout).
 
+### Skill versions and automatic rollback
+
+Every save of a custom skill keeps the replaced version under
+`settings/director_skills/history/<id>/v<N>.json`, and each run records the
+skill version it planned with (`skill_version` in the pipeline state and in
+the registry's `runs` table). The versions can then be compared on their
+reviewed runs and a worse one rolled back:
+
+- `GET /api/v1/director/skills/{id}/revisions`: every kept version with its
+  date, origin (`restored_from`) and, from the registry, its reviewed runs,
+  mean episode score and mean clip score.
+- `POST /api/v1/director/skills/{id}/rollback` with
+  `{"apply": false|true, "min_runs": 3, "margin": 0.5}`: the decision
+  (`revert_to`, `reason`); the current version is judged once it has
+  `min_runs` reviewed runs, and loses to an earlier version with as many
+  runs when that one's mean episode score is higher by more than `margin`
+  (the run-to-run noise of the judge). With `apply`, the earlier version is
+  restored as a new version that names its origin and the reason.
+- Batch runner: `scripts/director_batch.py ... --guard-skill custom:k_drama_mini
+  [--guard-min-runs 3] [--guard-margin 0.5]` calls that route after every
+  reviewed run and logs the decision, so a nightly batch never keeps a skill
+  revision that renders worse than the one before.
+- CLI: `python -m services.director.insights versions <outputs> custom:k_drama_mini`.
+
 ## Recommended next UI pass
 
 These are proposed changes, not yet implemented:

@@ -21,10 +21,10 @@ from services.director import insights  # noqa: E402
 NOW = time.time()
 
 
-def pipeline_state(pid, *, created_at, image_model, video_model, skill, drafts=0):
+def pipeline_state(pid, *, created_at, image_model, video_model, skill, drafts=0, skill_version=None):
     return {
         "pipeline_id": pid, "status": "completed", "created_at": created_at, "completed_at": created_at + 600,
-        "image_model": image_model, "video_model": video_model,
+        "image_model": image_model, "video_model": video_model, "skill_version": skill_version,
         "_params_snapshot": {"director_skill": skill, "bible": {"id": "noir-bible"},
                              "director_storyboard_drafts": drafts, "resolution": "1280x720"},
         "clips": [
@@ -288,3 +288,34 @@ class InsightsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SkillVersionTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir)
+        scores = {1: (6.0, 6.0, 7.0), 2: (4.0, 5.0, 4.0)}
+        for version, episode_scores in scores.items():
+            for n, score in enumerate(episode_scores):
+                pid = f"v{version}r{n}"
+                write_run(self.dir, pid,
+                          state=pipeline_state(pid, created_at=NOW - 3600 * (10 - version * 3 - n), image_model="qwen",
+                                               video_model="ltx", skill="custom:k_drama", skill_version=version),
+                          storyboard=storyboard_report(drafts=True), review=review_report(score, "needs_polish"))
+                insights.ingest_run(self.dir, pid)
+
+    def test_versions_are_compared(self):
+        versions = insights.skill_versions(self.dir, "custom:k_drama")
+        self.assertEqual([(v["version"], v["reviewed"], v["episode_mean"]) for v in versions],
+                         [(1, 3, 6.33), (2, 3, 4.33)])
+        self.assertEqual(insights.skill_versions(self.dir, "custom:other"), [])
+
+    def test_a_worse_current_version_is_reverted(self):
+        decision = insights.rollback_decision(self.dir, "custom:k_drama")
+        self.assertEqual((decision["current"], decision["revert_to"]), (2, 1))
+        self.assertIn("version 1 scored 6.33", decision["reason"])
+
+    def test_too_few_runs_or_a_small_gap_hold(self):
+        self.assertIsNone(insights.rollback_decision(self.dir, "custom:k_drama", min_runs=4)["revert_to"])
+        self.assertIsNone(insights.rollback_decision(self.dir, "custom:k_drama", margin=3.0)["revert_to"])
+        self.assertIsNone(insights.rollback_decision(self.dir, "custom:k_drama", current=1)["revert_to"])

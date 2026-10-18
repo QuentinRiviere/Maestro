@@ -11557,6 +11557,50 @@ def director_insights(days: float | None = None, image_model: str | None = None,
     return insights.summary(base, days=days, image_model=image_model, video_model=video_model, skill=skill)
 
 
+@api.get("/api/v1/director/skills/{skill_id}/revisions")
+def director_skill_revisions(skill_id: str):
+    """Every kept version of a custom skill, and how each one scored in the insights registry."""
+    from services.director import insights
+    from services.director.custom_skills import CUSTOM_PREFIX, SkillError, list_revisions
+
+    try:
+        revisions = list_revisions(skill_id)
+    except SkillError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    base = wgp.server_config.get("save_path", "outputs")
+    skill = skill_id if skill_id.startswith(CUSTOM_PREFIX) else CUSTOM_PREFIX + skill_id
+    scores = {v["version"]: v for v in insights.skill_versions(base, skill)}
+    return {"skill": skill, "revisions": [{**r, **scores.get(r["version"], {})} for r in revisions]}
+
+
+@api.post("/api/v1/director/skills/{skill_id}/rollback")
+async def director_skill_rollback(skill_id: str, request: Request):
+    """Compare the skill's current version with the earlier ones; with apply=true, restore a better one.
+
+    Body: {"apply": bool, "min_runs": 3, "margin": 0.5}. The decision comes
+    from the insights registry (reviewed runs per version); the restore is
+    a new version that records where it comes from.
+    """
+    from services.director import insights
+    from services.director.custom_skills import CUSTOM_PREFIX, SkillError, restore_revision
+
+    body = await request.json() if request.headers.get("content-length", "0") not in ("", "0") else {}
+    body = body if isinstance(body, dict) else {}
+    base = wgp.server_config.get("save_path", "outputs")
+    skill = skill_id if skill_id.startswith(CUSTOM_PREFIX) else CUSTOM_PREFIX + skill_id
+    decision = insights.rollback_decision(base, skill, min_runs=int(body.get("min_runs") or 3),
+                                          margin=float(body.get("margin") or 0.5))
+    decision["applied"] = False
+    if body.get("apply") and decision.get("revert_to") is not None:
+        try:
+            restored = restore_revision(skill, int(decision["revert_to"]), note=decision["reason"])
+        except SkillError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        decision["applied"] = True
+        decision["new_version"] = restored["version"]
+    return decision
+
+
 @api.post("/api/v1/director/insights/backfill")
 def director_insights_backfill():
     """Ingest every saved Director run of the outputs folder into the insights registry."""

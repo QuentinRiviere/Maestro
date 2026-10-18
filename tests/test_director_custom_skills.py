@@ -499,3 +499,39 @@ class InsertContactTests(unittest.TestCase):
         self.assertTrue(shots[1]["opening_blocking"].startswith("Already at the first frame: his hand closes"))
         # The previous shot ended "his hand slides toward her wrist" (approach): it now ends on the hold.
         self.assertEqual(shots[0]["closing_blocking"], "his hand closes around her wrist")
+
+
+class RevisionTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.dir)
+        self.original = custom_skills.SKILLS_DIR
+        custom_skills.SKILLS_DIR = self.dir
+        self.addCleanup(setattr, custom_skills, "SKILLS_DIR", self.original)
+
+    def spec(self, goal):
+        return {"id": "k_drama", "name": "K-drama", "description": "d", "workflow": "both",
+                "rules": {"goal": goal, "structure": "s", "pacing": "p", "camera": "c", "dialogue": "d",
+                          "sound": "s", "do": [], "dont": []}}
+
+    def test_each_save_keeps_the_replaced_version(self):
+        first = custom_skills.save_custom(self.spec("tension"))
+        self.assertEqual(first["version"], 1)
+        second = custom_skills.save_custom(self.spec("tension, then a cliffhanger"), skill_id="k_drama")
+        self.assertEqual(second["version"], 2)
+        revisions = custom_skills.list_revisions("custom:k_drama")
+        self.assertEqual([(r["version"], r["current"]) for r in revisions], [(1, False), (2, True)])
+        self.assertEqual(custom_skills.get_revision("k_drama", 1)["rules"]["goal"], "tension")
+        self.assertEqual(custom_skills.current_version("custom:k_drama"), 2)
+        self.assertIsNone(custom_skills.current_version("music_video"))
+
+    def test_restoring_an_older_version_makes_a_new_current_one(self):
+        custom_skills.save_custom(self.spec("tension"))
+        custom_skills.save_custom(self.spec("worse"), skill_id="k_drama")
+        restored = custom_skills.restore_revision("k_drama", 1, note="version 2 scored lower")
+        self.assertEqual((restored["version"], restored["restored_from"]), (3, 1))
+        self.assertEqual(custom_skills.get_custom("k_drama")["rules"]["goal"], "tension")
+        self.assertEqual(custom_skills.get_custom("k_drama")["revision_note"], "version 2 scored lower")
+        self.assertEqual([r["version"] for r in custom_skills.list_revisions("k_drama")], [1, 2, 3])
+        with self.assertRaises(custom_skills.SkillError):
+            custom_skills.restore_revision("k_drama", 9)

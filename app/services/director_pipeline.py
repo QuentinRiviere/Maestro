@@ -1705,6 +1705,9 @@ def _save_pipeline_state_locked(pid: str) -> bool:
         # per-clip frame counts that the flattened per-clip state above does
         # not carry. resume_pipeline() rehydrates from here.
         "_params_snapshot": params,
+        # The custom skill's version at planning time, for the insights registry
+        # (a later version of the skill is compared with this one).
+        "skill_version": _skill_version(params.get("director_skill")),
     }
 
     try:
@@ -10268,6 +10271,15 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
     })
 
     return clip_images, clip_keyframes
+
+
+def _skill_version(skill: Any) -> Optional[int]:
+    """The custom skill's current version (None for built-ins), kept in the run for the insights registry."""
+    try:
+        from services.director.custom_skills import current_version
+        return current_version(str(skill or ""))
+    except Exception:  # noqa: BLE001 - advisory
+        return None
 
 
 def record_insights(pid: str, out_dir: str) -> None:

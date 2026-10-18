@@ -78,6 +78,16 @@ def review_run(host: str, pid: str, takes: int, log) -> dict:
     return {}
 
 
+def guard_skill(host: str, skill: str, min_runs: int, margin: float) -> dict:
+    """Ask the controller whether the skill's current version lost to an earlier one, and apply the rollback."""
+    skill_id = skill.removeprefix("custom:")
+    try:
+        return _call(host, f"/api/v1/director/skills/{skill_id}/rollback",
+                     {"apply": True, "min_runs": min_runs, "margin": margin})
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
+        return {"reason": f"guard failed: {error}"}
+
+
 def summarise(review: dict) -> str:
     episode = review.get("episode") or {}
     shots = ", ".join(str(s.get("score")) for s in review.get("shots") or [])
@@ -106,6 +116,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--until", help="stop starting runs at this local time, HH:MM")
     parser.add_argument("--review-takes", type=int, default=1)
     parser.add_argument("--no-review", action="store_true")
+    parser.add_argument("--guard-skill", metavar="SKILL_ID",
+                        help="after each reviewed run, roll the custom skill back to an earlier version "
+                             "when the registry shows it scored better (POST .../skills/{id}/rollback)")
+    parser.add_argument("--guard-min-runs", type=int, default=3)
+    parser.add_argument("--guard-margin", type=float, default=0.5)
     args = parser.parse_args(argv)
 
     with open(args.payload, encoding="utf-8") as handle:
@@ -141,6 +156,12 @@ def main(argv: list[str] | None = None) -> int:
         results.append({"pid": pid, "status": status,
                         "episode_score": (review.get("episode") or {}).get("score"),
                         "verdict": (review.get("episode") or {}).get("verdict")})
+        if args.guard_skill and review:
+            guard = guard_skill(args.host, args.guard_skill, args.guard_min_runs, args.guard_margin)
+            log(f"skill guard: {guard.get('reason') or guard}")
+            if guard.get("applied"):
+                log(f"skill guard: rolled {args.guard_skill} back to version {guard.get('revert_to')} "
+                    f"(now version {guard.get('new_version')})")
     log("batch done: " + json.dumps(results))
     return 1 if failed else 0
 

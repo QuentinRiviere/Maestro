@@ -203,8 +203,73 @@ def get_custom(skill_id: str) -> dict | None:
         return None
 
 
-def save_custom(raw: dict, *, skill_id: str | None = None) -> dict:
-    """Create (new id) or overwrite (given id) a definition."""
+def _history_dir(skill_id: str) -> Path:
+    return SKILLS_DIR / "history" / skill_id
+
+
+def _revision_path(skill_id: str, version: int) -> Path:
+    _path(skill_id)  # validates the id
+    return _history_dir(skill_id) / f"v{int(version)}.json"
+
+
+def _keep_revision(spec: dict) -> None:
+    """Copy ``spec`` (a version about to be replaced) into the skill's history."""
+    version = int(spec.get("version") or 0)
+    if not version:
+        return
+    path = _revision_path(spec["id"], version)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        path.write_text(json.dumps(spec, indent=1, ensure_ascii=False), encoding="utf-8")
+
+
+def list_revisions(skill_id: str) -> list[dict]:
+    """Every kept version of a skill, oldest first, the current one last (``current`` true)."""
+    skill_id = skill_id.removeprefix(CUSTOM_PREFIX)
+    current = get_custom(skill_id)
+    revisions: dict[int, dict] = {}
+    directory = _history_dir(skill_id)
+    if directory.is_dir():
+        for path in directory.glob("v*.json"):
+            try:
+                spec = json.loads(path.read_text(encoding="utf-8"))
+                revisions[int(spec.get("version") or path.stem[1:])] = spec
+            except (OSError, ValueError):
+                continue
+    if current:
+        revisions[int(current.get("version") or 0)] = current
+    current_version = int((current or {}).get("version") or 0)
+    return [{"version": version, "updated_at": spec.get("updated_at"), "name": spec.get("name"),
+             "restored_from": spec.get("restored_from"), "note": spec.get("revision_note"),
+             "current": version == current_version}
+            for version, spec in sorted(revisions.items())]
+
+
+def get_revision(skill_id: str, version: int) -> dict | None:
+    skill_id = skill_id.removeprefix(CUSTOM_PREFIX)
+    current = get_custom(skill_id)
+    if current and int(current.get("version") or 0) == int(version):
+        return current
+    try:
+        return json.loads(_revision_path(skill_id, version).read_text(encoding="utf-8"))
+    except (OSError, ValueError, SkillError):
+        return None
+
+
+def restore_revision(skill_id: str, version: int, *, note: str = "") -> dict:
+    """Make an older version the current one, as a new version that says where it comes from."""
+    skill_id = skill_id.removeprefix(CUSTOM_PREFIX)
+    spec = get_revision(skill_id, version)
+    if spec is None:
+        raise SkillError(f"Skill {skill_id} has no version {version}")
+    raw = {key: value for key, value in spec.items()
+           if key not in ("version", "created_at", "updated_at", "warnings", "restored_from", "revision_note")}
+    return save_custom(raw, skill_id=skill_id, restored_from=int(version), note=note)
+
+
+def save_custom(raw: dict, *, skill_id: str | None = None, restored_from: int | None = None,
+                note: str = "") -> dict:
+    """Create (new id) or overwrite (given id) a definition; the replaced version goes to the history."""
     spec = validate_spec(raw, skill_id=skill_id)
     with _LOCK:
         SKILLS_DIR.mkdir(parents=True, exist_ok=True)
@@ -214,16 +279,30 @@ def save_custom(raw: dict, *, skill_id: str | None = None) -> dict:
                 spec["id"] = f"{base[:36]}_{suffix}"
                 suffix += 1
         previous = get_custom(spec["id"]) or {}
+        if previous:
+            _keep_revision(previous)
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         spec["version"] = int(previous.get("version") or 0) + 1
         spec["created_at"] = previous.get("created_at") or now
         spec["updated_at"] = now
+        if restored_from is not None:
+            spec["restored_from"] = int(restored_from)
+        if note:
+            spec["revision_note"] = str(note)[:300]
         target = _path(spec["id"])
         temporary = target.with_suffix(".json.tmp")
         temporary.write_text(json.dumps(spec, indent=1, ensure_ascii=False), encoding="utf-8")
         os.replace(temporary, target)
     # Warnings are advisory and recomputed on every save/load: never persisted.
     return {**spec, "warnings": lint_spec(spec)}
+
+
+def current_version(skill_id: str) -> int | None:
+    """The version of a custom skill (``custom:`` prefix accepted), None for built-ins or unknown ids."""
+    if not skill_id or not str(skill_id).startswith(CUSTOM_PREFIX):
+        return None
+    spec = get_custom(str(skill_id))
+    return int(spec.get("version") or 0) if spec else None
 
 
 def delete_custom(skill_id: str) -> bool:

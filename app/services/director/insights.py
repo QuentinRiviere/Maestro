@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS runs (
     created_at REAL,
     completed_at REAL,
     skill TEXT,
+    skill_version INTEGER,
     bible TEXT,
     image_model TEXT,
     video_model TEXT,
@@ -118,6 +119,10 @@ def connect(out_dir: str) -> sqlite3.Connection:
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA journal_mode=WAL")
     connection.executescript(_SCHEMA)
+    # Columns added after the first registries were written.
+    columns = {row["name"] for row in connection.execute("PRAGMA table_info(runs)")}
+    if "skill_version" not in columns:
+        connection.execute("ALTER TABLE runs ADD COLUMN skill_version INTEGER")
     return connection
 
 
@@ -198,6 +203,7 @@ def _run_row(pid: str, state: Mapping, report: Optional[Mapping], review: Option
         "created_at": _number(state.get("created_at")),
         "completed_at": _number(state.get("completed_at")),
         "skill": _text(params.get("director_skill"), 200),
+        "skill_version": _int(state.get("skill_version")),
         "bible": _bible_name(params.get("bible") if params.get("bible") is not None else state.get("bible")),
         "image_model": _text(state.get("image_model") or params.get("image_model"), 200),
         "video_model": _text(state.get("video_model") or params.get("video_model"), 200),
@@ -467,6 +473,64 @@ def summary(out_dir: str, *, days: Optional[float] = None, image_model: Optional
 # ── CLI ───────────────────────────────────────────────────────────────
 
 
+def skill_versions(out_dir: str, skill: str, *, days: Optional[float] = None) -> list[dict]:
+    """Per version of ``skill``: runs, reviewed runs, mean episode score, mean clip score (oldest first)."""
+    if not os.path.isfile(db_path(out_dir)):
+        return []
+    where, values = _run_filter(days, None, None, skill)
+    connection = connect(out_dir)
+    try:
+        rows = connection.execute(
+            f"SELECT runs.skill_version AS version, COUNT(DISTINCT runs.pid) AS runs, "
+            f"COUNT(DISTINCT CASE WHEN runs.episode_score IS NOT NULL THEN runs.pid END) AS reviewed, "
+            f"AVG(runs.episode_score) AS episode_mean, "
+            f"(SELECT AVG(shots.clip_score) FROM shots JOIN runs AS r2 ON r2.pid = shots.pid "
+            f" WHERE r2.skill = runs.skill AND r2.skill_version IS runs.skill_version) AS clip_mean "
+            f"FROM runs{where}{' AND' if where else ' WHERE'} runs.skill_version IS NOT NULL "
+            f"GROUP BY runs.skill_version "
+            f"ORDER BY runs.skill_version", values).fetchall()
+    finally:
+        connection.close()
+    return [{"version": r["version"], "runs": r["runs"], "reviewed": r["reviewed"],
+             "episode_mean": round(r["episode_mean"], 2) if r["episode_mean"] is not None else None,
+             "clip_mean": round(r["clip_mean"], 2) if r["clip_mean"] is not None else None} for r in rows]
+
+
+def rollback_decision(out_dir: str, skill: str, *, current: Optional[int] = None, min_runs: int = 3,
+                      margin: float = 0.5) -> dict:
+    """Whether the skill's current version should give way to the best earlier one.
+
+    The current version is judged once it has ``min_runs`` reviewed runs:
+    when an earlier version with as many reviewed runs scored better by
+    more than ``margin`` (the run-to-run noise of the local judge), the
+    decision names it (``revert_to``). Clip means break a tie.
+    """
+    versions = [v for v in skill_versions(out_dir, skill) if v["reviewed"]]
+    if current is None and versions:
+        current = versions[-1]["version"]
+    now = next((v for v in versions if v["version"] == current), None)
+    decision = {"skill": skill, "current": current, "versions": versions, "revert_to": None, "reason": ""}
+    if now is None or now["reviewed"] < min_runs:
+        decision["reason"] = (f"version {current} has {now['reviewed'] if now else 0} reviewed run(s), "
+                              f"{min_runs} needed")
+        return decision
+    earlier = [v for v in versions if v["version"] < current and v["reviewed"] >= min_runs
+               and v["episode_mean"] is not None]
+    if not earlier:
+        decision["reason"] = "no earlier version with enough reviewed runs"
+        return decision
+    best = max(earlier, key=lambda v: (v["episode_mean"], v["clip_mean"] or 0))
+    gap = best["episode_mean"] - (now["episode_mean"] or 0)
+    if gap > margin:
+        decision["revert_to"] = best["version"]
+        decision["reason"] = (f"version {best['version']} scored {best['episode_mean']} over {best['reviewed']} "
+                              f"run(s) against {now['episode_mean']} for version {current}")
+    else:
+        decision["reason"] = (f"version {current} holds: {now['episode_mean']} against {best['episode_mean']} "
+                              f"for version {best['version']} (margin {margin})")
+    return decision
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     import argparse
 
@@ -481,9 +545,16 @@ def main(argv: Optional[list[str]] = None) -> int:
     show.add_argument("--image-model", default=None)
     show.add_argument("--video-model", default=None)
     show.add_argument("--skill", default=None)
+    versions = commands.add_parser("versions", help="compare a skill's versions and say whether to roll back")
+    versions.add_argument("out_dir")
+    versions.add_argument("skill")
+    versions.add_argument("--min-runs", type=int, default=3)
+    versions.add_argument("--margin", type=float, default=0.5)
     args = parser.parse_args(argv)
     if args.command == "backfill":
         result = backfill(args.out_dir)
+    elif args.command == "versions":
+        result = rollback_decision(args.out_dir, args.skill, min_runs=args.min_runs, margin=args.margin)
     else:
         result = summary(args.out_dir, days=args.days, image_model=args.image_model,
                          video_model=args.video_model, skill=args.skill)
