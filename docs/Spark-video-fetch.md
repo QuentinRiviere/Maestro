@@ -1,7 +1,7 @@
 # Spark video fetch (yt-dlp)
 
-A small service on the Spark that downloads a public video (YouTube, Vimeo,
-Dailymotion; `ALLOWED_HOSTS`) at 480p so a link can become a style reference
+A small service on the Spark that downloads a public video (YouTube and the
+sites yt-dlp reads; no DRM) at 480p so a link can become a style reference
 of a bible without uploading a file. Files: `docker/spark-stack/video-fetch/`
 (`app.py`, `Dockerfile`, `requirements.txt`, `compose.yaml`).
 
@@ -31,7 +31,7 @@ builds from; `git pull` it before `--build`. tsdproxy publishes the service as
 |---|---|---|
 | `VIDEO_FETCH_TOKEN` | required | bearer token of every `/api` call |
 | `TTL_HOURS` | 48 | finished jobs and their files are removed after this |
-| `ALLOWED_HOSTS` | youtube.com, youtu.be, vimeo.com, dailymotion.com | hosts a URL may point to (subdomains included) |
+| `ALLOWED_HOSTS` | empty (any public host) | optional allow-list of hosts (subdomains included) |
 | `UID_GID` | 1000:1000 | owner of `./data` |
 
 ## In Maestro
@@ -61,6 +61,12 @@ file is in the bible.
 | `GET /api/fetch/{id}/file` | the MP4 |
 | `DELETE /api/fetch/{id}` | removes the job and its folder |
 | `GET /healthz` | no token |
+
+A URL must resolve to public addresses: loopback, private (10/8, 172.16/12,
+192.168/16), link-local and reserved ranges, and names that do not resolve
+(docker service names) are refused with HTTP 400, so the service cannot be
+used to reach this host's network. (A redirect met during the download is
+not re-checked; only the token holder can submit a URL.)
 
 yt-dlp picks the best streams at or under `max_height`, H.264 and AAC when
 available, merged into MP4 by ffmpeg. One download at a time (`PARALLEL`).

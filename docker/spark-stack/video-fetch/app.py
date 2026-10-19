@@ -31,9 +31,10 @@ TOKEN = os.environ.get("VIDEO_FETCH_TOKEN", "")
 TTL_HOURS = float(os.environ.get("TTL_HOURS", "48"))
 MAX_JOBS = 200
 DEFAULT_HEIGHT = 480
-# Tolerated hosts: a URL from anywhere else is refused before yt-dlp sees it.
-ALLOWED_HOSTS = tuple(h.strip().lower() for h in os.environ.get(
-    "ALLOWED_HOSTS", "youtube.com,youtu.be,vimeo.com,dailymotion.com").split(",") if h.strip())
+# Optional allow-list of hosts (subdomains included); empty = any public host
+# yt-dlp can read. Private, loopback, link-local and reserved addresses are
+# always refused, so the service cannot be pointed at this network.
+ALLOWED_HOSTS = tuple(h.strip().lower() for h in os.environ.get("ALLOWED_HOSTS", "").split(",") if h.strip())
 
 _LOCK = threading.Lock()
 _JOBS: dict[str, dict] = {}
@@ -49,6 +50,28 @@ def _now() -> float:
     return time.time()
 
 
+def _public_address(host: str) -> bool:
+    """Whether every address of ``host`` is a public one (unresolvable hosts are refused)."""
+    import ipaddress
+    import socket
+
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError:
+        return False
+    addresses = {info[4][0] for info in infos}
+    if not addresses:
+        return False
+    for text in addresses:
+        try:
+            address = ipaddress.ip_address(text.split("%", 1)[0])
+        except ValueError:
+            return False
+        if not address.is_global:
+            return False
+    return True
+
+
 def _host_allowed(url: str) -> bool:
     from urllib.parse import urlparse
 
@@ -56,7 +79,9 @@ def _host_allowed(url: str) -> bool:
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
         return False
     host = parsed.hostname.lower()
-    return any(host == allowed or host.endswith("." + allowed) for allowed in ALLOWED_HOSTS)
+    if ALLOWED_HOSTS and not any(host == allowed or host.endswith("." + allowed) for allowed in ALLOWED_HOSTS):
+        return False
+    return _public_address(host)
 
 
 def _public(job: dict) -> dict:
@@ -162,7 +187,7 @@ def main_app() -> FastAPI:
     @app.post("/api/fetch", dependencies=[Depends(auth)])
     def fetch(body: FetchRequest) -> dict:
         if not _host_allowed(body.url):
-            raise HTTPException(status_code=400, detail="This host is not allowed")
+            raise HTTPException(status_code=400, detail="Only public video hosts are allowed")
         with _LOCK:
             if len(_JOBS) >= MAX_JOBS:
                 raise HTTPException(status_code=429, detail="Too many jobs; wait for the cleanup")

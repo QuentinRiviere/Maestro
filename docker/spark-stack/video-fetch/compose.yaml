@@ -17,7 +17,8 @@ services:
       VIDEO_FETCH_TOKEN: ${VIDEO_FETCH_TOKEN:?set VIDEO_FETCH_TOKEN}
       DATA_DIR: /data
       TTL_HOURS: ${TTL_HOURS:-48}
-      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-youtube.com,youtu.be,vimeo.com,dailymotion.com}
+      # Empty: any public host yt-dlp reads; private addresses are always refused.
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-}
     ports:
       - "${SPARK_BIND_ADDR:-127.0.0.1}:${VIDEO_FETCH_PORT:-8095}:8095"
     labels:
