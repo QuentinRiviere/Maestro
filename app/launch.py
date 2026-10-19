@@ -8351,6 +8351,8 @@ def get_services_config():
         # ID, or with the openai judge provider the local alias (default "analyst").
         "director_style_reference_model": services.get("director_style_reference_model") or "",
         # The video fetch service (docs/Spark-video-fetch.md): a link becomes a style reference.
+        # Shots per reference whose first and last frames get a reverse prompt (0 = off).
+        "director_style_frames": services.get("director_style_frames", 150),
         "director_video_fetch_url": services.get("director_video_fetch_url") or "",
         "director_video_fetch_api_key": _mask_key(services.get("director_video_fetch_api_key", "")),
         "director_video_fetch_api_key_set": bool(services.get("director_video_fetch_api_key")),
@@ -8442,6 +8444,7 @@ async def update_services_config(request: Request):
         "director_episode_review_model",
         "director_judge_provider", "director_judge_url", "director_judge_api_key", "director_judge_model",
         "director_style_reference_model", "director_video_fetch_url", "director_video_fetch_api_key",
+        "director_style_frames",
         "use_director_v2", "nsfw_mode", "nsfw_accepted_at", "director_prompt_polish",
         "civitai_api_key", "voice_reference_enabled", "ltx_progressive_pipeline",
         "show_experimental", "auto_performance", "storage_allow_linked_removal",
@@ -8468,6 +8471,8 @@ async def update_services_config(request: Request):
             raise HTTPException(status_code=400, detail=f"{key} must be a model ID.")
         if key == "director_judge_provider" and value not in ("fal", "openai"):
             raise HTTPException(status_code=400, detail="director_judge_provider must be fal or openai.")
+        if key == "director_style_frames" and (type(value) is not int or not 0 <= value <= 2000):
+            raise HTTPException(status_code=400, detail="director_style_frames must be a whole number from 0 to 2000.")
         if key == "director_video_fetch_url" and (not isinstance(value, str) or len(value) > 500):
             raise HTTPException(status_code=400, detail="director_video_fetch_url must be a URL.")
         if key == "director_judge_url":
@@ -11415,8 +11420,14 @@ def _style_reference_fetcher():
 
 
 from services.director.style_reference import register_routes as _register_style_references
+def _style_reference_frames_limit() -> int:
+    value = wgp.server_config.get("services", {}).get("director_style_frames", 150)
+    return int(value) if isinstance(value, int) and not isinstance(value, bool) else 150
+
+
 _register_style_references(api, get_fal_key=_style_reference_fal_key, get_model=_style_reference_model,
-                           get_backend=_style_reference_backend, get_fetcher=_style_reference_fetcher)
+                           get_backend=_style_reference_backend, get_fetcher=_style_reference_fetcher,
+                           get_frames_limit=_style_reference_frames_limit)
 
 
 @api.post("/api/v1/director/pipeline/{pid}/bible")

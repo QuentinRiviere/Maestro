@@ -813,6 +813,25 @@ export function ServicesSettingsPanel() {
         </div>
 
         <div>
+          <label className="block text-xs text-text-secondary mb-1">Frame prompts per style reference</label>
+          <input
+            type="number" min={0} max={2000} step={10}
+            defaultValue={servicesConfig.director_style_frames ?? 150}
+            onBlur={e => {
+              const value = Math.max(0, Math.min(2000, Math.round(Number(e.target.value) || 0)))
+              if (value !== (servicesConfig.director_style_frames ?? 150)) void updateConfig({ director_style_frames: value })
+            }}
+            className="w-32 bg-bg-tertiary border border-border rounded-lg px-3 py-1.5 text-xs text-text-primary focus:outline-none focus:border-accent-blue"
+            aria-label="Frame prompts per style reference"
+          />
+          <p className="text-[10px] text-text-muted mt-1">
+            After each analysis the first and last frame of up to this many shots (evenly sampled) are described as
+            the image prompts that would regenerate them; the planner writes its image prompts in that register.
+            0 turns the pass off.
+          </p>
+        </div>
+
+        <div>
           <label className="block text-xs text-text-secondary mb-1">Video fetch service (links as style references)</label>
           <input
             type="text"

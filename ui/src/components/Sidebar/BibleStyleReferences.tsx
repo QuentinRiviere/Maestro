@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { Film, LayoutList, Link, Loader2, RefreshCw, Trash2, Upload } from 'lucide-react'
+import { Film, Image as ImageIcon, LayoutList, Link, Loader2, RefreshCw, Trash2, Upload } from 'lucide-react'
 import { StyleReferenceShots } from './StyleReferenceShots'
 import {
   analyseStyleReference, deleteStyleReference, fetchStyleReferenceFetches, fetchStyleReferencesFromUrls,
-  fetchStyleReferences, parseVideoLinks, STYLE_REFERENCE_ACCEPT, STYLE_REFERENCE_MAX_BYTES,
+  fetchStyleReferences, parseVideoLinks, startStyleReferenceFrames, STYLE_REFERENCE_ACCEPT, STYLE_REFERENCE_MAX_BYTES,
   styleReferenceVideoUrl, updateStyleReference, uploadStyleReference,
   type StyleReference, type StyleReferenceFetch, type StyleReferencePatch,
 } from '../../api/directorBibles'
@@ -39,6 +39,7 @@ function ReferenceCard({ bibleId, reference, ask, onChange, onDeleted }: {
 }) {
   const [labelText, setLabelText] = useState(reference.label)
   const [showShots, setShowShots] = useState(false)
+  const framesRunning = reference.frames_status === 'queued' || reference.frames_status === 'running'
   const [tagsText, setTagsText] = useState(reference.scene_tags.join(', '))
   const [rulesText, setRulesText] = useState(rulesToText(reference.grammar?.rules))
   const [busy, setBusy] = useState(false)
@@ -90,6 +91,12 @@ function ReferenceCard({ bibleId, reference, ask, onChange, onDeleted }: {
           <LayoutList size={10} /> Shots{reference.described_shots ? ` (${reference.described_shots})` : ''}
         </button>
         {showShots && <StyleReferenceShots bibleId={bibleId} reference={reference} onClose={() => setShowShots(false)} />}
+        <button className={button} disabled={busy || analysing || reference.status !== 'done' || framesRunning}
+          title="Describe the first and last frame of the shots as image prompts (runs after each analysis; click to run again)"
+          onClick={() => act(async () => onChange(await startStyleReferenceFrames(bibleId, reference.id)))}>
+          {framesRunning ? <Loader2 size={10} className="animate-spin" /> : <ImageIcon size={10} />}
+          {framesRunning ? reference.frames_progress || 'Frame prompts…' : `Frame prompts${reference.frames_count ? ` (${reference.frames_count})` : ''}`}
+        </button>
         <button className={button} disabled={busy || analysing} title="Analyse the video again (replaces the grammar and its rules)"
           onClick={() => ask({
             title: `Analyse "${reference.label}" again?`, confirmLabel: 'Re-analyse',
@@ -140,6 +147,7 @@ function ReferenceCard({ bibleId, reference, ask, onChange, onDeleted }: {
           )}
           {analysing && reference.progress && stats && <p className="text-[10px] text-accent-blue">{reference.progress}</p>}
           {reference.error && <p className="text-[10px] text-chip-red">{reference.error}</p>}
+          {reference.frames_error && <p className="text-[10px] text-chip-red">Frame prompts: {reference.frames_error}</p>}
           {reference.cost_usd != null && (
             <p className="text-[9px] text-text-muted">Analysis: ${reference.cost_usd.toFixed(3)}{reference.model ? ` · ${reference.model}` : ''}
               {reference.described_shots ? ` · ${reference.described_shots} shots described` : ''}</p>
@@ -212,7 +220,8 @@ export function BibleStyleReferences({ bibleId, ask }: { bibleId: string; ask: A
   useEffect(() => { void refreshFetches() }, [refreshFetches])
 
   const downloading = fetches.some(f => f.status === 'queued' || f.status === 'downloading')
-  const running = references.some(r => isAnalysing(r.status)) || downloading
+  const running = references.some(r => isAnalysing(r.status) || r.frames_status === 'queued' || r.frames_status === 'running')
+    || downloading
   useEffect(() => {
     if (!running) return
     const timer = window.setInterval(() => { void refresh(); if (downloading) void refreshFetches() }, 3000)

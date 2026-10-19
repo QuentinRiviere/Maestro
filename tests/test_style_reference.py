@@ -1074,5 +1074,103 @@ class ResumeTests(unittest.TestCase):
         self.assertEqual(sr.resume_shots(shots, known[:1]), 0)
 
 
+
+def frame_answer(n: int) -> str:
+    return json.dumps({"prompt": f"Frame {n}: a young woman in a beige coat sits at a café table, soft window light "
+                                 "from the left, warm wood tones, shallow depth of field, quiet tension.",
+                       "shot_size": "close_up" if n % 2 else "medium", "lighting": "soft window light",
+                       "palette": ["beige", "warm wood", "cream"], "mood": "quiet tension"})
+
+
+class FramesTests(unittest.TestCase):
+    def shots(self):
+        shots = sr.shot_spans([5.0, 5.2, 12.0], 20.0)
+        for shot in shots:
+            shot["shot_size"] = "medium"
+        shots[3]["credits"] = True
+        return shots
+
+    def test_sampling_and_frame_times(self):
+        shots = self.shots()
+        self.assertEqual([s["index"] for s in sr.sample_shots(shots)], [0, 1, 2])
+        self.assertEqual([s["index"] for s in sr.sample_shots(shots, 2)], [0, 1])
+        self.assertEqual(sr.frame_times(shots[0]), [("first", 0.12), ("last", 4.88)])
+        self.assertEqual(sr.frame_times(shots[1]), [("first", 5.1)])  # 0.2 s: one frame
+
+    def test_describe_frames_asks_one_call_per_frame_and_resumes(self):
+        class Backend:
+            provider = "openai"
+            available = True
+            model = "analyst"
+            ask = FakeAsk([("nope", 0.0)] + [(frame_answer(n), 0.0) for n in range(1, 6)])
+
+        backend = Backend()
+        stills = []
+        known = [{"index": 0, "position": "first", "t": 0.12, "prompt": "kept from before", "shot_size": "wide"}]
+        progress = []
+        result = sr.describe_frames("v.mp4", self.shots(), fal_key="", backend=backend, http=object(), sleep=lambda s: None,
+                                    known=known, on_progress=lambda m, f: progress.append((m, len(f))),
+                                    still=lambda path, seconds, dest: stills.append(seconds) or dest)
+        # shot 0 last, shot 1 (one frame), shot 2 (5.2-12 s) first and last = 4 frames; the first call failed once.
+        self.assertEqual(stills, [4.88, 5.1, 5.32, 11.88])
+        self.assertEqual(len(backend.ask.calls), 5)
+        self.assertEqual(backend.ask.calls[0]["system"], sr.FRAME_SYSTEM_PROMPT)
+        self.assertEqual(backend.ask.calls[0]["videos"], 1)
+        self.assertEqual([(f["index"], f["position"]) for f in result["frames"]],
+                         [(0, "first"), (0, "last"), (1, "first"), (2, "first"), (2, "last")])
+        self.assertEqual(result["frames"][0]["prompt"], "kept from before")
+        self.assertEqual(result["frames"][1]["palette"], ["beige", "warm wood", "cream"])
+        self.assertEqual((result["cost_usd"], result["errors"]), (0.0, []))
+        self.assertEqual(progress[0], ("Describing frame 1 of 4", 1))
+
+    def test_the_frames_thread_saves_the_sidecar_and_the_status(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        with patch.object(bibles, "BIBLES_DIR", Path(tmp.name) / "bibles"):
+            bid = bibles.save_bible({"name": "Seoul Nights"})["id"]
+            folder = bibles._folder(bid)
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / "styleref_1.mp4").write_bytes(b"video")
+            reference = sr.add_reference(bid, str(folder / "styleref_1.mp4"))
+            with self.assertRaises(bibles.BibleError):
+                sr.start_frames(bid, reference["id"], fal_key="k")  # not analysed yet
+            sr._set(bid, reference["id"], status="done")
+            sr.save_shots(bid, reference, self.shots())
+
+            def describe(path, shots, *, fal_key, model, backend, limit, known, on_progress):
+                frames = [{"index": s["index"], "position": "first", "t": s["start"], "prompt": f"shot {s['index']}",
+                           "shot_size": "medium"} for s in sr.sample_shots(shots, limit)]
+                on_progress("Describing frame 1 of 3", frames[:1])
+                return {"frames": frames, "cost_usd": 0.0, "model": model, "errors": []}
+
+            sr.start_frames(bid, reference["id"], fal_key="k", describe=describe, limit=2, wait=True)
+            stored = sr.get_reference(bid, reference["id"])
+            self.assertEqual((stored["frames_status"], stored["frames_count"]), ("done", 2))
+            self.assertEqual([f["prompt"] for f in sr.load_frames(bid, reference)], ["shot 0", "shot 1"])
+            examples = sr.prompt_examples(bid, [stored])
+            self.assertEqual([e["prompt"] for e in examples], ["shot 0", "shot 1"])
+            block = sr.prompt_examples_block(examples)
+            self.assertIn("REFERENCE IMAGE PROMPT STYLE", block)
+            self.assertIn("- [medium] shot 0", block)
+            self.assertEqual(sr.prompt_examples_block([]), "")
+            sr.delete_reference(bid, reference["id"])
+            self.assertFalse(sr.frames_path(bid, reference).exists())
+
+    def test_examples_spread_over_shot_sizes(self):
+        frames = [{"index": i, "position": "first", "prompt": f"p{i}", "shot_size": size}
+                  for i, size in enumerate(["close_up", "close_up", "close_up", "wide", "medium", "insert"])]
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        with patch.object(bibles, "BIBLES_DIR", Path(tmp.name) / "bibles"):
+            bid = bibles.save_bible({"name": "Seoul Nights"})["id"]
+            folder = bibles._folder(bid)
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / "styleref_1.mp4").write_bytes(b"video")
+            reference = sr.add_reference(bid, str(folder / "styleref_1.mp4"))
+            sr.save_frames(bid, reference, frames)
+            chosen = sr.prompt_examples(bid, [reference], limit=4)
+        self.assertEqual([c["shot_size"] for c in chosen], ["close_up", "wide", "medium", "insert"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -8050,7 +8050,8 @@ def _apply_style_references(pid: str, params: dict, skill_type: str = "") -> str
     """
     from services.director import bibles
     from services.director.cinema_grammar import cinema_grammar_mode
-    from services.director.style_reference import CHOICE_AUTO, merged_grammar, planner_block
+    from services.director.style_reference import (CHOICE_AUTO, merged_grammar, planner_block, prompt_examples,
+                                                   prompt_examples_block)
 
     choice, bible_id, references = _selected_style_references(params)
     params["director_style_reference"] = choice
@@ -8061,6 +8062,12 @@ def _apply_style_references(pid: str, params: dict, skill_type: str = "") -> str
     merged = merged_grammar(bibles.get_bible(bible_id), references) if choice == CHOICE_AUTO and bible_id else None
     params["_director_style_grammar_merged"] = bool(merged)
     block = planner_block(references, brief=brief, numbers=not numbers_in_cinema, merged=merged)
+    # Frames of the references written as image prompts: the register the image prompts should use.
+    examples = prompt_examples(bible_id, references) if block and bible_id else []
+    examples_block = prompt_examples_block(examples)
+    if examples_block:
+        block = block + "\n\n" + examples_block
+    params["_director_style_prompt_examples"] = len(examples) if examples_block else 0
     params["_director_style_references"] = [
         {"id": r["id"], "label": r.get("label"), "scene_tags": r.get("scene_tags") or [],
          "target_asl_sec": ((r.get("grammar") or {}).get("rhythm") or {}).get("target_asl_sec")}
@@ -8069,6 +8076,7 @@ def _apply_style_references(pid: str, params: dict, skill_type: str = "") -> str
     if block:
         print(f"[Pipeline {pid}] Style references: {', '.join(r.get('label') or r['id'] for r in references)} "
               f"({len(block)} chars{', merged' if merged else ''}"
+              f"{f', {len(examples)} prompt examples' if examples_block else ''}"
               f"{', numbers in the cinema grammar' if numbers_in_cinema else ''})")
     return block
 

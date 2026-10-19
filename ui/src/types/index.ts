@@ -1548,6 +1548,7 @@ export interface ServicesConfig {
   director_judge_api_key_set?: boolean
   director_judge_api_key_env?: boolean
   director_judge_model?: string
+  director_style_frames?: number
   director_video_fetch_url?: string
   director_video_fetch_api_key?: string
   director_video_fetch_api_key_set?: boolean

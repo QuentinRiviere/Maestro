@@ -70,6 +70,7 @@ VIDEO_SUFFIXES = (".mp4", ".mov", ".webm", ".mkv")
 MAX_STYLE_REFERENCES = 10
 STYLE_REFERENCE_GRAPHICS = ("ignore", "include")
 STYLE_REFERENCE_STATES = ("queued", "analysing", "done", "failed")
+STYLE_FRAMES_STATES = ("idle", "queued", "running", "done", "failed")
 # Analyses owned by this process. A reference still queued or analysing that
 # is not in it was cut by a restart.
 _LIVE_ANALYSES: set[str] = set()
@@ -268,6 +269,14 @@ def _style_references(raw: Any, folder: Path) -> list[dict]:
             # Label and tags the analysis may set (true until the user types their own).
             "label_auto": item.get("label_auto") is True,
             "tags_auto": item.get("tags_auto") is True,
+            # The reverse-prompt pass over the shots' first and last frames (style_reference.start_frames).
+            "frames_status": ("failed" if item.get("frames_status") in ("queued", "running")
+                              and ref_id not in _LIVE_ANALYSES else item.get("frames_status"))
+            if item.get("frames_status") in STYLE_FRAMES_STATES else "idle",
+            "frames_count": count if isinstance(count := item.get("frames_count"), int)
+            and not isinstance(count, bool) and count > 0 else 0,
+            "frames_progress": _text(item.get("frames_progress"), 200),
+            "frames_error": _text(item.get("frames_error"), 400),
             "cost_usd": cost if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None,
             "model": _text(item.get("model"), 120),
         })

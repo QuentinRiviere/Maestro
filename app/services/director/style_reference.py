@@ -82,6 +82,14 @@ LONG_SHOT_SEC = 3.0
 STILL_LONG_SIDE = 768
 # The local pass is free: a whole episode can go through it.
 MAX_LOCAL_ANALYSED_SEC = 2 * 3600
+# Reverse prompts: the first and last frame of up to FRAMES_MAX_SHOTS shots
+# per reference, each described as the prompt that would regenerate it.
+FRAMES_MAX_SHOTS = 150
+FRAME_EDGE_SEC = 0.12
+FRAME_LONG_SIDE = 768
+FRAME_ATTEMPTS = 2
+MAX_PROMPT_EXAMPLES = 6
+MAX_PROMPT_EXAMPLES_CHARS = 3000
 # Consolidation of several references into one grammar (start_merge).
 MERGE_ATTEMPTS = 2
 MERGED_RULES = 14
@@ -161,6 +169,18 @@ Return ONLY a JSON object, no prose, no markdown:
   "action": "what happens, short", "cut_reason": "{'|'.join(CUT_REASONS)}",
   "transition": "{'|'.join(TRANSITIONS)}", "lighting": "light and colour, short",
   "audio": "{'|'.join(AUDIO_KINDS)}", "false_cut": false, "credits": false, "graphics": "none or short"}}]}}"""
+
+FRAME_SYSTEM_PROMPT = """You describe ONE frame of a film so completely that a text-to-image model could regenerate
+it. Write the prompt a storyboard artist would give that model: the people by role or look, never by name (a young
+woman in a beige coat, an older man in a chef's jacket), their pose, gesture, gaze and expression; the framing (shot
+size, camera height and angle, lens feel, where the subjects sit in the frame, depth of field); the setting and the
+props that matter; the light (sources, direction, colour, hardness, time of day); the colour palette; the mood and
+the texture of the image (film grain, softness, contrast). 60-120 words, one paragraph, present tense, concrete,
+no camera brands, no story, no dialogue, no on-screen text unless it is part of the image.
+
+Return ONLY a JSON object:
+{"prompt": "the paragraph", "shot_size": "extreme_wide|wide|medium|medium_close_up|close_up|extreme_close_up|insert",
+ "lighting": "short", "palette": ["3-5 colour words"], "mood": "2-4 words"}"""
 
 MERGE_SYSTEM_PROMPT = """You are a senior editor consolidating the staging grammars of SEVERAL reference videos
 into ONE grammar for an AI storyboard planner that will direct NEW productions with their own story and cast.
@@ -1241,9 +1261,258 @@ def delete_reference(bible_id: str, ref_id: str) -> list[dict]:
             if path is not None:
                 path.unlink(missing_ok=True)
             shots_path(bible_id, {"file": name}).unlink(missing_ok=True)
+            frames_path(bible_id, {"file": name}).unlink(missing_ok=True)
             shutil.rmtree(stills_dir(bible_id, {"file": name}), ignore_errors=True)
     bibles._LIVE_ANALYSES.discard(ref_id)
     return bible.get("style_references") or []
+
+
+# ── reverse prompts of the shots' first and last frames ──────────────────
+
+
+def frames_path(bible_id: str, reference: Mapping[str, Any]):
+    return bibles._folder(bible_id) / f"{os.path.splitext(reference['file'])[0]}.frames.json"
+
+
+def save_frames(bible_id: str, reference: Mapping[str, Any], frames: Sequence[Mapping[str, Any]]) -> None:
+    path = frames_path(bible_id, reference)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(list(frames), ensure_ascii=False), encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def load_frames(bible_id: str, reference: Mapping[str, Any]) -> list[dict]:
+    try:
+        data = json.loads(frames_path(bible_id, reference).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    return [f for f in data if isinstance(f, dict)] if isinstance(data, list) else []
+
+
+def sample_shots(shots: Sequence[Mapping[str, Any]], limit: int = FRAMES_MAX_SHOTS) -> list[dict]:
+    """Described, non-credits shots, evenly sampled down to ``limit``."""
+    usable_shots = [dict(s) for s in shots if s.get("shot_size") and not s.get("credits")]
+    if limit <= 0 or len(usable_shots) <= limit:
+        return usable_shots
+    step = len(usable_shots) / limit
+    return [usable_shots[int(i * step)] for i in range(limit)]
+
+
+def frame_times(shot: Mapping[str, Any], *, edge: float = FRAME_EDGE_SEC) -> list[tuple[str, float]]:
+    """("first", t) and ("last", t) of a shot, a little inside its cuts; one frame for a very short shot."""
+    start, end = float(shot["start"]), float(shot["end"])
+    if end - start < 3 * edge:
+        return [("first", round((start + end) / 2, 3))]
+    return [("first", round(start + edge, 3)), ("last", round(end - edge, 3))]
+
+
+def parse_frame(text: str) -> dict:
+    raw = extract_json(text)
+    if not isinstance(raw, dict):
+        raise StyleReferenceError("The frame answer is not a JSON object")
+    prompt = re.sub(r"\s+", " ", str(raw.get("prompt") or "")).strip()[:1200]
+    if len(prompt) < 20:
+        raise StyleReferenceError("The frame answer has no prompt")
+    return {
+        "prompt": prompt,
+        "shot_size": _enum(raw.get("shot_size"), SHOT_SIZES, ""),
+        "lighting": _short(raw.get("lighting"), 200),
+        "palette": _text_list(raw.get("palette"), 5, 30),
+        "mood": _short(raw.get("mood"), 60),
+    }
+
+
+def describe_frames(
+    path: str,
+    shots: Sequence[Mapping[str, Any]],
+    *,
+    fal_key: str | None,
+    model: str = DEFAULT_MODEL,
+    ask: Callable[..., tuple[str, Any]] = _ask,
+    backend: Any = None,
+    http: Any = None,
+    sleep: Callable[[float], None] = time.sleep,
+    limit: int = FRAMES_MAX_SHOTS,
+    known: Sequence[Mapping[str, Any]] | None = None,
+    on_progress: Callable[[str, list[dict]], None] = lambda message, frames: None,
+    still: Callable[..., str] | None = None,
+) -> dict:
+    """Reverse prompts of the sampled shots' first and last frames: {frames, cost_usd, model, errors}.
+
+    ``known`` frames (an interrupted pass) are kept and their (shot, position)
+    not asked again. ``on_progress(message, frames)`` runs after every frame.
+    ``still(path, seconds, dest)`` extracts one JPEG (ffmpeg by default).
+    """
+    ask, fal_key, model, local_backend = _resolve_backend(backend, fal_key, model, ask)
+    frames = [dict(f) for f in known or [] if f.get("prompt")]
+    done = {(int(f.get("index", -1)), str(f.get("position"))) for f in frames}
+    sampled = sample_shots(shots, limit)
+    todo = [(shot, position, seconds) for shot in sampled for position, seconds in frame_times(shot)
+            if (int(shot["index"]), position) not in done]
+    cost = 0.0
+    errors: list[str] = []
+    owns_http = http is None
+    if owns_http:
+        import httpx
+        http = httpx.Client(timeout=120)
+    extract = still or _extract_still
+    try:
+        with tempfile.TemporaryDirectory(prefix="director-frames-") as tmp:
+            for n, (shot, position, seconds) in enumerate(todo, 1):
+                on_progress(f"Describing frame {n} of {len(todo)}", frames)
+                try:
+                    image = extract(path, seconds, os.path.join(tmp, f"frame_{n:05d}.jpg"))
+                    media = [image] if local_backend else [data_uri_image(image)]
+                    last: Exception | None = None
+                    for _ in range(FRAME_ATTEMPTS):
+                        text, call_cost = ask(http, fal_key, model, FRAME_SYSTEM_PROMPT,
+                                              f"Shot {shot['index'] + 1}, its {position} frame at {seconds:.1f} s.",
+                                              media, sleep, max_tokens=800)
+                        cost += float(call_cost or 0)
+                        try:
+                            record = parse_frame(text)
+                        except StyleReferenceError as error:
+                            last = error
+                            continue
+                        frames.append({"index": int(shot["index"]), "position": position, "t": seconds,
+                                       "measured_shot_size": shot.get("shot_size"), **record})
+                        last = None
+                        break
+                    if last:
+                        raise last
+                except (StyleReferenceError, JudgeError, OSError) as error:
+                    errors.append(f"Shot {shot['index'] + 1} {position}: {str(error)[:160]}")
+                finally:
+                    try:
+                        os.remove(os.path.join(tmp, f"frame_{n:05d}.jpg"))
+                    except OSError:
+                        pass
+    finally:
+        if owns_http:
+            http.close()
+    frames.sort(key=lambda f: (f["index"], f["position"] != "first"))
+    return {"frames": frames, "cost_usd": round(cost, 4), "model": model, "errors": errors[:20]}
+
+
+def _extract_still(path: str, seconds: float, dest: str, *, long_side: int = FRAME_LONG_SIDE) -> str:
+    scale = f"scale=w='if(gt(iw,ih),min({long_side},iw),-2)':h='if(gt(iw,ih),-2,min({long_side},ih))'"
+    command = ["ffmpeg", "-v", "error", "-y", "-ss", f"{seconds:.3f}", "-i", path, "-frames:v", "1",
+               "-vf", scale, "-q:v", "4", dest]
+    try:
+        subprocess.run(command, check=True, capture_output=True, timeout=120)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise StyleReferenceError(f"Could not extract the frame: {str(error)[:160]}") from error
+    if not os.path.exists(dest):
+        raise StyleReferenceError(f"No frame at {seconds:.1f} s")
+    return dest
+
+
+def data_uri_image(path: str) -> str:
+    with open(path, "rb") as handle:
+        return "data:image/jpeg;base64," + base64.b64encode(handle.read()).decode()
+
+
+def start_frames(bible_id: str, ref_id: str, *, fal_key: str | None, model: str = DEFAULT_MODEL,
+                 backend: Any = None, limit: int = FRAMES_MAX_SHOTS, describe: Callable[..., dict] | None = None,
+                 wait: bool = False) -> dict:
+    """Queue the reverse-prompt pass of an analysed reference in a background thread; returns the reference."""
+    reference = get_reference(bible_id, ref_id)
+    if reference.get("status") != "done":
+        raise BibleError("Analyse the reference first")
+    if ref_id in bibles._LIVE_ANALYSES:
+        raise BibleError("This reference is busy")
+    bibles._LIVE_ANALYSES.add(ref_id)
+    try:
+        reference = _set(bible_id, ref_id, frames_status="queued", frames_error="", frames_progress="Waiting")
+    except Exception:
+        bibles._LIVE_ANALYSES.discard(ref_id)
+        raise
+    thread = threading.Thread(target=_run_frames, args=(bible_id, ref_id, fal_key, model, backend, limit,
+                                                        describe or describe_frames),
+                              name=f"style-frames-{ref_id}", daemon=True)
+    thread.start()
+    if wait:
+        thread.join()
+    return reference
+
+
+def _run_frames(bible_id: str, ref_id: str, fal_key: str | None, model: str, backend: Any, limit: int,
+                describe: Callable[..., dict]) -> None:
+    try:
+        with _ANALYSIS_SLOT:
+            if ref_id not in bibles._LIVE_ANALYSES:
+                return
+            reference = _set(bible_id, ref_id, frames_status="running", frames_progress="Starting")
+            path = bibles.video_path(bible_id, reference["file"])
+            if path is None:
+                raise StyleReferenceError("The video file is missing")
+            shots = load_shots(bible_id, reference)
+            known = load_frames(bible_id, reference)
+
+            def progress(message: str, frames: list[dict]) -> None:
+                save_frames(bible_id, reference, frames)
+                _set(bible_id, ref_id, frames_progress=_short(message, 200), frames_count=len(frames))
+
+            try:
+                result = describe(str(path), shots, fal_key=fal_key, model=model, backend=backend, limit=limit,
+                                  known=known, on_progress=progress)
+            except Exception as error:  # noqa: BLE001 - recorded on the reference
+                print(f"[Style reference] {bible_id}/{ref_id}: frames: {error}")
+                _set(bible_id, ref_id, frames_status="failed", frames_error=_short(error, 400), frames_progress="")
+                return
+            save_frames(bible_id, reference, result["frames"])
+            errors = result.get("errors") or []
+            _set(bible_id, ref_id, frames_status="done", frames_progress="", frames_count=len(result["frames"]),
+                 frames_error=("; ".join(errors))[:400] if errors else "")
+            print(f"[Style reference] {bible_id}/{ref_id}: {len(result['frames'])} frame prompts, "
+                  f"cost ${result.get('cost_usd')}")
+    except BibleError:
+        pass
+    except Exception as error:  # noqa: BLE001
+        try:
+            _set(bible_id, ref_id, frames_status="failed", frames_error=_short(error, 400), frames_progress="")
+        except Exception:  # noqa: BLE001
+            pass
+    finally:
+        bibles._LIVE_ANALYSES.discard(ref_id)
+
+
+def prompt_examples(bible_id: str, references: Sequence[Mapping[str, Any]], *,
+                    limit: int = MAX_PROMPT_EXAMPLES) -> list[dict]:
+    """Up to ``limit`` reverse prompts across the references, one shot size at a time, first frames preferred."""
+    pool: list[dict] = []
+    for reference in references:
+        for frame in load_frames(bible_id, reference):
+            if frame.get("prompt"):
+                pool.append({**frame, "reference": reference.get("label", "")})
+    if not pool:
+        return []
+    by_size: dict[str, list[dict]] = {}
+    for frame in sorted(pool, key=lambda f: (f.get("position") != "first", f.get("index", 0))):
+        by_size.setdefault(frame.get("shot_size") or frame.get("measured_shot_size") or "medium", []).append(frame)
+    chosen: list[dict] = []
+    while len(chosen) < limit and any(by_size.values()):
+        for size in list(by_size):
+            if by_size[size] and len(chosen) < limit:
+                chosen.append(by_size[size].pop(0))
+    return chosen
+
+
+def prompt_examples_block(examples: Sequence[Mapping[str, Any]], *, limit: int = MAX_PROMPT_EXAMPLES_CHARS) -> str:
+    """The "REFERENCE IMAGE PROMPT STYLE" planner block ("" without examples)."""
+    if not examples:
+        return ""
+    head = ("REFERENCE IMAGE PROMPT STYLE (frames of the reference videos, written as the image prompts that would "
+            "regenerate them: write this production's image prompts in the same register, with the same kind of "
+            "detail about framing, light, palette and texture, for its own characters and places, never these):")
+    text = head
+    for example in examples:
+        size = SHOT_SIZE_LABELS.get(example.get("shot_size") or "", example.get("shot_size") or "shot")
+        line = f"- [{size}] {example['prompt']}"
+        if len(text) + 1 + len(line) > limit:
+            break
+        text += "\n" + line
+    return text if text != head else ""
 
 
 # ── one grammar for several references ─────────────────────────────────────
@@ -1567,10 +1836,10 @@ _ANALYSIS_SLOT = threading.Semaphore(1)
 
 def start_analysis(bible_id: str, ref_id: str, *, fal_key: str | None, model: str = DEFAULT_MODEL,
                    analyse: Callable[..., dict] | None = None, wait: bool = False, backend: Any = None,
-                   on_done: Callable[[str], Any] | None = None) -> dict:
+                   on_done: Callable[..., Any] | None = None) -> dict:
     """Queue the analysis of one reference in a background thread; returns the queued reference.
 
-    ``on_done(bible_id)`` runs after a successful analysis (the routes use it
+    ``on_done(bible_id, ref_id)`` runs after a successful analysis (the routes use it
     to refresh the merged grammar).
     """
     if ref_id in bibles._LIVE_ANALYSES:
@@ -1593,7 +1862,7 @@ def start_analysis(bible_id: str, ref_id: str, *, fal_key: str | None, model: st
 
 def _run_analysis(bible_id: str, ref_id: str, fal_key: str | None, model: str,
                   analyse: Callable[..., dict], backend: Any = None,
-                  on_done: Callable[[str], Any] | None = None) -> None:
+                  on_done: Callable[..., Any] | None = None) -> None:
     try:
         with _ANALYSIS_SLOT:
             if ref_id not in bibles._LIVE_ANALYSES:
@@ -1641,7 +1910,7 @@ def _run_analysis(bible_id: str, ref_id: str, fal_key: str | None, model: str,
                   f"ASL {result['stats'].get('asl_sec')} s, cost ${result.get('cost_usd')}")
             if on_done is not None:
                 try:
-                    on_done(bible_id)
+                    on_done(bible_id, ref_id)
                 except Exception as error:  # noqa: BLE001
                     print(f"[Style reference] {bible_id}: after analysis: {error}")
     except BibleError:
@@ -1663,6 +1932,7 @@ def _public(reference: Mapping[str, Any], *, bible_id: str = "", with_shots: boo
     data = dict(reference)
     if with_shots:
         data["shots"] = load_shots(bible_id, reference)
+        data["frames"] = load_frames(bible_id, reference)
     else:
         stats = dict(data.get("stats") or {})
         for key in ("cuts", "shot_lengths"):
@@ -1674,7 +1944,8 @@ def _public(reference: Mapping[str, Any], *, bible_id: str = "", with_shots: boo
 def register_routes(api: Any, *, get_fal_key: Callable[[], str | None],
                     get_model: Callable[[], str] = lambda: DEFAULT_MODEL,
                     get_backend: Callable[[], Any] = lambda: None,
-                    get_fetcher: Callable[[], tuple[str, str] | None] = lambda: None) -> None:
+                    get_fetcher: Callable[[], tuple[str, str] | None] = lambda: None,
+                    get_frames_limit: Callable[[], int] = lambda: FRAMES_MAX_SHOTS) -> None:
     """Mount the style reference endpoints under ``/api/v1/director/bibles/{bible_id}/style-references``.
 
     ``get_backend`` returns the local judge backend when the analysis should
@@ -1693,9 +1964,31 @@ def register_routes(api: Any, *, get_fal_key: Callable[[], str | None],
     def refresh_merge(bible_id: str, force: bool = False) -> dict | None:
         return start_merge(bible_id, fal_key=get_fal_key(), model=get_model(), backend=get_backend(), force=force)
 
+    def after_analysis(bible_id: str, ref_id: str = "") -> None:
+        """After an analysis: refresh the merged grammar, then the reverse prompts of that reference."""
+        refresh_merge(bible_id)
+        if ref_id and get_frames_limit() > 0:
+            try:
+                start_frames(bible_id, ref_id, fal_key=get_fal_key(), model=get_model(), backend=get_backend(),
+                             limit=get_frames_limit())
+            except BibleError as error:
+                print(f"[Style reference] {bible_id}/{ref_id}: frames not started: {error}")
+
+    @api.post(base + "/{ref_id}/frames")
+    def style_reference_frames_start(bible_id: str, ref_id: str):
+        reference = call(start_frames, bible_id, ref_id, fal_key=get_fal_key(), model=get_model(),
+                         backend=get_backend(), limit=get_frames_limit() or FRAMES_MAX_SHOTS)
+        return {"reference": _public(reference)}
+
+    @api.get(base + "/{ref_id}/frames")
+    def style_reference_frames(bible_id: str, ref_id: str):
+        reference = call(get_reference, bible_id, ref_id)
+        return {"frames": load_frames(bible_id, reference), "status": reference.get("frames_status"),
+                "progress": reference.get("frames_progress"), "error": reference.get("frames_error")}
+
     def analyse_new(bible_id: str, ref_id: str) -> None:
         start_analysis(bible_id, ref_id, fal_key=get_fal_key(), model=get_model(), backend=get_backend(),
-                       on_done=refresh_merge)
+                       on_done=after_analysis)
 
     def resume_interrupted() -> None:
         """Queue again every analysis a restart interrupted (it resumes from its saved shots)."""
@@ -1706,6 +1999,11 @@ def register_routes(api: Any, *, get_fal_key: Callable[[], str | None],
                     if reference.get("status") == "failed" and reference.get("error") == "Interrupted":
                         print(f"[Style reference] {bible['id']}/{reference['id']}: resuming after a restart")
                         analyse_new(bible["id"], reference["id"])
+                    elif reference.get("status") == "done" and reference.get("frames_status") == "failed" \
+                            and not reference.get("frames_error") and get_frames_limit() > 0:
+                        print(f"[Style reference] {bible['id']}/{reference['id']}: resuming frame prompts")
+                        start_frames(bible["id"], reference["id"], fal_key=get_fal_key(), model=get_model(),
+                                     backend=get_backend(), limit=get_frames_limit())
         except Exception as error:  # noqa: BLE001
             print(f"[Style reference] could not resume interrupted analyses: {error}")
 
@@ -1779,7 +2077,7 @@ def register_routes(api: Any, *, get_fal_key: Callable[[], str | None],
             raise
         if str(analyse).strip().lower() not in ("false", "0", "no", "off"):
             reference = call(start_analysis, bible_id, reference["id"], fal_key=get_fal_key(), model=get_model(), backend=get_backend(),
-                             on_done=refresh_merge)
+                             on_done=after_analysis)
         return {"reference": _public(reference)}
 
     @api.get(base + "/{ref_id}")
@@ -1808,7 +2106,7 @@ def register_routes(api: Any, *, get_fal_key: Callable[[], str | None],
     def style_reference_analyse(bible_id: str, ref_id: str):
         call(get_reference, bible_id, ref_id)
         reference = call(start_analysis, bible_id, ref_id, fal_key=get_fal_key(), model=get_model(), backend=get_backend(),
-                             on_done=refresh_merge)
+                             on_done=after_analysis)
         return {"reference": _public(reference)}
 
     @api.get(base + "/{ref_id}/still")

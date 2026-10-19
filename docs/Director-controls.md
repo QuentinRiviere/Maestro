@@ -252,6 +252,16 @@ A reference needs no label or tags from the user: the synthesis names it
 `tags_auto`) until the user edits them, and a re-analysis refreshes only the
 automatic ones.
 
+After the analysis a second pass describes the first and last frame of up
+to `director_style_frames` shots (default 150, evenly sampled, credits left
+out; 0 = off) as the image prompt that would regenerate the frame (`prompt`,
+`shot_size`, `lighting`, `palette`, `mood`; sidecar `<file>.frames.json`,
+`GET .../{ref}/frames`, `POST .../{ref}/frames` to run it again, resumable).
+The Shots dialog shows them under each shot. Runs that use the references
+get a "REFERENCE IMAGE PROMPT STYLE" block after the staging grammar: up to
+6 of those prompts spread over shot sizes, so the image prompts come out in
+the same register (the image model's own family wrote them).
+
 Each reference has a `graphics` mode (`ignore`, the default, or `include`;
 a toggle in the bible panel, `graphics` on the upload form and in the PATCH
 body): with `ignore` the analyst leaves burned-in subtitles, captions, logos,

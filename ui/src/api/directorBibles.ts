@@ -137,6 +137,10 @@ export interface StyleReference {
   /** The analysis named the reference / chose its tags (until the user types their own). */
   label_auto?: boolean
   tags_auto?: boolean
+  frames_status?: StyleFramesStatus
+  frames_count?: number
+  frames_progress?: string
+  frames_error?: string
   stats: StyleReferenceStats | null
   described_shots: number
   grammar: StyleGrammar | null
@@ -164,6 +168,21 @@ export interface StyleReferenceShot {
   false_cut?: boolean
   credits?: boolean
 }
+
+/** A frame of a shot written as the image prompt that would regenerate it. */
+export interface StyleReferenceFrame {
+  index: number
+  position: 'first' | 'last'
+  t: number
+  prompt: string
+  shot_size?: string
+  measured_shot_size?: string
+  lighting?: string
+  palette?: string[]
+  mood?: string
+}
+
+export type StyleFramesStatus = 'idle' | 'queued' | 'running' | 'done' | 'failed'
 
 export interface StyleReferencePatch {
   label?: string
@@ -328,9 +347,16 @@ export const STYLE_REFERENCE_ACCEPT = '.mp4,.mov,.webm,.mkv,video/mp4,video/quic
 
 /** One reference with its shots (described ones fill in while the analysis runs). */
 export async function fetchStyleReference(bibleId: string, refId: string):
-  Promise<StyleReference & { shots: StyleReferenceShot[] }> {
-  return (await json<{ reference: StyleReference & { shots: StyleReferenceShot[] } }>(
+  Promise<StyleReference & { shots: StyleReferenceShot[]; frames: StyleReferenceFrame[] }> {
+  return (await json<{ reference: StyleReference & { shots: StyleReferenceShot[]; frames: StyleReferenceFrame[] } }>(
     await fetch(styleRefUrl(bibleId, refId)), 'Could not load the reference')).reference
+}
+
+/** Start (again) the reverse-prompt pass over the shots' first and last frames. */
+export async function startStyleReferenceFrames(bibleId: string, refId: string): Promise<StyleReference> {
+  return (await json<{ reference: StyleReference }>(
+    await fetch(`${styleRefUrl(bibleId, refId)}/frames`, { method: 'POST' }),
+    'Could not start the frame prompts')).reference
 }
 
 export const styleReferenceStillUrl = (bibleId: string, refId: string, seconds: number) =>
