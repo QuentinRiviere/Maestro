@@ -436,8 +436,9 @@ class RouteTests(unittest.TestCase):
         self.addCleanup(proxy.stop)
         self.base = f"/api/v1/director/bibles/{self.bible['id']}/style-references"
 
-    def fake_analyse(self, path, *, fal_key, model, on_progress, backend=None):
+    def fake_analyse(self, path, *, fal_key, model, on_progress, backend=None, graphics="ignore"):
         self.seen = (fal_key, model)
+        self.graphics = graphics
         on_progress("Measured", {"stats": {"asl_sec": 2.5, "shot_count": 2}})
         return {"stats": {"asl_sec": 2.5, "shot_count": 2, "cuts": [1.0], "shot_lengths": [1.0, 1.0]},
                 "shots": [{"index": 0, "shot_size": "close_up"}, {"index": 1}],
@@ -750,6 +751,56 @@ class ProxyTests(unittest.TestCase):
         dest = sr.make_proxy(source, os.path.join(self.tmp.name, "small.mp4"))
         facts = sr.probe(dest)
         self.assertEqual((facts["width"], facts["height"], facts["has_audio"]), (854, 480, True))
+
+
+
+class GraphicsTests(unittest.TestCase):
+    def analyse(self, graphics, shots_json):
+        ask = FakeAsk([(shots_json, 0.0), (shots_answer(2), 0.0), (grammar_answer(graphics="Captions in the lower third."), 0.0)])
+        with patch.object(sr, "encode_chunk", lambda src, a, b, dest, **kw: dest), \
+                patch.object(sr, "data_uri", lambda path: "data:video/mp4;base64,AAAA"):
+            result = sr.analyse_reference("video.mp4", fal_key="key", ask=ask, http=object(), sleep=lambda s: None,
+                                          local=fake_local([30.0, 50.0, 80.0], 100.0), graphics=graphics)
+        return ask, result
+
+    def test_ignore_tells_the_analyst_to_leave_graphics_out(self):
+        answer = json.dumps({"shots": [{"shot": 1, "shot_size": "wide", "graphics": "channel logo"},
+                                       {"shot": 2, "shot_size": "close_up", "graphics": "none"}]})
+        ask, result = self.analyse("ignore", answer)
+        self.assertIn("are NOT part of the staging", ask.calls[0]["system"])
+        self.assertNotIn("graphics column", ask.calls[-1]["system"])
+        self.assertNotIn("| graphics", ask.calls[-1]["prompt"])
+        self.assertEqual(result["shots"][0].get("graphics"), "channel logo")  # described, kept for the user
+        self.assertNotIn("graphics", result["shots"][1])
+
+    def test_include_adds_the_graphics_column_and_section(self):
+        answer = json.dumps({"shots": [{"shot": 1, "shot_size": "wide", "graphics": "caption top left"},
+                                       {"shot": 2, "shot_size": "close_up"}]})
+        ask, result = self.analyse("include", answer)
+        self.assertIn("On-screen graphics are part of the grammar", ask.calls[0]["system"])
+        self.assertIn("graphics column", ask.calls[-1]["system"])
+        self.assertIn("| graphics", ask.calls[-1]["prompt"])
+        self.assertIn("| caption top left", ask.calls[-1]["prompt"])
+        self.assertEqual(result["grammar"]["graphics"], "Captions in the lower third.")
+        block = sr.reference_block({"label": "Vlog", "grammar": result["grammar"], "stats": None, "scene_tags": []},
+                                   3000)
+        self.assertIn("- Graphics: Captions in the lower third.", block)
+
+    def test_parse_graphics_and_the_field_on_the_reference(self):
+        self.assertEqual([sr.parse_graphics(v) for v in (True, False, "include", "IGNORE", "yes", "", None)],
+                         ["include", "ignore", "include", "ignore", "include", "ignore", "ignore"])
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        with patch.object(bibles, "BIBLES_DIR", Path(tmp.name) / "bibles"):
+            bid = bibles.save_bible({"name": "Seoul Nights"})["id"]
+            folder = bibles._folder(bid)
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / "styleref_1.mp4").write_bytes(b"video")
+            reference = sr.add_reference(bid, str(folder / "styleref_1.mp4"), graphics="include")
+            self.assertEqual(reference["graphics"], "include")
+            self.assertEqual(sr.get_reference(bid, reference["id"])["graphics"], "include")
+            updated = sr.update_reference(bid, reference["id"], {"graphics": False})
+            self.assertEqual(updated["graphics"], "ignore")
 
 
 if __name__ == "__main__":

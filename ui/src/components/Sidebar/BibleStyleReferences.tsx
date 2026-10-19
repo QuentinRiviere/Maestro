@@ -77,6 +77,11 @@ function ReferenceCard({ bibleId, reference, ask, onChange, onDeleted }: {
           <input type="checkbox" className="w-3 h-3" checked={reference.enabled} disabled={busy}
             onChange={e => void patch({ enabled: e.target.checked })} /> Use
         </label>
+        <label className="shrink-0 flex items-center gap-1 text-[10px] text-text-secondary"
+          title="Read captions, subtitles, logos and other on-screen graphics as part of the staging (re-analyse to apply); off, they are left out">
+          <input type="checkbox" className="w-3 h-3" checked={reference.graphics === 'include'} disabled={busy}
+            onChange={e => void patch({ graphics: e.target.checked ? 'include' : 'ignore' })} /> Graphics
+        </label>
         <button className={button} disabled={busy || analysing} title="Analyse the video again (replaces the grammar and its rules)"
           onClick={() => ask({
             title: `Analyse "${reference.label}" again?`, confirmLabel: 'Re-analyse',
@@ -181,6 +186,7 @@ export function BibleStyleReferences({ bibleId, ask }: { bibleId: string; ask: A
   const [file, setFile] = useState<File | null>(null)
   const [newLabel, setNewLabel] = useState('')
   const [newTags, setNewTags] = useState('')
+  const [newGraphics, setNewGraphics] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const picker = useRef<HTMLInputElement>(null)
@@ -199,15 +205,17 @@ export function BibleStyleReferences({ bibleId, ask }: { bibleId: string; ask: A
 
   const upload = async () => {
     if (!file) return
-    if (file.size > STYLE_REFERENCE_MAX_BYTES) { setError('Video too large (max 500 MB)'); return }
+    if (file.size > STYLE_REFERENCE_MAX_BYTES) { setError('Video too large (max 4 GB)'); return }
     setUploading(true)
     setError(null)
     try {
-      const created = await uploadStyleReference(bibleId, file, newLabel.trim(), parseSceneTags(newTags))
+      const created = await uploadStyleReference(bibleId, file, newLabel.trim(), parseSceneTags(newTags),
+        newGraphics ? 'include' : 'ignore')
       setReferences(list => [...list.filter(r => r.id !== created.id), created])
       setFile(null)
       setNewLabel('')
       setNewTags('')
+      setNewGraphics(false)
       if (picker.current) picker.current.value = ''
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Upload failed')
@@ -232,7 +240,7 @@ export function BibleStyleReferences({ bibleId, ask }: { bibleId: string; ask: A
             <Film size={10} /> {file ? 'Change video' : 'Choose a video'}
           </button>
           <span className="min-w-0 truncate text-[10px] text-text-muted">
-            {file ? `${file.name} · ${(file.size / 1024 / 1024).toFixed(1)} MB` : 'MP4, MOV, WebM or MKV, up to 500 MB'}
+            {file ? `${file.name} · ${(file.size / 1024 / 1024).toFixed(1)} MB` : 'MP4, MOV, WebM or MKV, up to 4 GB (reduced to 480p here)'}
           </span>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
@@ -240,6 +248,11 @@ export function BibleStyleReferences({ bibleId, ask }: { bibleId: string; ask: A
           <input className={input} placeholder="Scene tags: argument, romance…" value={newTags}
             onChange={e => setNewTags(e.target.value)} aria-label="New reference scene tags" />
         </div>
+        <label className="flex items-center gap-1 text-[10px] text-text-secondary"
+          title="Read captions, subtitles, logos and other on-screen graphics as part of the staging; off, the analyst leaves them out">
+          <input type="checkbox" className="w-3 h-3" checked={newGraphics} onChange={e => setNewGraphics(e.target.checked)}
+            aria-label="New reference graphics" /> Take on-screen graphics into account
+        </label>
         <button onClick={() => void upload()} disabled={!file || uploading}
           className="px-3 py-1 rounded bg-accent-blue text-white text-[11px] disabled:opacity-40 flex items-center gap-1">
           {uploading ? <Loader2 size={10} className="animate-spin" /> : <Upload size={10} />} Upload and analyse

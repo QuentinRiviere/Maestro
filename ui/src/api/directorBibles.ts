@@ -83,6 +83,8 @@ export interface DirectorBible {
 }
 
 export type StyleReferenceStatus = 'queued' | 'analysing' | 'done' | 'failed'
+/** Whether the analyst reads captions, logos and other on-screen graphics as part of the staging. */
+export type StyleReferenceGraphics = 'ignore' | 'include'
 
 export interface StyleReferenceStats {
   duration_sec: number
@@ -131,6 +133,7 @@ export interface StyleReference {
   progress: string
   enabled: boolean
   scene_tags: string[]
+  graphics: StyleReferenceGraphics
   stats: StyleReferenceStats | null
   described_shots: number
   grammar: StyleGrammar | null
@@ -143,6 +146,7 @@ export interface StyleReferencePatch {
   label?: string
   enabled?: boolean
   scene_tags?: string[]
+  graphics?: StyleReferenceGraphics
   rules?: string[]
 }
 
@@ -296,7 +300,7 @@ const styleRefUrl = (bibleId: string, refId = '') =>
   `${BASE}/api/v1/director/bibles/${encodeURIComponent(bibleId)}/style-references`
   + (refId ? `/${encodeURIComponent(refId)}` : '')
 
-export const STYLE_REFERENCE_MAX_BYTES = 500 * 1024 * 1024
+export const STYLE_REFERENCE_MAX_BYTES = 4 * 1024 * 1024 * 1024
 export const STYLE_REFERENCE_ACCEPT = '.mp4,.mov,.webm,.mkv,video/mp4,video/quicktime,video/webm,video/x-matroska'
 
 export async function fetchStyleReferences(bibleId: string): Promise<StyleReference[]> {
@@ -306,11 +310,12 @@ export async function fetchStyleReferences(bibleId: string): Promise<StyleRefere
 
 /** Upload a reference video; its analysis starts in the background. */
 export async function uploadStyleReference(bibleId: string, file: File, label: string,
-  sceneTags: string[]): Promise<StyleReference> {
+  sceneTags: string[], graphics: StyleReferenceGraphics = 'ignore'): Promise<StyleReference> {
   const form = new FormData()
   form.append('file', file)
   form.append('label', label)
   form.append('scene_tags', sceneTags.join(','))
+  form.append('graphics', graphics)
   return (await json<{ reference: StyleReference }>(await fetch(styleRefUrl(bibleId), { method: 'POST', body: form }),
     'Could not upload the video')).reference
 }

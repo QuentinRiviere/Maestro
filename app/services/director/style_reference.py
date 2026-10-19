@@ -103,6 +103,28 @@ MAX_REFERENCE_CHARS = 1500
 MAX_BLOCK_CHARS = 4000
 CHOICE_AUTO = "auto"
 CHOICE_OFF = "off"
+# On-screen graphics (captions, subtitles, logos, lower thirds, text): left out
+# of the staging, or read as part of the grammar.
+GRAPHICS_MODES = bibles.STYLE_REFERENCE_GRAPHICS
+GRAPHICS_IGNORE, GRAPHICS_INCLUDE = GRAPHICS_MODES
+GRAPHICS_NOTES = {
+    GRAPHICS_IGNORE: (
+        "Burned-in subtitles, captions, broadcaster logos, watermarks, lower thirds and other on-screen graphics "
+        "are NOT part of the staging: never describe them, never let them change the subject, shot_size or "
+        "framing you report, and never mark a shot as credits because a subtitle, caption or channel logo sits on "
+        "it; a shot is credits only when the picture itself is a title sequence, a credit roll, a logo animation, "
+        "a recap or a preview."),
+    GRAPHICS_INCLUDE: (
+        "On-screen graphics are part of the grammar: for every shot set \"graphics\" to a short description of the "
+        "captions, subtitles, lower thirds, logos, stickers, text animations or other graphic elements in frame "
+        "(what they say or show, where they sit, how they move), or \"none\"."),
+}
+GRAPHICS_SYNTHESIS = {
+    GRAPHICS_IGNORE: "",
+    GRAPHICS_INCLUDE: ("\nThe shot breakdown has a graphics column: also cover on-screen graphics (captions, subtitles, "
+                       "lower thirds, logos, stickers, text animations): when they appear, what they do, how they "
+                       "sit and move, and add rules about them. Put that in \"graphics\" (short) in the JSON."),
+}
 
 SHOT_SIZES = ("extreme_wide", "wide", "medium", "medium_close_up", "close_up", "extreme_close_up", "insert",
               "ots", "pov", "two_shot")
@@ -138,7 +160,7 @@ Return ONLY a JSON object, no prose, no markdown:
   "movement": "{'|'.join(MOVEMENTS)}", "subject": "who or what the frame shows, generic",
   "action": "what happens, short", "cut_reason": "{'|'.join(CUT_REASONS)}",
   "transition": "{'|'.join(TRANSITIONS)}", "lighting": "light and colour, short",
-  "audio": "{'|'.join(AUDIO_KINDS)}", "false_cut": false, "credits": false}}]}}"""
+  "audio": "{'|'.join(AUDIO_KINDS)}", "false_cut": false, "credits": false, "graphics": "none or short"}}]}}"""
 
 MERGE_SYSTEM_PROMPT = """You are a senior editor consolidating the staging grammars of SEVERAL reference videos
 into ONE grammar for an AI storyboard planner that will direct NEW productions with their own story and cast.
@@ -566,6 +588,8 @@ def parse_chunk_shots(text: str, chunk: Mapping[str, Any]) -> dict[int, dict]:
             "audio": _enum(item.get("audio"), AUDIO_KINDS, "mixed"),
             **({"false_cut": True} if item.get("false_cut") is True else {}),
             **({"credits": True} if item.get("credits") is True else {}),
+            **({"graphics": _short(item.get("graphics"), 160)} if _short(item.get("graphics"), 160)
+               and _short(item.get("graphics"), 160).lower() != "none" else {}),
         }
     if not records:
         raise StyleReferenceError("The model's shots match none of the listed shots")
@@ -695,6 +719,7 @@ def parse_grammar(text: str, *, max_rules: int = 10, scene_notes: bool = False) 
         "patterns": _text_list(raw.get("patterns"), 8),
         **{key: _short(raw.get(key), 400) for key in ("scene_openings", "scene_closings", "dialogue_coverage",
                                                       "camera_movement", "lighting_color", "music_silence")},
+        **({"graphics": _short(raw.get("graphics"), 400)} if _short(raw.get("graphics"), 400) else {}),
         "rules": rules,
         **({"scene_notes": notes} if notes else {}),
     }
@@ -705,21 +730,24 @@ def parse_grammar(text: str, *, max_rules: int = 10, scene_notes: bool = False) 
 # ── model pass ─────────────────────────────────────────────────────────────
 
 
-def synthesis_prompt(stats: Mapping[str, Any], shots: Sequence[Mapping[str, Any]]) -> str:
+def synthesis_prompt(stats: Mapping[str, Any], shots: Sequence[Mapping[str, Any]],
+                     graphics: str = GRAPHICS_IGNORE) -> str:
     facts = {key: stats.get(key) for key in ("duration_sec", "shot_count", "asl_sec", "median_sec", "min_sec",
                                              "max_sec", "cuts_per_minute", "distribution", "pacing", "shot_mix")}
     described = [s for s in shots if s.get("shot_size")]
     if len(described) > MAX_SYNTHESIS_SHOTS:
         step = len(described) / MAX_SYNTHESIS_SHOTS
         described = [described[int(i * step)] for i in range(MAX_SYNTHESIS_SHOTS)]
+    with_graphics = graphics == GRAPHICS_INCLUDE
     lines = [" | ".join([f"{s['index'] + 1}", f"{s['start']:.1f}s", f"{s['duration']:.1f}s", s["shot_size"],
                          s.get("angle", ""), s.get("movement", ""), s.get("cut_reason", ""),
                          s.get("transition", ""), s.get("audio", ""),
-                         _short(f"{s.get('subject', '')}: {s.get('action', '')}", 140)])
+                         _short(f"{s.get('subject', '')}: {s.get('action', '')}", 140)]
+                        + ([_short(s.get("graphics") or "none", 100)] if with_graphics else []))
              for s in described]
     return ("Measured editing statistics (exact):\n" + json.dumps(facts, ensure_ascii=False)
             + "\n\nShot breakdown (number | start | length | size | angle | movement | cut reason | transition | "
-              "sound | subject: action):\n" + "\n".join(lines))
+              "sound | subject: action" + (" | graphics" if with_graphics else "") + "):\n" + "\n".join(lines))
 
 
 def _ask_text(http: Any, fal_key: str, model: str, system: str, prompt: str, ask: Callable[..., tuple[str, Any]],
@@ -761,8 +789,12 @@ def analyse_reference(
     on_progress: Callable[[str, dict], None] = lambda message, partial: None,
     local: Callable[[str], dict] = local_analysis,
     backend: Any = None,
+    graphics: str = GRAPHICS_IGNORE,
 ) -> dict:
     """Both passes on one video: {stats, shots, grammar, summary, cost_usd, model, chunk_errors}.
+
+    ``graphics`` (GRAPHICS_MODES) says whether captions, logos and other
+    on-screen graphics are left out of the staging or read into the grammar.
 
     ``on_progress(message, partial)`` gets the local stats as soon as they
     exist, so they survive a failing model pass. Raises StyleReferenceError
@@ -775,6 +807,9 @@ def analyse_reference(
     shots = [dict(s) for s in shot_spans(stats["cuts"], stats["duration_sec"])]
     on_progress(f"Measured {stats['shot_count']} shots", {"stats": stats})
     ask, fal_key, model, local_backend = _resolve_backend(backend, fal_key, model, ask)
+    graphics = graphics if graphics in GRAPHICS_MODES else GRAPHICS_IGNORE
+    shot_system = SHOT_SYSTEM_PROMPT + "\n" + GRAPHICS_NOTES[graphics]
+    synthesis_system = SYNTHESIS_SYSTEM_PROMPT + GRAPHICS_SYNTHESIS[graphics]
     chunks = plan_local_chunks(shots) if local_backend else plan_chunks(shots)
     cost = 0.0
     errors: list[str] = []
@@ -801,7 +836,7 @@ def analyse_reference(
                         media = [data_uri(clip)]
                     last: Exception | None = None
                     for _ in range(CHUNK_ATTEMPTS):
-                        text, call_cost = ask(http, fal_key, model, SHOT_SYSTEM_PROMPT, prompt, media, sleep,
+                        text, call_cost = ask(http, fal_key, model, shot_system, prompt, media, sleep,
                                               max_tokens=12000)
                         cost += float(call_cost or 0)
                         try:
@@ -827,10 +862,10 @@ def analyse_reference(
             on_progress(f"Left out {trimmed['credits_shots']} credits shots ({trimmed['credits_sec']:.0f} s)",
                         {"stats": stats})
         on_progress("Writing the staging grammar", {"stats": stats})
-        prompt = synthesis_prompt(stats, kept)
+        prompt = synthesis_prompt(stats, kept, graphics)
         last_error: Exception | None = None
         for _ in range(SYNTHESIS_ATTEMPTS):
-            text, call_cost = _ask_text(http, fal_key, model, SYNTHESIS_SYSTEM_PROMPT, prompt, ask, sleep)
+            text, call_cost = _ask_text(http, fal_key, model, synthesis_system, prompt, ask, sleep)
             cost += float(call_cost or 0)
             try:
                 grammar, summary = parse_grammar(text)
@@ -900,7 +935,7 @@ def reference_block(reference: Mapping[str, Any], limit: int = MAX_REFERENCE_CHA
         optional.append("- Shot mix: " + _mix_text(grammar["shot_mix"]) + ".")
     for key, title in (("dialogue_coverage", "Dialogue"), ("scene_openings", "Openings"),
                        ("scene_closings", "Closings"), ("camera_movement", "Camera"),
-                       ("music_silence", "Sound"), ("lighting_color", "Light")):
+                       ("music_silence", "Sound"), ("lighting_color", "Light"), ("graphics", "Graphics")):
         if grammar.get(key):
             optional.append(f"- {title}: {_short(grammar[key], 180)}")
     optional += [f"- Pattern: {_short(p, 180)}" for p in grammar.get("patterns") or []]
@@ -1058,7 +1093,7 @@ def parse_tags(value: Any) -> list[str]:
 
 
 def add_reference(bible_id: str, stored_file: str, *, source_filename: str = "", label: str = "",
-                  scene_tags: Any = None) -> dict:
+                  scene_tags: Any = None, graphics: Any = GRAPHICS_IGNORE) -> dict:
     """Register a video already written into the bible's folder; returns the new reference."""
     name = os.path.basename(stored_file)
 
@@ -1072,7 +1107,7 @@ def add_reference(bible_id: str, stored_file: str, *, source_filename: str = "",
             "file": name, "source_filename": _short(source_filename, 160), "created_at": _now(),
             "updated_at": _now(), "status": "failed", "error": "Not analysed yet", "progress": "",
             "enabled": True, "scene_tags": parse_tags(scene_tags), "stats": None, "described_shots": 0,
-            "grammar": None,
+            "graphics": parse_graphics(graphics), "grammar": None,
             "summary": "", "cost_usd": None, "model": "",
         }
         references.append(reference)
@@ -1080,12 +1115,27 @@ def add_reference(bible_id: str, stored_file: str, *, source_filename: str = "",
     return bibles._mutate(bible_id, change)[1]
 
 
+def parse_graphics(value: Any) -> str:
+    """A GRAPHICS_MODES value from the API (a mode name, or a boolean meaning include)."""
+    if isinstance(value, bool):
+        return GRAPHICS_INCLUDE if value else GRAPHICS_IGNORE
+    text = str(value or "").strip().lower()
+    if text in GRAPHICS_MODES:
+        return text
+    return GRAPHICS_INCLUDE if text in ("true", "1", "yes", "on") else GRAPHICS_IGNORE
+
+
 def update_reference(bible_id: str, ref_id: str, patch: Mapping[str, Any]) -> dict:
-    """Edit what the user owns: label, enabled, scene_tags and the grammar rules (a list or one per line)."""
+    """Edit what the user owns: label, enabled, scene_tags, graphics and the grammar rules (a list or one per line).
+
+    A new ``graphics`` mode applies to the next analysis.
+    """
     def change(bible: dict) -> dict:
         reference = find_reference(bible, ref_id)
         if "label" in patch:
             reference["label"] = _short(patch.get("label"), 80) or reference["label"]
+        if "graphics" in patch:
+            reference["graphics"] = parse_graphics(patch.get("graphics"))
         if "enabled" in patch:
             reference["enabled"] = bool(patch.get("enabled"))
         if "scene_tags" in patch:
@@ -1319,7 +1369,8 @@ def _run_analysis(bible_id: str, ref_id: str, fal_key: str | None, model: str,
                 _set(bible_id, ref_id, progress=_short(message, 200), **partial)
 
             try:
-                result = analyse(str(path), fal_key=fal_key, model=model, on_progress=progress, backend=backend)
+                result = analyse(str(path), fal_key=fal_key, model=model, on_progress=progress, backend=backend,
+                                 graphics=reference.get("graphics") or GRAPHICS_IGNORE)
             except Exception as error:  # noqa: BLE001 - recorded on the reference
                 print(f"[Style reference] {bible_id}/{ref_id}: {error}")
                 _set(bible_id, ref_id, status="failed", error=_short(error, 400), progress="")
@@ -1400,7 +1451,8 @@ def register_routes(api: Any, *, get_fal_key: Callable[[], str | None],
 
     @api.post(base)
     async def style_reference_upload(bible_id: str, request: Request, file: UploadFile = File(...),
-                                     label: str = Form(""), scene_tags: str = Form(""), analyse: str = Form("true")):
+                                     label: str = Form(""), scene_tags: str = Form(""), analyse: str = Form("true"),
+                                     graphics: str = Form(GRAPHICS_IGNORE)):
         length = request.headers.get("content-length")
         if length and length.isdigit() and int(length) > MAX_UPLOAD_BYTES + 1024 * 1024:
             raise HTTPException(status_code=413, detail="Video too large (max 4 GB)")
@@ -1422,7 +1474,7 @@ def register_routes(api: Any, *, get_fal_key: Callable[[], str | None],
             if not written:
                 raise HTTPException(status_code=400, detail="The file is empty")
             reference = call(add_reference, bible_id, str(target), source_filename=file.filename or "",
-                             label=label, scene_tags=scene_tags)
+                             label=label, scene_tags=scene_tags, graphics=graphics)
         except BaseException:
             target.unlink(missing_ok=True)
             raise

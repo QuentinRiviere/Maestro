@@ -68,6 +68,7 @@ IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
 # see ``style_reference``. They are stored next to the bible's images.
 VIDEO_SUFFIXES = (".mp4", ".mov", ".webm", ".mkv")
 MAX_STYLE_REFERENCES = 10
+STYLE_REFERENCE_GRAPHICS = ("ignore", "include")
 STYLE_REFERENCE_STATES = ("queued", "analysing", "done", "failed")
 # Analyses owned by this process. A reference still queued or analysing that
 # is not in it was cut by a restart.
@@ -262,6 +263,8 @@ def _style_references(raw: Any, folder: Path) -> list[dict]:
             "summary": str(item.get("summary") or "")[:12000],
             # What was uploaded before the 480p proxy replaced it (style_reference.ensure_proxy).
             "source": copy.deepcopy(item["source"]) if isinstance(item.get("source"), dict) else None,
+            # Whether the analyst reads captions, logos and other on-screen graphics as part of the staging.
+            "graphics": item.get("graphics") if item.get("graphics") in STYLE_REFERENCE_GRAPHICS else "ignore",
             "cost_usd": cost if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None,
             "model": _text(item.get("model"), 120),
         })

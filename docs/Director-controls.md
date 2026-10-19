@@ -246,6 +246,14 @@ An upload (up to 4 GB) is reduced to a 480p H.264 proxy (mono sound kept)
 before anything reads it, and the proxy replaces the upload in the bible; the
 upload's dimensions and size stay on the reference as `source`.
 
+Each reference has a `graphics` mode (`ignore`, the default, or `include`;
+a toggle in the bible panel, `graphics` on the upload form and in the PATCH
+body): with `ignore` the analyst leaves burned-in subtitles, captions, logos,
+watermarks and lower thirds out of the staging and never counts them as
+credits; with `include` every shot gets a `graphics` description and the
+grammar a `graphics` section with rules about on-screen text. Changing the
+mode applies to the next analysis.
+
 A bible keeps up to 10 references. With two or more enabled, analysed
 references the controller consolidates them into one grammar on the bible
 (`style_grammar`, `GET .../style-references/merged`, `POST .../merge` to
