@@ -134,6 +134,9 @@ export interface StyleReference {
   enabled: boolean
   scene_tags: string[]
   graphics: StyleReferenceGraphics
+  /** The analysis named the reference / chose its tags (until the user types their own). */
+  label_auto?: boolean
+  tags_auto?: boolean
   stats: StyleReferenceStats | null
   described_shots: number
   grammar: StyleGrammar | null

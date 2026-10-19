@@ -246,6 +246,12 @@ An upload (up to 4 GB) is reduced to a 480p H.264 proxy (mono sound kept)
 before anything reads it, and the proxy replaces the upload in the bible; the
 upload's dimensions and size stay on the reference as `source`.
 
+A reference needs no label or tags from the user: the synthesis names it
+(`label`, 3-6 generic words; a link keeps its video title) and picks 2-5
+`scene_tags` of the moods it guides best. Both stay automatic (`label_auto`,
+`tags_auto`) until the user edits them, and a re-analysis refreshes only the
+automatic ones.
+
 Each reference has a `graphics` mode (`ignore`, the default, or `include`;
 a toggle in the bible panel, `graphics` on the upload form and in the PATCH
 body): with `ignore` the analyst leaves burned-in subtitles, captions, logos,

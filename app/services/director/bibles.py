@@ -265,6 +265,9 @@ def _style_references(raw: Any, folder: Path) -> list[dict]:
             "source": copy.deepcopy(item["source"]) if isinstance(item.get("source"), dict) else None,
             # Whether the analyst reads captions, logos and other on-screen graphics as part of the staging.
             "graphics": item.get("graphics") if item.get("graphics") in STYLE_REFERENCE_GRAPHICS else "ignore",
+            # Label and tags the analysis may set (true until the user types their own).
+            "label_auto": item.get("label_auto") is True,
+            "tags_auto": item.get("tags_auto") is True,
             "cost_usd": cost if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None,
             "model": _text(item.get("model"), 120),
         })

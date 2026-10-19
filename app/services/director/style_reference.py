@@ -188,6 +188,10 @@ statistics (exact) and a shot-by-shot breakdown. Extract only TRANSFERABLE PRINC
 and rhythm. Never mention the reference's specific content, characters, names, places, plot or dialogue; write
 "a character", "the listener", "the speaker", "an object".
 
+Also name the reference: "label", 3-6 generic words for the kind of scene it is (a café confession, a street
+chase, a family dinner argument), and "scene_tags", 2-5 one-word tags of the moods or scene kinds it guides best
+(confession, argument, chase, meal, breakup, reunion, comedy, tension...).
+
 Cover: rhythm (target average shot length and how pace changes with emotion or tension), shot-type mix, recurring
 patterns (shot/reverse-shot, a reaction after a line, body-part inserts such as hands or legs on entrances, push-ins
 on realisations...), how scenes open and close, how dialogue is covered, camera movement habits, lighting and
@@ -195,7 +199,8 @@ colour, use of music and silence. Then write 5 to 10 concrete, imperative rules 
 (numbers where possible: durations, proportions, orders of shots).
 
 Return ONLY a JSON object, no prose outside it:
-{"rhythm": {"target_asl_sec": number, "pace_with_emotion": "how pace changes with emotion and tension",
+{"label": "3-6 words", "scene_tags": ["2-5 one-word tags"],
+ "rhythm": {"target_asl_sec": number, "pace_with_emotion": "how pace changes with emotion and tension",
             "notes": "short"},
  "shot_mix": {"close_up": percent, "medium": percent, "...": percent},
  "patterns": ["recurring pattern, short"],
@@ -720,6 +725,8 @@ def parse_grammar(text: str, *, max_rules: int = 10, scene_notes: bool = False) 
         **{key: _short(raw.get(key), 400) for key in ("scene_openings", "scene_closings", "dialogue_coverage",
                                                       "camera_movement", "lighting_color", "music_silence")},
         **({"graphics": _short(raw.get("graphics"), 400)} if _short(raw.get("graphics"), 400) else {}),
+        **({"suggested_label": _short(raw.get("label"), 80)} if _short(raw.get("label"), 80) else {}),
+        **({"suggested_tags": parse_tags(raw.get("scene_tags"))} if parse_tags(raw.get("scene_tags")) else {}),
         "rules": rules,
         **({"scene_notes": notes} if notes else {}),
     }
@@ -1108,6 +1115,8 @@ def add_reference(bible_id: str, stored_file: str, *, source_filename: str = "",
             "updated_at": _now(), "status": "failed", "error": "Not analysed yet", "progress": "",
             "enabled": True, "scene_tags": parse_tags(scene_tags), "stats": None, "described_shots": 0,
             "graphics": parse_graphics(graphics), "grammar": None,
+            # Without a label or tags of the user's, the analysis names the reference.
+            "label_auto": not _short(label, 80), "tags_auto": not parse_tags(scene_tags),
             "summary": "", "cost_usd": None, "model": "",
         }
         references.append(reference)
@@ -1134,12 +1143,14 @@ def update_reference(bible_id: str, ref_id: str, patch: Mapping[str, Any]) -> di
         reference = find_reference(bible, ref_id)
         if "label" in patch:
             reference["label"] = _short(patch.get("label"), 80) or reference["label"]
+            reference["label_auto"] = False
         if "graphics" in patch:
             reference["graphics"] = parse_graphics(patch.get("graphics"))
         if "enabled" in patch:
             reference["enabled"] = bool(patch.get("enabled"))
         if "scene_tags" in patch:
             reference["scene_tags"] = parse_tags(patch.get("scene_tags"))
+            reference["tags_auto"] = False
         if "rules" in patch:
             if not isinstance(reference.get("grammar"), dict):
                 raise BibleError("Analyse the reference before editing its rules")
@@ -1457,6 +1468,8 @@ def _run_fetch(bible_id: str, fetch: dict, fetcher: tuple[str, str], tags: list[
             title = _short(job.get("title"), 80)
             reference = add_reference(bible_id, str(target), source_filename=f"{title or job_id}.mp4",
                                       label=fetch.get("label") or title, scene_tags=tags, graphics=graphics)
+            if not fetch.get("label") and title:
+                _set(bible_id, reference["id"], label_auto=False)  # the video's title stays the label
             try:
                 http.delete(f"{base}/api/fetch/{job_id}", headers=headers)
             except Exception:  # noqa: BLE001 - the service cleans up on its own
@@ -1541,6 +1554,11 @@ def _run_analysis(bible_id: str, ref_id: str, fal_key: str | None, model: str,
             errors = result.pop("chunk_errors", []) or []
             shots = result.pop("shots", []) or []
             save_shots(bible_id, reference, shots)
+            grammar = result.get("grammar") or {}
+            if reference.get("label_auto") and grammar.get("suggested_label"):
+                result["label"] = grammar["suggested_label"]
+            if reference.get("tags_auto") and grammar.get("suggested_tags"):
+                result["scene_tags"] = grammar["suggested_tags"]
             _set(bible_id, ref_id, status="done", progress="", described_shots=sum(
                 1 for s in shots if s.get("shot_size") and not s.get("credits")),
                  error=("; ".join(errors))[:400] if errors else "", **result)

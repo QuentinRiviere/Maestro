@@ -140,7 +140,7 @@ function ReferenceCard({ bibleId, reference, ask, onChange, onDeleted }: {
         </div>
       </div>
 
-      <label className="block"><span className={label}>Scene tags (the kind of scenes it guides; empty = every scene)</span>
+      <label className="block"><span className={label}>Scene tags (the kind of scenes it guides{reference.tags_auto ? ', set by the analysis' : ''}; empty = every scene)</span>
         <input className={input} value={tagsText} placeholder="argument, romance, tension" aria-label="Scene tags"
           onChange={e => setTagsText(e.target.value)}
           onBlur={() => {
@@ -185,8 +185,8 @@ export function BibleStyleReferences({ bibleId, ask }: { bibleId: string; ask: A
   const [references, setReferences] = useState<StyleReference[]>([])
   const [loaded, setLoaded] = useState(false)
   const [file, setFile] = useState<File | null>(null)
-  const [newLabel, setNewLabel] = useState('')
-  const [newTags, setNewTags] = useState('')
+  const newLabel = ''
+  const newTags = ''
   const [newGraphics, setNewGraphics] = useState(false)
   const [newUrl, setNewUrl] = useState('')
   const [fetches, setFetches] = useState<StyleReferenceFetch[]>([])
@@ -223,8 +223,6 @@ export function BibleStyleReferences({ bibleId, ask }: { bibleId: string; ask: A
       const ids = new Set(queued.map(f => f.id))
       setFetches(list => [...list.filter(f => !ids.has(f.id)), ...queued])
       setNewUrl('')
-      setNewLabel('')
-      setNewTags('')
       setNewGraphics(false)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not fetch the link')
@@ -243,8 +241,6 @@ export function BibleStyleReferences({ bibleId, ask }: { bibleId: string; ask: A
         newGraphics ? 'include' : 'ignore')
       setReferences(list => [...list.filter(r => r.id !== created.id), created])
       setFile(null)
-      setNewLabel('')
-      setNewTags('')
       setNewGraphics(false)
       if (picker.current) picker.current.value = ''
     } catch (e) {
@@ -258,25 +254,21 @@ export function BibleStyleReferences({ bibleId, ask }: { bibleId: string; ask: A
   return (
     <div className="space-y-2.5 max-w-4xl">
       <p className="text-[10px] text-text-secondary leading-relaxed">
-        Upload a scene whose staging, editing and rhythm this series should follow. Its cuts are measured exactly here;
-        the video model then describes every shot and writes transferable rules (never the reference's story or
-        characters). Enabled references guide the storyboard of every project made from this bible.
+        Upload a scene (or paste links) whose staging, editing and rhythm this series should follow. Its cuts are
+        measured exactly here; the video model then describes every shot, writes transferable rules (never the
+        reference's story or characters) and names the reference and the kinds of scenes it guides. Enabled
+        references guide the storyboard of every project made from this bible.
       </p>
       <div className="rounded-lg border border-dashed border-border p-2.5 space-y-1.5">
         <div className="flex flex-wrap items-center gap-2">
           <input ref={picker} type="file" accept={STYLE_REFERENCE_ACCEPT} className="hidden" aria-label="Reference video"
-            onChange={e => { const chosen = e.target.files?.[0] ?? null; setFile(chosen); if (chosen && !newLabel) setNewLabel(chosen.name.replace(/\.[^.]+$/, '')) }} />
+            onChange={e => { const chosen = e.target.files?.[0] ?? null; setFile(chosen);  }} />
           <button className={button} onClick={() => picker.current?.click()} disabled={uploading}>
             <Film size={10} /> {file ? 'Change video' : 'Choose a video'}
           </button>
           <span className="min-w-0 truncate text-[10px] text-text-muted">
             {file ? `${file.name} · ${(file.size / 1024 / 1024).toFixed(1)} MB` : 'MP4, MOV, WebM or MKV, up to 4 GB (reduced to 480p here)'}
           </span>
-        </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-          <input className={input} placeholder="Label" value={newLabel} onChange={e => setNewLabel(e.target.value)} aria-label="New reference label" />
-          <input className={input} placeholder="Scene tags: argument, romance…" value={newTags}
-            onChange={e => setNewTags(e.target.value)} aria-label="New reference scene tags" />
         </div>
         <label className="flex items-center gap-1 text-[10px] text-text-secondary"
           title="Read captions, subtitles, logos and other on-screen graphics as part of the staging; off, the analyst leaves them out">

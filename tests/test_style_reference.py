@@ -935,5 +935,55 @@ class FetchTests(unittest.TestCase):
                          ["https://a.test/1", "https://b.test/2", "https://c.test/3"])
 
 
+
+class AutoNamingTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        patcher = patch.object(bibles, "BIBLES_DIR", Path(self.tmp.name) / "bibles")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.bid = bibles.save_bible({"name": "Seoul Nights"})["id"]
+        self.folder = bibles._folder(self.bid)
+        self.folder.mkdir(parents=True, exist_ok=True)
+
+    def add(self, name, **kw):
+        (self.folder / name).write_bytes(b"video")
+        return sr.add_reference(self.bid, str(self.folder / name), source_filename=name, **kw)
+
+    @staticmethod
+    def fake_analyse(path, *, fal_key, model, on_progress, backend=None, graphics="ignore"):
+        grammar, summary = sr.parse_grammar(grammar_answer(label="A café confession", scene_tags=["Confession", "romance"]))
+        return {"stats": {"asl_sec": 2.5, "shot_count": 2, "cuts": [1.0], "shot_lengths": [1.0, 1.0]},
+                "shots": [{"index": 0, "shot_size": "close_up"}, {"index": 1, "shot_size": "medium"}],
+                "grammar": grammar, "summary": summary, "cost_usd": 0.0, "model": model, "chunk_errors": []}
+
+    def test_parse_grammar_keeps_the_suggested_name_and_tags(self):
+        grammar, _ = sr.parse_grammar(grammar_answer(label="A café confession", scene_tags=["Confession", "romance"]))
+        self.assertEqual((grammar["suggested_label"], grammar["suggested_tags"]), ("A café confession", ["confession", "romance"]))
+        self.assertNotIn("suggested_label", sr.parse_grammar(grammar_answer())[0])
+
+    def test_the_analysis_names_an_unlabelled_reference(self):
+        reference = self.add("IMG_4521.mov")
+        self.assertTrue(reference["label_auto"] and reference["tags_auto"])
+        with patch.object(sr, "ensure_proxy", lambda bible_id, reference, **kw: dict(reference)):
+            sr.start_analysis(self.bid, reference["id"], fal_key="k", analyse=self.fake_analyse, wait=True)
+        stored = sr.get_reference(self.bid, reference["id"])
+        self.assertEqual((stored["label"], stored["scene_tags"]), ("A café confession", ["confession", "romance"]))
+        self.assertTrue(stored["label_auto"] and stored["tags_auto"])
+
+    def test_the_users_own_label_and_tags_are_kept(self):
+        reference = self.add("scene.mp4", label="Episode 3 café", scene_tags="dispute")
+        self.assertFalse(reference["label_auto"] or reference["tags_auto"])
+        with patch.object(sr, "ensure_proxy", lambda bible_id, reference, **kw: dict(reference)):
+            sr.start_analysis(self.bid, reference["id"], fal_key="k", analyse=self.fake_analyse, wait=True)
+        stored = sr.get_reference(self.bid, reference["id"])
+        self.assertEqual((stored["label"], stored["scene_tags"]), ("Episode 3 café", ["dispute"]))
+        # Typing tags later turns the automatic ones off for good.
+        auto = self.add("other.mp4")
+        edited = sr.update_reference(self.bid, auto["id"], {"scene_tags": "chase"})
+        self.assertEqual((edited["tags_auto"], edited["label_auto"]), (False, True))
+
+
 if __name__ == "__main__":
     unittest.main()
