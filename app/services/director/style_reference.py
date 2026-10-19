@@ -89,8 +89,12 @@ MIN_MERGE_REFERENCES = 2
 MAX_STORED_SHOTS = 1500
 MAX_SYNTHESIS_SHOTS = 400
 
-# Uploads.
-MAX_UPLOAD_BYTES = 500 * 1024 * 1024
+# Uploads: a whole episode fits; it is reduced to a 480p proxy before anything
+# reads it (cut detection, stills, chunks), and the proxy replaces the upload.
+MAX_UPLOAD_BYTES = 4 * 1024 * 1024 * 1024
+PROXY_HEIGHT = 480
+PROXY_CRF = 26
+PROXY_AUDIO_BITRATE = "64k"
 VIDEO_SUFFIXES = bibles.VIDEO_SUFFIXES
 MEDIA_TYPES = {".mp4": "video/mp4", ".mov": "video/quicktime", ".webm": "video/webm", ".mkv": "video/x-matroska"}
 
@@ -317,6 +321,50 @@ def without_credits(shots: Sequence[Mapping[str, Any]], duration: float) -> tupl
     kept = [dict(s) for s in shots if not s.get("credits")]
     return kept, {**length_stats(kept, duration), "credits_shots": len(flagged),
                   "credits_sec": round(sum(float(s["duration"]) for s in flagged), 1)}
+
+
+def make_proxy(source: str, dest: str, *, height: int = PROXY_HEIGHT, has_audio: bool = True,
+               timeout: float = 4 * 3600) -> str:
+    """A 480p H.264 MP4 of ``source`` (never upscaled), mono AAC sound kept; raises StyleReferenceError."""
+    command = ["ffmpeg", "-v", "error", "-y", "-i", source, "-map", "0:v:0",
+               "-vf", f"scale=-2:'min({height},ih)',format=yuv420p", "-c:v", "libx264", "-preset", "veryfast",
+               "-crf", str(PROXY_CRF)]
+    if has_audio:
+        command += ["-map", "0:a:0?", "-c:a", "aac", "-b:a", PROXY_AUDIO_BITRATE, "-ac", "1"]
+    else:
+        command += ["-an"]
+    command += ["-movflags", "+faststart", dest]
+    try:
+        subprocess.run(command, check=True, capture_output=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise StyleReferenceError(f"Could not reduce the video to {height}p: {str(error)[:200]}") from error
+    if not os.path.exists(dest) or os.path.getsize(dest) == 0:
+        raise StyleReferenceError(f"The {height}p proxy is empty")
+    return dest
+
+
+def ensure_proxy(bible_id: str, reference: Mapping[str, Any], *, height: int = PROXY_HEIGHT) -> dict:
+    """Replace a reference's upload with its ``height``p proxy once; returns the (updated) reference.
+
+    A video already at ``height`` or smaller is kept as is. The upload's size
+    and dimensions stay on the reference as ``source``.
+    """
+    if reference.get("source"):
+        return dict(reference)
+    path = bibles.video_path(bible_id, reference.get("file") or "")
+    if path is None:
+        raise StyleReferenceError("The video file is missing")
+    facts = probe(str(path))
+    source = {"width": facts.get("width"), "height": facts.get("height"), "bytes": os.path.getsize(path),
+              "duration_sec": facts.get("duration_sec")}
+    small = isinstance(facts.get("height"), int) and facts["height"] <= height
+    if small and str(path).lower().endswith(".mp4"):
+        return _set(bible_id, reference["id"], source=source)
+    dest = path.with_name(f"{path.stem}_{height}p.mp4")
+    make_proxy(str(path), str(dest), height=height, has_audio=bool(facts.get("has_audio", True)))
+    updated = _set(bible_id, reference["id"], file=dest.name, source=source)
+    path.unlink(missing_ok=True)
+    return updated
 
 
 def local_analysis(path: str, *, threshold: float = SCENE_CUT_THRESHOLD) -> dict:
@@ -1255,7 +1303,14 @@ def _run_analysis(bible_id: str, ref_id: str, fal_key: str | None, model: str,
         with _ANALYSIS_SLOT:
             if ref_id not in bibles._LIVE_ANALYSES:
                 return  # deleted while queued
-            reference = _set(bible_id, ref_id, status="analysing", progress="Measuring cuts")
+            reference = _set(bible_id, ref_id, status="analysing", progress=f"Reducing to {PROXY_HEIGHT}p")
+            try:
+                reference = ensure_proxy(bible_id, reference)
+            except StyleReferenceError as error:
+                print(f"[Style reference] {bible_id}/{ref_id}: {error}")
+                _set(bible_id, ref_id, status="failed", error=_short(error, 400), progress="")
+                return
+            reference = _set(bible_id, ref_id, progress="Measuring cuts")
             path = bibles.video_path(bible_id, reference["file"])
             if path is None:
                 raise StyleReferenceError("The video file is missing")
@@ -1348,7 +1403,7 @@ def register_routes(api: Any, *, get_fal_key: Callable[[], str | None],
                                      label: str = Form(""), scene_tags: str = Form(""), analyse: str = Form("true")):
         length = request.headers.get("content-length")
         if length and length.isdigit() and int(length) > MAX_UPLOAD_BYTES + 1024 * 1024:
-            raise HTTPException(status_code=413, detail="Video too large (max 500 MB)")
+            raise HTTPException(status_code=413, detail="Video too large (max 4 GB)")
         suffix = os.path.splitext(file.filename or "")[1].lower()
         if suffix not in VIDEO_SUFFIXES:
             raise HTTPException(status_code=400, detail="Upload an MP4, MOV, WebM or MKV video")
@@ -1362,7 +1417,7 @@ def register_routes(api: Any, *, get_fal_key: Callable[[], str | None],
                 while chunk := await file.read(1024 * 1024):
                     written += len(chunk)
                     if written > MAX_UPLOAD_BYTES:
-                        raise HTTPException(status_code=413, detail="Video too large (max 500 MB)")
+                        raise HTTPException(status_code=413, detail="Video too large (max 4 GB)")
                     handle.write(chunk)
             if not written:
                 raise HTTPException(status_code=400, detail="The file is empty")

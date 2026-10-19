@@ -430,6 +430,10 @@ class RouteTests(unittest.TestCase):
         api = FastAPI()
         sr.register_routes(api, get_fal_key=lambda: "test-key", get_model=lambda: "test/model")
         self.client = TestClient(api)
+        # The uploads of these tests are not videos: no proxy.
+        proxy = patch.object(sr, "ensure_proxy", lambda bible_id, reference, **kw: dict(reference))
+        proxy.start()
+        self.addCleanup(proxy.stop)
         self.base = f"/api/v1/director/bibles/{self.bible['id']}/style-references"
 
     def fake_analyse(self, path, *, fal_key, model, on_progress, backend=None):
@@ -686,6 +690,66 @@ class MergedBlockTests(unittest.TestCase):
         references = [reference("ref_a"), reference("ref_b", label="Second")]
         block = sr.planner_block(references, merged={"status": "done", "grammar": {"rules": []}})
         self.assertIn("Second", block)
+
+
+
+class ProxyTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        patcher = patch.object(bibles, "BIBLES_DIR", Path(self.tmp.name) / "bibles")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.bid = bibles.save_bible({"name": "Seoul Nights"})["id"]
+        self.folder = bibles._folder(self.bid)
+        self.folder.mkdir(parents=True, exist_ok=True)
+
+    def add(self, name, data=b"video"):
+        (self.folder / name).write_bytes(data)
+        return sr.add_reference(self.bid, str(self.folder / name), source_filename=name)
+
+    def test_a_large_upload_is_replaced_by_its_proxy_once(self):
+        reference = self.add("styleref_1.mkv")
+        made = []
+
+        def fake_probe(path, **kw):
+            return {"duration_sec": 90.0, "fps": 25.0, "width": 1920, "height": 1080, "has_audio": True}
+
+        def fake_proxy(source, dest, **kw):
+            made.append((os.path.basename(source), os.path.basename(dest), kw.get("height")))
+            Path(dest).write_bytes(b"small")
+            return dest
+
+        with patch.object(sr, "probe", fake_probe), patch.object(sr, "make_proxy", fake_proxy):
+            updated = sr.ensure_proxy(self.bid, reference)
+            again = sr.ensure_proxy(self.bid, updated)
+        self.assertEqual(made, [("styleref_1.mkv", "styleref_1_480p.mp4", 480)])
+        self.assertEqual(updated["file"], "styleref_1_480p.mp4")
+        self.assertEqual(updated["source"], {"width": 1920, "height": 1080, "bytes": 5, "duration_sec": 90.0})
+        self.assertFalse((self.folder / "styleref_1.mkv").exists())
+        self.assertTrue((self.folder / "styleref_1_480p.mp4").exists())
+        self.assertEqual(again["file"], "styleref_1_480p.mp4")
+        stored = sr.get_reference(self.bid, reference["id"])
+        self.assertEqual((stored["file"], stored["source"]["height"]), ("styleref_1_480p.mp4", 1080))
+
+    def test_a_small_mp4_is_kept(self):
+        reference = self.add("styleref_2.mp4")
+        with patch.object(sr, "probe", lambda path, **kw: {"duration_sec": 5.0, "width": 854, "height": 480,
+                                                           "has_audio": False}), \
+                patch.object(sr, "make_proxy", lambda *a, **kw: self.fail("no proxy needed")):
+            updated = sr.ensure_proxy(self.bid, reference)
+        self.assertEqual(updated["file"], "styleref_2.mp4")
+        self.assertEqual(updated["source"]["height"], 480)
+
+    @unittest.skipUnless(HAS_FFMPEG, "ffmpeg needed")
+    def test_make_proxy_scales_to_480p_and_keeps_mono_sound(self):
+        source = os.path.join(self.tmp.name, "big.mp4")
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=1280x720:d=1:r=24",
+                        "-f", "lavfi", "-i", "sine=frequency=440:duration=1", "-c:v", "libx264", "-pix_fmt",
+                        "yuv420p", "-c:a", "aac", "-shortest", source], check=True, capture_output=True)
+        dest = sr.make_proxy(source, os.path.join(self.tmp.name, "small.mp4"))
+        facts = sr.probe(dest)
+        self.assertEqual((facts["width"], facts["height"], facts["has_audio"]), (854, 480, True))
 
 
 if __name__ == "__main__":

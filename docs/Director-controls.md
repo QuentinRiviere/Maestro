@@ -242,6 +242,10 @@ model flags as credits (opening titles, end credits, logos, title cards,
 recaps, previews) are described but left out of the stats and the grammar
 (`credits_shots` / `credits_sec` in the reference's stats).
 
+An upload (up to 4 GB) is reduced to a 480p H.264 proxy (mono sound kept)
+before anything reads it, and the proxy replaces the upload in the bible; the
+upload's dimensions and size stay on the reference as `source`.
+
 A bible keeps up to 10 references. With two or more enabled, analysed
 references the controller consolidates them into one grammar on the bible
 (`style_grammar`, `GET .../style-references/merged`, `POST .../merge` to

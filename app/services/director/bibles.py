@@ -260,6 +260,8 @@ def _style_references(raw: Any, folder: Path) -> list[dict]:
             and not isinstance(described, bool) and described > 0 else 0,
             "grammar": copy.deepcopy(item["grammar"]) if isinstance(item.get("grammar"), dict) else None,
             "summary": str(item.get("summary") or "")[:12000],
+            # What was uploaded before the 480p proxy replaced it (style_reference.ensure_proxy).
+            "source": copy.deepcopy(item["source"]) if isinstance(item.get("source"), dict) else None,
             "cost_usd": cost if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None,
             "model": _text(item.get("model"), 120),
         })
