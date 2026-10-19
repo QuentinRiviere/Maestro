@@ -481,10 +481,11 @@ class InsertContactTests(unittest.TestCase):
         self.assertIn("the hold (Jin-woo's hand securely encircles Hae-won's wrist; her fingers stay around the mug) "
                       "stays below the bottom edge of the frame", insert["locks"][1])
         self.assertEqual(insert["camera_plan"]["framing"], "medium close-up from the chest up, every hand below the bottom edge of the frame")
-        # The touch itself falls between the cuts: the shot before keeps its hand short of the wrist.
-        self.assertEqual(previous["closing_blocking"], "Jin-woo's right hand rests inches from her wrist on the tabletop.")
-        self.assertEqual(previous["action_beats"][-1], "3.0-6.0s: his hand slides toward her wrist")
-        self.assertIn("no contact is made in this shot", previous["locks"][0])
+        # Neither the touch nor the reach is filmed: the shot before keeps its hands where they were.
+        self.assertEqual(previous["closing_blocking"], "Both hands stay exactly where they were at the first frame; "
+                                                       "the lean is in the shoulders and the face.")
+        self.assertEqual(previous["action_beats"], ["0.0-3.0s: he leans in"])
+        self.assertIn("no hand moves toward the other person", previous["locks"][0])
         self.assertEqual(shots[2]["opening_blocking"], "Hae-won looks up.")
 
     def test_a_two_shot_that_ends_on_the_grab_is_reframed_above_the_hands(self):
@@ -508,7 +509,7 @@ class InsertContactTests(unittest.TestCase):
             "0.0-2.0s: she says the line and looks away",
             "4.0-6.0s: she looks up at him, lips parted"])
         self.assertIn("never shown; no hand in frame", two_shot["locks"][-1])
-        self.assertIn("drops below the bottom edge of the frame", shots[0]["locks"][0])
+        self.assertIn("no hand moves toward the other person", shots[0]["locks"][0])
 
     def test_an_insert_on_an_object_still_takes_its_closing_move_from_the_shot_before(self):
         shots = self.shots()
@@ -560,8 +561,9 @@ class InsertContactTests(unittest.TestCase):
         self.assertEqual(keep_contact_off_screen(shots), 1)
         self.assertEqual(shots[1]["closing_blocking"], "his hand closes around her wrist")
         self.assertTrue(shots[1]["opening_blocking"].startswith("Framed from the chest up"))
-        # The previous shot ended "his hand slides toward her wrist" (approach): it stays short of it.
-        self.assertNotIn("closing_blocking", shots[0])
+        # The previous shot ended "his hand slides toward her wrist" (approach): the reach goes.
+        self.assertTrue(shots[0]["closing_blocking"].startswith("Both hands stay exactly where they were"))
+        self.assertEqual(shots[0]["action_beats"], ["0.0-3.0s: he leans in"])
         self.assertIn("no contact is made in this shot", shots[0]["locks"][0])
 
 

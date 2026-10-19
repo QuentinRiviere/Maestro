@@ -80,13 +80,14 @@ SCENE_CRAFT = """SCENE CRAFT (this is what separates a real scene from generated
   that move falls inside keep_sec.
 - Contact between two people is never in frame: on a short render two hands that meet melt into each
   other at any framing, and a hold already made comes out as one fused mass even when it stays still. Stage it
-  around the touch, out of sight. The shot before ends with the hand still short of its target and dropping
-  below the bottom edge of the frame (never a hand hovering in frame, never a hand crossing a foreground
-  shoulder). The next shot is framed from the chest up with every hand below the bottom edge of the frame:
-  the hold exists below the frame and the faces carry it, the held one feels the grip, the holder's eyes stay
-  on them. Or play it through sound and a look: a mug set down hard, her eyes dropping to the table, cut. A
-  hand on its way to a wrist, a hand closing around a hand, two joined hands, two hands crossing: never in any
-  shot's frame or action beats. Her own hand taking a cup is fine: it starts beside it and closes slowly. A
+  around the touch, out of sight. The reach is not filmed either: no hand moves toward the other person in
+  any shot (a hand that sets off toward a wrist ends up on the wrong arm). The shot before shows the intent
+  in the shoulders and the face only, a lean in, both hands exactly where they were at the first frame, and
+  the hand travels between the two cuts. The next shot is framed from the chest up, every hand below the
+  bottom edge of the frame: the hold exists below the frame and the faces carry it, the held one feels the
+  grip, the holder's eyes stay on them. Or play it through sound and a look: a mug set down hard, her eyes
+  dropping to the table, cut. A hand on its way to a wrist, a hand closing around a hand, two joined hands,
+  two hands crossing: never in any shot's frame or action beats. Her own hand taking a cup is fine: it starts beside it and closes slowly. A
   person-to-person hold is never the subject of an insert. An insert shows ONE person's hand and one object
   (her fingers tightening on the mug, then going still; his hand setting the cup down; a hand on a door
   handle), already on the object at the first frame, one small move, the camera still and nothing else
@@ -272,6 +273,13 @@ def _duration_of(raw: dict, low: float) -> float:
 OFF_FRAME_FRAMING = "from the chest up, every hand below the bottom edge of the frame"
 
 
+def _strip_approach(closing: str) -> str:
+    """``closing`` without the sentences where a hand is on its way to someone."""
+    sentences = [part.strip() for part in re.split(r"(?<=[.;])\s+", closing) if part.strip()]
+    kept = [part for part in sentences if not (_HAND_WORD_RE.search(part) and _APPROACH_RE.search(part))]
+    return " ".join(kept).strip()
+
+
 def keep_contact_off_screen(shot_dicts: list[dict], low: float = 3.0) -> int:
     """Never render a hand taking hold of another person, nor the hold itself.
 
@@ -345,10 +353,16 @@ def keep_contact_off_screen(shot_dicts: list[dict], low: float = 3.0) -> int:
                 m.group(1).lower().rstrip("s") == noun for m in _CONTACT_RE.finditer(prev_closing)):
             continue
         if person:
+            # The reach is not filmed either: the shot keeps its hands where they were and
+            # leans in; the hand travels between the two cuts.
+            previous["action_beats"] = [str(beat) for beat in previous.get("action_beats") or []
+                                        if str(beat).strip() and not (_HAND_WORD_RE.search(str(beat))
+                                                                      and _APPROACH_RE.search(str(beat)))]
+            previous["closing_blocking"] = (f"{_strip_approach(prev_closing)} Both hands stay exactly where they "
+                                            "were at the first frame; the lean is in the shoulders and the face.")
             prev_locks = [str(lock).strip() for lock in previous.get("locks") or [] if str(lock).strip()]
-            previous["locks"] = prev_locks + ["the reaching hand stops short of the other person and drops below "
-                                              "the bottom edge of the frame; no contact is made in this shot; no "
-                                              "hand crosses a foreground shoulder"]
+            previous["locks"] = prev_locks + ["no hand moves toward the other person; both hands stay where they "
+                                              "are at the first frame; no contact is made in this shot"]
             continue
         previous["closing_blocking"] = closing
         prev_duration = _duration_of(previous, low)
