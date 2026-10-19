@@ -66,6 +66,11 @@ never like a failed AI generation. You receive ONE generated shot, its plan and 
   design drift, anatomy that breaks the style's own design, objects appearing or vanishing, physics that break
   the style's own rules, floaty or jittery motion foreign to the medium, garbled text, mismatched audio.
 - Anything the plan asks for (a spill, a crash, a reaction) is intended.
+- What the plan places off-screen, below or outside the frame edge (a hand on a wrist below the frame, a
+  voice from off-screen) is meant to stay unseen: never count its absence as a missing action.
+- The plan's dialogue lists the lines spoken in this clip. While a character speaks, an open or moving
+  mouth is speech, not an expression: judge the expression from the eyes and brows during a line, and
+  from the whole face only outside it.
 Report only what you actually see or hear; times are seconds from the start of THIS clip. Separate fixable
 problems from limits of the video model.
 

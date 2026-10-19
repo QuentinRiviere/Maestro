@@ -379,5 +379,13 @@ class EpisodeJudgeTests(unittest.TestCase):
         self.assertEqual(missing["status"], "failed")
 
 
+
+class JudgePromptRulesTest(unittest.TestCase):
+    def test_off_frame_actions_and_spoken_lines_are_not_defects(self):
+        # Run 858920a6: a hold the plan put below the frame was counted missing; run b11e08e4: a
+        # speaking mouth was read as an exaggerated gasp.
+        self.assertIn("never count its absence as a missing action", video_judge.SYSTEM_PROMPT)
+        self.assertIn("an open or moving\n  mouth is speech, not an expression", video_judge.SYSTEM_PROMPT)
+
 if __name__ == "__main__":
     unittest.main()
