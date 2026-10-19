@@ -98,7 +98,8 @@ SCENE_CRAFT = """SCENE CRAFT (this is what separates a real scene from generated
   resolution render: a head turn, a posture change, a hand action, a step, a visible expression change (a smile
   fading, a frown, eyes closing, a look away). Never micro-details the frame cannot show, e.g. pupils dilating,
   lips parting a millimeter, a throat swallowing, a pulse in the neck, a single tear forming, eyelashes
-  trembling, a jaw muscle twitching.
+  trembling, a jaw muscle twitching, hands or fingers trembling or shaking (a tremor never renders: the shot
+  comes out static; show nerves through a grip that tightens once, a mug set down, a breath).
 - Reaction shots are at most about one third of the shots; the scene moves forward through action and dialogue,
   not through a chain of silent looks.
 - Camera is static (locked-off) by default. Move only when the story motivates it (a slow push-in on a
