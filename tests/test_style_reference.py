@@ -985,5 +985,66 @@ class AutoNamingTests(unittest.TestCase):
         self.assertEqual((edited["tags_auto"], edited["label_auto"]), (False, True))
 
 
+
+class LiveShotsTests(unittest.TestCase):
+    def test_each_excerpt_reports_the_shots_so_far(self):
+        ask = FakeAsk([(shots_answer(2), 0.0), (shots_answer(2), 0.0), (grammar_answer(), 0.0)])
+        seen = []
+        with patch.object(sr, "encode_chunk", lambda src, a, b, dest, **kw: dest), \
+                patch.object(sr, "data_uri", lambda path: "data:video/mp4;base64,AAAA"):
+            sr.analyse_reference("video.mp4", fal_key="key", ask=ask, http=object(), sleep=lambda s: None,
+                                 local=fake_local([30.0, 50.0, 80.0], 100.0),
+                                 on_progress=lambda m, p: seen.append((m, sum(1 for s in p.get("shots") or [] if s.get("shot_size")))))
+        self.assertEqual([n for m, n in seen if m.startswith("Analysing excerpt") and n], [2, 4])
+
+    def test_the_analysis_thread_saves_live_shots(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        with patch.object(bibles, "BIBLES_DIR", Path(tmp.name) / "bibles"):
+            bid = bibles.save_bible({"name": "Seoul Nights"})["id"]
+            folder = bibles._folder(bid)
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / "styleref_1.mp4").write_bytes(b"video")
+            reference = sr.add_reference(bid, str(folder / "styleref_1.mp4"))
+            seen = {}
+
+            def analyse(path, *, fal_key, model, on_progress, backend=None, graphics="ignore"):
+                on_progress("Analysing excerpt 1 of 2", {"shots": [{"index": 0, "start": 0.0, "end": 1.0,
+                                                                    "duration": 1.0, "shot_size": "wide"},
+                                                                   {"index": 1, "start": 1.0, "end": 2.0, "duration": 1.0}]})
+                seen["live"] = (sr.load_shots(bid, reference), sr.get_reference(bid, reference["id"])["described_shots"])
+                raise sr.StyleReferenceError("stop here")
+
+            with patch.object(sr, "ensure_proxy", lambda bible_id, reference, **kw: dict(reference)):
+                sr.start_analysis(bid, reference["id"], fal_key="k", analyse=analyse, wait=True)
+            self.assertEqual(seen["live"][1], 1)
+            self.assertEqual(seen["live"][0][0]["shot_size"], "wide")
+            self.assertEqual(sr.get_reference(bid, reference["id"])["status"], "failed")
+
+    @unittest.skipUnless(HAS_FFMPEG, "ffmpeg needed")
+    def test_the_still_route_serves_a_cached_frame(self):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        with patch.object(bibles, "BIBLES_DIR", Path(tmp.name) / "bibles"):
+            bid = bibles.save_bible({"name": "Seoul Nights"})["id"]
+            folder = bibles._folder(bid)
+            folder.mkdir(parents=True, exist_ok=True)
+            make_color_video(str(folder / "styleref_1.mp4"), [("red", 1.0), ("blue", 1.0)], audio=False)
+            reference = sr.add_reference(bid, str(folder / "styleref_1.mp4"))
+            api = FastAPI()
+            sr.register_routes(api, get_fal_key=lambda: "k")
+            client = TestClient(api)
+            base = f"/api/v1/director/bibles/{bid}/style-references/{reference['id']}"
+            response = client.get(f"{base}/still?t=1.5")
+            self.assertEqual((response.status_code, response.headers["content-type"]), (200, "image/jpeg"))
+            self.assertTrue((sr.stills_dir(bid, reference) / "00000015.jpg").is_file())
+            self.assertEqual(client.get(f"{base}/still?t=-1").status_code, 400)
+            sr.delete_reference(bid, reference["id"])
+            self.assertFalse(sr.stills_dir(bid, reference).exists())
+
+
 if __name__ == "__main__":
     unittest.main()

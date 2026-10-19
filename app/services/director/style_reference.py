@@ -391,6 +391,7 @@ def ensure_proxy(bible_id: str, reference: Mapping[str, Any], *, height: int = P
     make_proxy(str(path), str(dest), height=height, has_audio=bool(facts.get("has_audio", True)))
     updated = _set(bible_id, reference["id"], file=dest.name, source=source)
     path.unlink(missing_ok=True)
+    shutil.rmtree(stills_dir(bible_id, reference), ignore_errors=True)
     return updated
 
 
@@ -854,6 +855,8 @@ def analyse_reference(
                         for index, record in records.items():
                             shots[index].update(record)
                         last = None
+                        # The described shots so far, for a viewer that follows the analysis.
+                        on_progress(f"Analysing excerpt {number} of {len(chunks)}", {"shots": shots})
                         break
                     if last:
                         raise last
@@ -1078,6 +1081,35 @@ def shots_path(bible_id: str, reference: Mapping[str, Any]):
     return bibles._folder(bible_id) / f"{os.path.splitext(reference['file'])[0]}.shots.json"
 
 
+def stills_dir(bible_id: str, reference: Mapping[str, Any]):
+    """Where the frames a viewer asks for are cached (one JPEG per tenth of a second asked)."""
+    return bibles._folder(bible_id) / f"{os.path.splitext(reference['file'])[0]}.stills"
+
+
+def still_at(bible_id: str, reference: Mapping[str, Any], seconds: float, *, long_side: int = 480,
+             timeout: float = 60) -> str:
+    """The JPEG of the reference's frame at ``seconds`` (cached); raises StyleReferenceError."""
+    path = bibles.video_path(bible_id, reference.get("file") or "")
+    if path is None:
+        raise StyleReferenceError("The video file is missing")
+    seconds = max(0.0, float(seconds))
+    folder = stills_dir(bible_id, reference)
+    folder.mkdir(parents=True, exist_ok=True)
+    dest = folder / f"{int(round(seconds * 10)):08d}.jpg"
+    if dest.is_file():
+        return str(dest)
+    scale = f"scale=w='if(gt(iw,ih),min({long_side},iw),-2)':h='if(gt(iw,ih),-2,min({long_side},ih))'"
+    command = ["ffmpeg", "-v", "error", "-y", "-ss", f"{seconds:.3f}", "-i", str(path), "-frames:v", "1",
+               "-vf", scale, "-q:v", "5", str(dest)]
+    try:
+        subprocess.run(command, check=True, capture_output=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise StyleReferenceError(f"Could not extract the frame: {str(error)[:200]}") from error
+    if not dest.is_file():
+        raise StyleReferenceError(f"No frame at {seconds:.1f} s")
+    return str(dest)
+
+
 def save_shots(bible_id: str, reference: Mapping[str, Any], shots: Sequence[Mapping[str, Any]]) -> None:
     path = shots_path(bible_id, reference)
     temporary = path.with_suffix(".tmp")
@@ -1181,6 +1213,7 @@ def delete_reference(bible_id: str, ref_id: str) -> list[dict]:
             if path is not None:
                 path.unlink(missing_ok=True)
             shots_path(bible_id, {"file": name}).unlink(missing_ok=True)
+            shutil.rmtree(stills_dir(bible_id, {"file": name}), ignore_errors=True)
     bibles._LIVE_ANALYSES.discard(ref_id)
     return bible.get("style_references") or []
 
@@ -1549,6 +1582,11 @@ def _run_analysis(bible_id: str, ref_id: str, fal_key: str | None, model: str,
                 raise StyleReferenceError("The video file is missing")
 
             def progress(message: str, partial: dict) -> None:
+                partial = dict(partial)
+                live = partial.pop("shots", None)
+                if live is not None:
+                    save_shots(bible_id, reference, live)
+                    partial["described_shots"] = sum(1 for s in live if s.get("shot_size") and not s.get("credits"))
                 _set(bible_id, ref_id, progress=_short(message, 200), **partial)
 
             try:
@@ -1726,6 +1764,17 @@ def register_routes(api: Any, *, get_fal_key: Callable[[], str | None],
         reference = call(start_analysis, bible_id, ref_id, fal_key=get_fal_key(), model=get_model(), backend=get_backend(),
                              on_done=refresh_merge)
         return {"reference": _public(reference)}
+
+    @api.get(base + "/{ref_id}/still")
+    def style_reference_still(bible_id: str, ref_id: str, t: float = 0.0):
+        reference = call(get_reference, bible_id, ref_id)
+        if not math.isfinite(t) or t < 0 or t > 24 * 3600:
+            raise HTTPException(status_code=400, detail="t must be a time in seconds")
+        try:
+            path = still_at(bible_id, reference, t)
+        except StyleReferenceError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
 
     @api.get(base + "/{ref_id}/video")
     def style_reference_video(bible_id: str, ref_id: str):

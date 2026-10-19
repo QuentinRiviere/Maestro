@@ -145,6 +145,26 @@ export interface StyleReference {
   model: string
 }
 
+/** One shot of a reference's breakdown (the sidecar the analysis fills excerpt by excerpt). */
+export interface StyleReferenceShot {
+  index: number
+  start: number
+  end: number
+  duration: number
+  shot_size?: string
+  angle?: string
+  movement?: string
+  subject?: string
+  action?: string
+  cut_reason?: string
+  transition?: string
+  lighting?: string
+  audio?: string
+  graphics?: string
+  false_cut?: boolean
+  credits?: boolean
+}
+
 export interface StyleReferencePatch {
   label?: string
   enabled?: boolean
@@ -305,6 +325,16 @@ const styleRefUrl = (bibleId: string, refId = '') =>
 
 export const STYLE_REFERENCE_MAX_BYTES = 4 * 1024 * 1024 * 1024
 export const STYLE_REFERENCE_ACCEPT = '.mp4,.mov,.webm,.mkv,video/mp4,video/quicktime,video/webm,video/x-matroska'
+
+/** One reference with its shots (described ones fill in while the analysis runs). */
+export async function fetchStyleReference(bibleId: string, refId: string):
+  Promise<StyleReference & { shots: StyleReferenceShot[] }> {
+  return (await json<{ reference: StyleReference & { shots: StyleReferenceShot[] } }>(
+    await fetch(styleRefUrl(bibleId, refId)), 'Could not load the reference')).reference
+}
+
+export const styleReferenceStillUrl = (bibleId: string, refId: string, seconds: number) =>
+  `${styleRefUrl(bibleId, refId)}/still?t=${Math.max(0, seconds).toFixed(1)}`
 
 export async function fetchStyleReferences(bibleId: string): Promise<StyleReference[]> {
   return (await json<{ references: StyleReference[] }>(await fetch(styleRefUrl(bibleId)),

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { Film, Link, Loader2, RefreshCw, Trash2, Upload } from 'lucide-react'
+import { Film, LayoutList, Link, Loader2, RefreshCw, Trash2, Upload } from 'lucide-react'
+import { StyleReferenceShots } from './StyleReferenceShots'
 import {
   analyseStyleReference, deleteStyleReference, fetchStyleReferenceFetches, fetchStyleReferencesFromUrls,
   fetchStyleReferences, parseVideoLinks, STYLE_REFERENCE_ACCEPT, STYLE_REFERENCE_MAX_BYTES,
@@ -37,6 +38,7 @@ function ReferenceCard({ bibleId, reference, ask, onChange, onDeleted }: {
   onDeleted: (references: StyleReference[]) => void
 }) {
   const [labelText, setLabelText] = useState(reference.label)
+  const [showShots, setShowShots] = useState(false)
   const [tagsText, setTagsText] = useState(reference.scene_tags.join(', '))
   const [rulesText, setRulesText] = useState(rulesToText(reference.grammar?.rules))
   const [busy, setBusy] = useState(false)
@@ -83,6 +85,11 @@ function ReferenceCard({ bibleId, reference, ask, onChange, onDeleted }: {
           <input type="checkbox" className="w-3 h-3" checked={reference.graphics === 'include'} disabled={busy}
             onChange={e => void patch({ graphics: e.target.checked ? 'include' : 'ignore' })} /> Graphics
         </label>
+        <button className={button} disabled={!reference.described_shots && !analysing}
+          title="Browse the shots described so far, with their frames" onClick={() => setShowShots(true)}>
+          <LayoutList size={10} /> Shots{reference.described_shots ? ` (${reference.described_shots})` : ''}
+        </button>
+        {showShots && <StyleReferenceShots bibleId={bibleId} reference={reference} onClose={() => setShowShots(false)} />}
         <button className={button} disabled={busy || analysing} title="Analyse the video again (replaces the grammar and its rules)"
           onClick={() => ask({
             title: `Analyse "${reference.label}" again?`, confirmLabel: 'Re-analyse',
