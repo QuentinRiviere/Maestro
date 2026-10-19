@@ -405,6 +405,25 @@ def local_analysis(path: str, *, threshold: float = SCENE_CUT_THRESHOLD) -> dict
 # ── chunks for the model pass ──────────────────────────────────────────────
 
 
+DESCRIPTION_KEYS = ("shot_size", "angle", "movement", "subject", "action", "cut_reason", "transition", "lighting",
+                    "audio", "false_cut", "credits", "graphics")
+
+
+def resume_shots(shots: list[dict], known: Sequence[Mapping[str, Any]] | None, *, tolerance: float = 0.05) -> int:
+    """Copy the descriptions of ``known`` onto ``shots`` when the cuts match (same count, same starts); returns how many."""
+    if not known or len(known) != len(shots):
+        return 0
+    for shot, old in zip(shots, known):
+        if abs(float(old.get("start", -1)) - float(shot["start"])) > tolerance:
+            return 0
+    copied = 0
+    for shot, old in zip(shots, known):
+        if old.get("shot_size"):
+            shot.update({key: old[key] for key in DESCRIPTION_KEYS if key in old})
+            copied += 1
+    return copied
+
+
 def plan_chunks(shots: Sequence[Mapping[str, float]], *, max_sec: float = MAX_CHUNK_SEC,
                 limit_sec: float | None = MAX_ANALYSED_SEC) -> list[dict]:
     """Consecutive shots grouped into chunks of at most ``max_sec``, cut on shot boundaries.
@@ -798,8 +817,13 @@ def analyse_reference(
     local: Callable[[str], dict] = local_analysis,
     backend: Any = None,
     graphics: str = GRAPHICS_IGNORE,
+    known_shots: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict:
     """Both passes on one video: {stats, shots, grammar, summary, cost_usd, model, chunk_errors}.
+
+    ``known_shots`` (the sidecar of an interrupted analysis) resumes it: their
+    descriptions are kept when the cuts still match, and an excerpt whose
+    shots are all described is not sent again.
 
     ``graphics`` (GRAPHICS_MODES) says whether captions, logos and other
     on-screen graphics are left out of the staging or read into the grammar.
@@ -813,7 +837,9 @@ def analyse_reference(
     """
     stats = local(path)
     shots = [dict(s) for s in shot_spans(stats["cuts"], stats["duration_sec"])]
-    on_progress(f"Measured {stats['shot_count']} shots", {"stats": stats})
+    resumed = resume_shots(shots, known_shots)
+    on_progress(f"Measured {stats['shot_count']} shots" + (f", {resumed} already described" if resumed else ""),
+                {"stats": stats})
     ask, fal_key, model, local_backend = _resolve_backend(backend, fal_key, model, ask)
     graphics = graphics if graphics in GRAPHICS_MODES else GRAPHICS_IGNORE
     shot_system = SHOT_SYSTEM_PROMPT + "\n" + GRAPHICS_NOTES[graphics]
@@ -828,6 +854,8 @@ def analyse_reference(
     try:
         with tempfile.TemporaryDirectory(prefix="director-styleref-") as tmp:
             for number, chunk in enumerate(chunks, 1):
+                if resumed and all(shots[index].get("shot_size") for index in chunk["shots"]):
+                    continue  # described before the interruption
                 on_progress(f"Analysing excerpt {number} of {len(chunks)}", {})
                 prompt = chunk_prompt(chunk, shots, number, len(chunks), stats["duration_sec"])
                 try:
@@ -1362,6 +1390,7 @@ def _run_merge(bible_id: str, references: list[dict], fal_key: str | None, model
 
 # Recent fetches per bible (in memory: a restart forgets them, the references
 # they made stay).
+RESUME_DELAY_SEC = 20.0
 MAX_FETCHES = 50
 MAX_FETCH_BATCH = 20
 FETCH_POLL_SEC = 3.0
@@ -1591,7 +1620,8 @@ def _run_analysis(bible_id: str, ref_id: str, fal_key: str | None, model: str,
 
             try:
                 result = analyse(str(path), fal_key=fal_key, model=model, on_progress=progress, backend=backend,
-                                 graphics=reference.get("graphics") or GRAPHICS_IGNORE)
+                                 graphics=reference.get("graphics") or GRAPHICS_IGNORE,
+                                 known_shots=load_shots(bible_id, reference))
             except Exception as error:  # noqa: BLE001 - recorded on the reference
                 print(f"[Style reference] {bible_id}/{ref_id}: {error}")
                 _set(bible_id, ref_id, status="failed", error=_short(error, 400), progress="")
@@ -1666,6 +1696,22 @@ def register_routes(api: Any, *, get_fal_key: Callable[[], str | None],
     def analyse_new(bible_id: str, ref_id: str) -> None:
         start_analysis(bible_id, ref_id, fal_key=get_fal_key(), model=get_model(), backend=get_backend(),
                        on_done=refresh_merge)
+
+    def resume_interrupted() -> None:
+        """Queue again every analysis a restart interrupted (it resumes from its saved shots)."""
+        try:
+            for summary in bibles.list_bibles():
+                bible = bibles.get_bible(summary["id"]) or {}
+                for reference in bible.get("style_references") or []:
+                    if reference.get("status") == "failed" and reference.get("error") == "Interrupted":
+                        print(f"[Style reference] {bible['id']}/{reference['id']}: resuming after a restart")
+                        analyse_new(bible["id"], reference["id"])
+        except Exception as error:  # noqa: BLE001
+            print(f"[Style reference] could not resume interrupted analyses: {error}")
+
+    resume_timer = threading.Timer(RESUME_DELAY_SEC, resume_interrupted)
+    resume_timer.daemon = True
+    resume_timer.start()
 
     @api.post(base + "/from-url")
     async def style_reference_from_url(bible_id: str, request: Request):

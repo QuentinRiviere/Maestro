@@ -436,7 +436,7 @@ class RouteTests(unittest.TestCase):
         self.addCleanup(proxy.stop)
         self.base = f"/api/v1/director/bibles/{self.bible['id']}/style-references"
 
-    def fake_analyse(self, path, *, fal_key, model, on_progress, backend=None, graphics="ignore"):
+    def fake_analyse(self, path, *, fal_key, model, on_progress, backend=None, graphics="ignore", known_shots=None):
         self.seen = (fal_key, model)
         self.graphics = graphics
         on_progress("Measured", {"stats": {"asl_sec": 2.5, "shot_count": 2}})
@@ -952,7 +952,7 @@ class AutoNamingTests(unittest.TestCase):
         return sr.add_reference(self.bid, str(self.folder / name), source_filename=name, **kw)
 
     @staticmethod
-    def fake_analyse(path, *, fal_key, model, on_progress, backend=None, graphics="ignore"):
+    def fake_analyse(path, *, fal_key, model, on_progress, backend=None, graphics="ignore", known_shots=None):
         grammar, summary = sr.parse_grammar(grammar_answer(label="A café confession", scene_tags=["Confession", "romance"]))
         return {"stats": {"asl_sec": 2.5, "shot_count": 2, "cuts": [1.0], "shot_lengths": [1.0, 1.0]},
                 "shots": [{"index": 0, "shot_size": "close_up"}, {"index": 1, "shot_size": "medium"}],
@@ -1008,7 +1008,7 @@ class LiveShotsTests(unittest.TestCase):
             reference = sr.add_reference(bid, str(folder / "styleref_1.mp4"))
             seen = {}
 
-            def analyse(path, *, fal_key, model, on_progress, backend=None, graphics="ignore"):
+            def analyse(path, *, fal_key, model, on_progress, backend=None, graphics="ignore", known_shots=None):
                 on_progress("Analysing excerpt 1 of 2", {"shots": [{"index": 0, "start": 0.0, "end": 1.0,
                                                                     "duration": 1.0, "shot_size": "wide"},
                                                                    {"index": 1, "start": 1.0, "end": 2.0, "duration": 1.0}]})
@@ -1044,6 +1044,34 @@ class LiveShotsTests(unittest.TestCase):
             self.assertEqual(client.get(f"{base}/still?t=-1").status_code, 400)
             sr.delete_reference(bid, reference["id"])
             self.assertFalse(sr.stills_dir(bid, reference).exists())
+
+
+
+class ResumeTests(unittest.TestCase):
+    def test_described_excerpts_are_skipped_when_the_cuts_match(self):
+        known = sr.shot_spans([30.0, 50.0, 80.0], 100.0)
+        for shot in known[:2]:
+            shot.update({"shot_size": "close_up", "subject": "a woman", "action": "turns"})
+        ask = FakeAsk([(shots_answer(2), 0.0), (grammar_answer(), 0.0)])
+        progress = []
+        with patch.object(sr, "encode_chunk", lambda src, a, b, dest, **kw: dest), \
+                patch.object(sr, "data_uri", lambda path: "data:video/mp4;base64,AAAA"):
+            result = sr.analyse_reference("video.mp4", fal_key="key", ask=ask, http=object(), sleep=lambda s: None,
+                                          local=fake_local([30.0, 50.0, 80.0], 100.0), known_shots=known,
+                                          on_progress=lambda m, p: progress.append(m))
+        self.assertEqual([c["videos"] for c in ask.calls], [1, 0])  # one excerpt sent, then the synthesis
+        self.assertIn("Shot list of this excerpt (2 shots)", ask.calls[0]["prompt"])
+        self.assertIn("Excerpt 2 of 2", ask.calls[0]["prompt"])
+        self.assertEqual(result["shots"][0]["subject"], "a woman")
+        self.assertTrue(all(s.get("shot_size") for s in result["shots"]))
+        self.assertIn("Measured 4 shots, 2 already described", progress[0])
+
+    def test_other_cuts_start_over(self):
+        shots = sr.shot_spans([30.0, 50.0], 100.0)
+        known = [dict(s, shot_size="wide") for s in sr.shot_spans([31.0, 50.0], 100.0)]
+        self.assertEqual(sr.resume_shots(shots, known), 0)
+        self.assertFalse(any(s.get("shot_size") for s in shots))
+        self.assertEqual(sr.resume_shots(shots, known[:1]), 0)
 
 
 if __name__ == "__main__":
