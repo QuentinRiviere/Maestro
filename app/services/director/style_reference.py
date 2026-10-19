@@ -1499,7 +1499,8 @@ def start_frames(bible_id: str, ref_id: str, *, fal_key: str | None, model: str 
         raise BibleError("This reference is busy")
     bibles._LIVE_ANALYSES.add(ref_id)
     try:
-        reference = _set(bible_id, ref_id, frames_status="queued", frames_error="", frames_progress="Waiting")
+        reference = _set(bible_id, ref_id, frames_status="queued", frames_error="",
+                         frames_progress="Waiting for the previous frame pass")
     except Exception:
         bibles._LIVE_ANALYSES.discard(ref_id)
         raise
@@ -1512,10 +1513,15 @@ def start_frames(bible_id: str, ref_id: str, *, fal_key: str | None, model: str 
     return reference
 
 
+# Frame passes have their own slot: the local analyst serves two requests at
+# once, so one runs next to the shot analyses instead of behind them.
+_FRAMES_SLOT = threading.Semaphore(1)
+
+
 def _run_frames(bible_id: str, ref_id: str, fal_key: str | None, model: str, backend: Any, limit: int,
                 describe: Callable[..., dict]) -> None:
     try:
-        with _ANALYSIS_SLOT:
+        with _FRAMES_SLOT:
             if ref_id not in bibles._LIVE_ANALYSES:
                 return
             reference = _set(bible_id, ref_id, frames_status="running", frames_progress="Starting")

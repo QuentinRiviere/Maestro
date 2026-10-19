@@ -91,9 +91,12 @@ function ReferenceCard({ bibleId, reference, ask, onChange, onDeleted }: {
           <LayoutList size={10} /> Shots{reference.described_shots ? ` (${reference.described_shots})` : ''}
         </button>
         {showShots && <StyleReferenceShots bibleId={bibleId} reference={reference} onClose={() => setShowShots(false)} />}
-        <button className={button} disabled={busy || analysing || reference.status !== 'done' || framesRunning}
-          title="Describe the first and last frame of the shots as image prompts (runs after each analysis; click to run again)"
-          onClick={() => act(async () => onChange(await startStyleReferenceFrames(bibleId, reference.id)))}>
+        <button className={button} disabled={busy || analysing || reference.status !== 'done'}
+          title={framesRunning
+            ? 'Frame prompts are being written: open the shots to watch them arrive'
+            : 'Describe the first and last frame of the shots as image prompts (runs after each analysis; click to run again)'}
+          onClick={() => framesRunning ? setShowShots(true)
+            : act(async () => onChange(await startStyleReferenceFrames(bibleId, reference.id)))}>
           {framesRunning ? <Loader2 size={10} className="animate-spin" /> : <ImageIcon size={10} />}
           {framesRunning ? reference.frames_progress || 'Frame prompts…' : `Frame prompts${reference.frames_count ? ` (${reference.frames_count})` : ''}`}
         </button>
