@@ -1542,7 +1542,8 @@ def _run_analysis(bible_id: str, ref_id: str, fal_key: str | None, model: str,
             shots = result.pop("shots", []) or []
             save_shots(bible_id, reference, shots)
             _set(bible_id, ref_id, status="done", progress="", described_shots=sum(
-                1 for s in shots if s.get("shot_size")), error=("; ".join(errors))[:400] if errors else "", **result)
+                1 for s in shots if s.get("shot_size") and not s.get("credits")),
+                 error=("; ".join(errors))[:400] if errors else "", **result)
             print(f"[Style reference] {bible_id}/{ref_id}: done, {result['stats'].get('shot_count')} shots, "
                   f"ASL {result['stats'].get('asl_sec')} s, cost ${result.get('cost_usd')}")
             if on_done is not None:
