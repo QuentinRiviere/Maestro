@@ -915,10 +915,24 @@ class FetchTests(unittest.TestCase):
         base = f"/api/v1/director/bibles/{self.bid}/style-references"
         with patch.object(sr, "_run_fetch", lambda *a, **kw: seen.append(a[1]["url"])):
             response = client.post(f"{base}/from-url", json={"url": "https://youtu.be/abc", "label": "Café"})
+            batch = client.post(f"{base}/from-url", json={
+                "urls": "https://youtu.be/one\nhttps://youtu.be/two, https://youtu.be/one\nnot a link",
+                "label": "ignored for a batch"})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["fetch"]["status"], "queued")
         self.assertEqual(client.get(f"{base}/fetches").json()["fetches"][0]["label"], "Café")
+        self.assertEqual(batch.status_code, 200)
+        self.assertEqual([f["url"] for f in batch.json()["fetches"]], ["https://youtu.be/one", "https://youtu.be/two"])
+        self.assertEqual([f["label"] for f in batch.json()["fetches"]], ["", ""])
+        self.assertEqual(seen, ["https://youtu.be/abc", "https://youtu.be/one", "https://youtu.be/two"])
         self.assertEqual(client.post(f"{base}/from-url", json={"url": "nope"}).status_code, 400)
+        self.assertEqual(client.post(f"{base}/from-url", json={"urls": ["nope", ""]}).status_code, 400)
+
+    def test_parse_urls(self):
+        self.assertEqual(sr.parse_urls(["https://a.test/1", " https://a.test/1 ", "ftp://x", "https://b.test/2"]),
+                         ["https://a.test/1", "https://b.test/2"])
+        self.assertEqual(sr.parse_urls("https://a.test/1\nhttps://b.test/2,https://c.test/3 words"),
+                         ["https://a.test/1", "https://b.test/2", "https://c.test/3"])
 
 
 if __name__ == "__main__":

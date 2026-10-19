@@ -1318,9 +1318,12 @@ def _run_merge(bible_id: str, references: list[dict], fal_key: str | None, model
 
 # Recent fetches per bible (in memory: a restart forgets them, the references
 # they made stay).
-MAX_FETCHES = 20
+MAX_FETCHES = 50
+MAX_FETCH_BATCH = 20
 FETCH_POLL_SEC = 3.0
 FETCH_TIMEOUT_SEC = 3 * 3600
+# Links of a batch wait here, then download two at a time on the service.
+_FETCH_SLOT = threading.Semaphore(2)
 _FETCHES: dict[str, list[dict]] = {}
 _FETCH_LOCK = threading.Lock()
 
@@ -1378,6 +1381,23 @@ def fetch_reference(bible_id: str, url: str, *, fetcher: tuple[str, str] | None,
     return dict(fetch)
 
 
+def parse_urls(value: Any) -> list[str]:
+    """Distinct http(s) links from a list or a text with one per line (commas and spaces split too)."""
+    items = value if isinstance(value, list) else re.split(r"[\s,]+", str(value or ""))
+    urls = [str(item).strip() for item in items if str(item).strip()]
+    return list(dict.fromkeys(u for u in urls if len(u) <= 2000 and _valid_video_url(u)))[:MAX_FETCH_BATCH]
+
+
+def fetch_references(bible_id: str, urls: Any, **kwargs: Any) -> list[dict]:
+    """Queue every link of ``urls`` (``fetch_reference`` each); a label applies only to a single link."""
+    links = parse_urls(urls)
+    if not links:
+        raise BibleError("Give the http(s) link of a video, one per line")
+    if len(links) > 1:
+        kwargs["label"] = ""
+    return [fetch_reference(bible_id, url, **kwargs) for url in links]
+
+
 def call_bible_exists(bible_id: str) -> bool:
     try:
         return bool(bibles.get_bible(bible_id))
@@ -1395,53 +1415,55 @@ def _run_fetch(bible_id: str, fetch: dict, fetcher: tuple[str, str], tags: list[
         http = httpx.Client(timeout=60)
     target = None
     try:
-        response = http.post(f"{base}/api/fetch", headers=headers, json={"url": fetch["url"], "max_height": PROXY_HEIGHT})
-        if response.status_code >= 400:
-            raise StyleReferenceError(f"The fetch service refused: HTTP {response.status_code}: {response.text[:200]}")
-        job = (response.json() or {}).get("job") or {}
-        job_id = str(job.get("id") or "")
-        if not job_id:
-            raise StyleReferenceError("The fetch service returned no job")
-        _fetch_set(bible_id, fetch["id"], status="downloading", progress="Starting")
-        deadline = time.monotonic() + FETCH_TIMEOUT_SEC
-        while True:
-            response = http.get(f"{base}/api/fetch/{job_id}", headers=headers)
+        with _FETCH_SLOT:
+            response = http.post(f"{base}/api/fetch", headers=headers,
+                                 json={"url": fetch["url"], "max_height": PROXY_HEIGHT})
             if response.status_code >= 400:
-                raise StyleReferenceError(f"The fetch service lost the job: HTTP {response.status_code}")
+                raise StyleReferenceError(f"The fetch service refused: HTTP {response.status_code}: {response.text[:200]}")
             job = (response.json() or {}).get("job") or {}
-            if job.get("status") == "failed":
-                raise StyleReferenceError(f"Download failed: {str(job.get('error') or '')[:300]}")
-            if job.get("status") == "done":
-                break
-            _fetch_set(bible_id, fetch["id"], progress=_short(job.get("progress") or "Downloading", 100))
-            if time.monotonic() > deadline:
-                raise StyleReferenceError("The download timed out")
-            sleep(FETCH_POLL_SEC)
-        _fetch_set(bible_id, fetch["id"], progress="Copying into the bible")
-        folder = bibles._folder(bible_id)
-        target = folder / f"styleref_{int(time.time() * 1000)}_{secrets.token_hex(3)}.mp4"
-        written = 0
-        with http.stream("GET", f"{base}/api/fetch/{job_id}/file", headers=headers, timeout=600) as stream:
-            if stream.status_code >= 400:
-                raise StyleReferenceError(f"Could not read the file: HTTP {stream.status_code}")
-            with open(target, "wb") as handle:
-                for chunk in stream.iter_bytes(1024 * 1024):
-                    written += len(chunk)
-                    if written > MAX_UPLOAD_BYTES:
-                        raise StyleReferenceError("Video too large (max 4 GB)")
-                    handle.write(chunk)
-        if not written:
-            raise StyleReferenceError("The downloaded file is empty")
-        title = _short(job.get("title"), 80)
-        reference = add_reference(bible_id, str(target), source_filename=f"{title or job_id}.mp4",
-                                  label=fetch.get("label") or title, scene_tags=tags, graphics=graphics)
-        try:
-            http.delete(f"{base}/api/fetch/{job_id}", headers=headers)
-        except Exception:  # noqa: BLE001 - the service cleans up on its own
-            pass
-        _fetch_set(bible_id, fetch["id"], status="done", progress="", reference_id=reference["id"])
-        if start is not None:
-            start(bible_id, reference["id"])
+            job_id = str(job.get("id") or "")
+            if not job_id:
+                raise StyleReferenceError("The fetch service returned no job")
+            _fetch_set(bible_id, fetch["id"], status="downloading", progress="Starting")
+            deadline = time.monotonic() + FETCH_TIMEOUT_SEC
+            while True:
+                response = http.get(f"{base}/api/fetch/{job_id}", headers=headers)
+                if response.status_code >= 400:
+                    raise StyleReferenceError(f"The fetch service lost the job: HTTP {response.status_code}")
+                job = (response.json() or {}).get("job") or {}
+                if job.get("status") == "failed":
+                    raise StyleReferenceError(f"Download failed: {str(job.get('error') or '')[:300]}")
+                if job.get("status") == "done":
+                    break
+                _fetch_set(bible_id, fetch["id"], progress=_short(job.get("progress") or "Downloading", 100))
+                if time.monotonic() > deadline:
+                    raise StyleReferenceError("The download timed out")
+                sleep(FETCH_POLL_SEC)
+            _fetch_set(bible_id, fetch["id"], progress="Copying into the bible")
+            folder = bibles._folder(bible_id)
+            target = folder / f"styleref_{int(time.time() * 1000)}_{secrets.token_hex(3)}.mp4"
+            written = 0
+            with http.stream("GET", f"{base}/api/fetch/{job_id}/file", headers=headers, timeout=600) as stream:
+                if stream.status_code >= 400:
+                    raise StyleReferenceError(f"Could not read the file: HTTP {stream.status_code}")
+                with open(target, "wb") as handle:
+                    for chunk in stream.iter_bytes(1024 * 1024):
+                        written += len(chunk)
+                        if written > MAX_UPLOAD_BYTES:
+                            raise StyleReferenceError("Video too large (max 4 GB)")
+                        handle.write(chunk)
+            if not written:
+                raise StyleReferenceError("The downloaded file is empty")
+            title = _short(job.get("title"), 80)
+            reference = add_reference(bible_id, str(target), source_filename=f"{title or job_id}.mp4",
+                                      label=fetch.get("label") or title, scene_tags=tags, graphics=graphics)
+            try:
+                http.delete(f"{base}/api/fetch/{job_id}", headers=headers)
+            except Exception:  # noqa: BLE001 - the service cleans up on its own
+                pass
+            _fetch_set(bible_id, fetch["id"], status="done", progress="", reference_id=reference["id"])
+            if start is not None:
+                start(bible_id, reference["id"])
     except Exception as error:  # noqa: BLE001 - recorded on the fetch
         if target is not None:
             try:
@@ -1589,10 +1611,11 @@ def register_routes(api: Any, *, get_fal_key: Callable[[], str | None],
             raise HTTPException(status_code=400, detail="Request body must be JSON") from error
         if not isinstance(body, dict):
             raise HTTPException(status_code=400, detail="Request body must be a JSON object")
-        fetch = call(fetch_reference, bible_id, str(body.get("url") or ""), fetcher=get_fetcher(),
-                     label=str(body.get("label") or ""), scene_tags=body.get("scene_tags"),
-                     graphics=body.get("graphics"), start=analyse_new)
-        return {"fetch": fetch}
+        urls = body.get("urls") if body.get("urls") is not None else body.get("url")
+        fetches = call(fetch_references, bible_id, urls, fetcher=get_fetcher(),
+                       label=str(body.get("label") or ""), scene_tags=body.get("scene_tags"),
+                       graphics=body.get("graphics"), start=analyse_new)
+        return {"fetch": fetches[0], "fetches": fetches}
 
     @api.get(base + "/fetches")
     def style_reference_fetches(bible_id: str):

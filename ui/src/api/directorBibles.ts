@@ -335,14 +335,18 @@ export interface StyleReferenceFetch {
   updated_at: string
 }
 
-/** Queue a link: downloaded at 480p on the fetch service, then analysed like an upload. */
-export async function fetchStyleReferenceFromUrl(bibleId: string, url: string, label: string, sceneTags: string[],
-  graphics: StyleReferenceGraphics = 'ignore'): Promise<StyleReferenceFetch> {
-  return (await json<{ fetch: StyleReferenceFetch }>(await fetch(`${styleRefUrl(bibleId)}/from-url`, {
+/** Queue links (one per line): each is downloaded at 480p on the fetch service, then analysed like an upload.
+ *  The label applies only when there is a single link; the others take the video's title. */
+export async function fetchStyleReferencesFromUrls(bibleId: string, urls: string[], label: string,
+  sceneTags: string[], graphics: StyleReferenceGraphics = 'ignore'): Promise<StyleReferenceFetch[]> {
+  return (await json<{ fetches: StyleReferenceFetch[] }>(await fetch(`${styleRefUrl(bibleId)}/from-url`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url, label, scene_tags: sceneTags, graphics }),
-  }), 'Could not fetch the link')).fetch
+    body: JSON.stringify({ urls, label, scene_tags: sceneTags, graphics }),
+  }), 'Could not fetch the links')).fetches
 }
+
+export const parseVideoLinks = (text: string): string[] =>
+  Array.from(new Set(text.split(/[\s,]+/).map(s => s.trim()).filter(s => /^https?:\/\/\S+$/i.test(s))))
 
 export async function fetchStyleReferenceFetches(bibleId: string): Promise<StyleReferenceFetch[]> {
   return (await json<{ fetches: StyleReferenceFetch[] }>(await fetch(`${styleRefUrl(bibleId)}/fetches`),

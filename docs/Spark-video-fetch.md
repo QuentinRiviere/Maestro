@@ -41,8 +41,10 @@ Settings → Services: `director_video_fetch_url`
 and `director_video_fetch_api_key` (the token, env
 `MAESTRO_VIDEO_FETCH_API_KEY`, masked like every key).
 
-Bible panel → Style references → paste a link, label and scene tags as for an
-upload, "Fetch and analyse". The controller queues a fetch
+Bible panel → Style references → paste links, one per line (a label applies
+only to a single link; the others take the video's title), scene tags and
+the graphics mode as for an upload, "Fetch N links and analyse": the links
+queue, two download at a time, every file is analysed in turn. The controller queues a fetch
 (`POST /api/v1/director/bibles/{bible}/style-references/from-url`,
 `GET .../fetches` lists the recent ones), mirrors the download progress,
 streams the file into the bible, registers the reference (label defaults to

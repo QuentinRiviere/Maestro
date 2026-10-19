@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Film, Link, Loader2, RefreshCw, Trash2, Upload } from 'lucide-react'
 import {
-  analyseStyleReference, deleteStyleReference, fetchStyleReferenceFetches, fetchStyleReferenceFromUrl,
-  fetchStyleReferences, STYLE_REFERENCE_ACCEPT, STYLE_REFERENCE_MAX_BYTES,
+  analyseStyleReference, deleteStyleReference, fetchStyleReferenceFetches, fetchStyleReferencesFromUrls,
+  fetchStyleReferences, parseVideoLinks, STYLE_REFERENCE_ACCEPT, STYLE_REFERENCE_MAX_BYTES,
   styleReferenceVideoUrl, updateStyleReference, uploadStyleReference,
   type StyleReference, type StyleReferenceFetch, type StyleReferencePatch,
 } from '../../api/directorBibles'
@@ -212,15 +212,16 @@ export function BibleStyleReferences({ bibleId, ask }: { bibleId: string; ask: A
     return () => window.clearInterval(timer)
   }, [running, downloading, refresh, refreshFetches])
 
+  const links = parseVideoLinks(newUrl)
   const fetchLink = async () => {
-    const url = newUrl.trim()
-    if (!url) return
+    if (!links.length) return
     setFetching(true)
     setError(null)
     try {
-      const queued = await fetchStyleReferenceFromUrl(bibleId, url, newLabel.trim(), parseSceneTags(newTags),
+      const queued = await fetchStyleReferencesFromUrls(bibleId, links, newLabel.trim(), parseSceneTags(newTags),
         newGraphics ? 'include' : 'ignore')
-      setFetches(list => [...list.filter(f => f.id !== queued.id), queued])
+      const ids = new Set(queued.map(f => f.id))
+      setFetches(list => [...list.filter(f => !ids.has(f.id)), ...queued])
       setNewUrl('')
       setNewLabel('')
       setNewTags('')
@@ -282,20 +283,20 @@ export function BibleStyleReferences({ bibleId, ask }: { bibleId: string; ask: A
           <input type="checkbox" className="w-3 h-3" checked={newGraphics} onChange={e => setNewGraphics(e.target.checked)}
             aria-label="New reference graphics" /> Take on-screen graphics into account
         </label>
-        <div className="flex flex-wrap items-center gap-1.5">
-          <button onClick={() => void upload()} disabled={!file || uploading}
-            className="px-3 py-1 rounded bg-accent-blue text-white text-[11px] disabled:opacity-40 flex items-center gap-1">
-            {uploading ? <Loader2 size={10} className="animate-spin" /> : <Upload size={10} />} Upload and analyse
-          </button>
-          <span className="text-[10px] text-text-muted">or</span>
-          <input className={`${input} flex-1 min-w-[12rem]`} placeholder="YouTube link (fetched at 480p on the Spark)" value={newUrl}
-            onChange={e => setNewUrl(e.target.value)} aria-label="Reference video link"
-            onKeyDown={e => { if (e.key === 'Enter') void fetchLink() }} />
-          <button onClick={() => void fetchLink()} disabled={!newUrl.trim() || fetching}
-            className="px-3 py-1 rounded bg-accent-blue text-white text-[11px] disabled:opacity-40 flex items-center gap-1">
-            {fetching ? <Loader2 size={10} className="animate-spin" /> : <Link size={10} />} Fetch and analyse
-          </button>
-        </div>
+        <button onClick={() => void upload()} disabled={!file || uploading}
+          className="px-3 py-1 rounded bg-accent-blue text-white text-[11px] disabled:opacity-40 flex items-center gap-1">
+          {uploading ? <Loader2 size={10} className="animate-spin" /> : <Upload size={10} />} Upload and analyse
+        </button>
+        <label className="block">
+          <span className={label}>Or links, one per line (YouTube…; fetched at 480p on the Spark, queued, then analysed)</span>
+          <textarea className={`${input} h-16 resize-y font-mono`} value={newUrl} onChange={e => setNewUrl(e.target.value)}
+            placeholder={'https://www.youtube.com/watch?v=…\nhttps://youtu.be/…'} aria-label="Reference video links" />
+        </label>
+        <button onClick={() => void fetchLink()} disabled={!links.length || fetching}
+          className="px-3 py-1 rounded bg-accent-blue text-white text-[11px] disabled:opacity-40 flex items-center gap-1">
+          {fetching ? <Loader2 size={10} className="animate-spin" /> : <Link size={10} />}
+          {links.length > 1 ? `Fetch ${links.length} links and analyse` : 'Fetch and analyse'}
+        </button>
         {fetches.filter(f => f.status !== 'done').map(f => (
           <p key={f.id} className={`text-[10px] ${f.status === 'failed' ? 'text-chip-red' : 'text-text-muted'}`}
             title={f.url}>
