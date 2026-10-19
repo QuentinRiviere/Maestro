@@ -57,7 +57,8 @@ class SceneMapTest(unittest.TestCase):
 class PlannerRuleTest(unittest.TestCase):
     def test_contact_between_two_people_is_never_filmed(self):
         self.assertIn("Contact between two people is never in frame", SCENE_CRAFT)
-        self.assertIn("every hand below the bottom edge of the frame", SCENE_CRAFT)
+        self.assertIn("the hold exists below the frame and the faces carry it", SCENE_CRAFT)
+        self.assertIn("no hand moves toward the other person", SCENE_CRAFT)
         self.assertIn("never the subject of an insert", SCENE_CRAFT)
         self.assertIn("An insert shows ONE person's hand", SCENE_CRAFT)
         self.assertIn("An insert names no face", SCENE_CRAFT)
