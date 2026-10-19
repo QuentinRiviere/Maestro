@@ -236,7 +236,19 @@ as silent stills (one per shot, two for a shot of 3 s or more, at most 24 per
 call) sent to the alias of `director_style_reference_model` (default
 `analyst`: on the Spark a Qwen3.6 vision model, the family Qwen-Image encodes
 its prompts with); the measured cuts and rhythm stay exact, only the sound
-column of the shot breakdown becomes a guess from the picture. Media are sent as `image_url` data URIs on
+column of the shot breakdown becomes a guess from the picture. The local
+pass has no 15-minute bound: a whole episode goes through, and shots the
+model flags as credits (opening titles, end credits, logos, title cards,
+recaps, previews) are described but left out of the stats and the grammar
+(`credits_shots` / `credits_sec` in the reference's stats).
+
+A bible keeps up to 10 references. With two or more enabled, analysed
+references the controller consolidates them into one grammar on the bible
+(`style_grammar`, `GET .../style-references/merged`, `POST .../merge` to
+rebuild): one text call that merges rules, weighted numbers and per-tag
+`scene_notes`. It is rebuilt after every analysis, edit or deletion and the
+planner block uses it whenever it covers exactly the references of the run;
+otherwise the references are stacked within the block's 4000 characters. Media are sent as `image_url` data URIs on
 `/v1/chat/completions`:
 
 - a still (shot image, draft candidate, character sheet) is one JPEG,

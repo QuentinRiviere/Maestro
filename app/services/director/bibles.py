@@ -67,7 +67,7 @@ IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
 # Reference videos of a series (staging, editing and rhythm to learn from);
 # see ``style_reference``. They are stored next to the bible's images.
 VIDEO_SUFFIXES = (".mp4", ".mov", ".webm", ".mkv")
-MAX_STYLE_REFERENCES = 8
+MAX_STYLE_REFERENCES = 10
 STYLE_REFERENCE_STATES = ("queued", "analysing", "done", "failed")
 # Analyses owned by this process. A reference still queued or analysing that
 # is not in it was cut by a restart.
@@ -266,6 +266,27 @@ def _style_references(raw: Any, folder: Path) -> list[dict]:
     return references[:MAX_STYLE_REFERENCES]
 
 
+def _style_grammar(raw: Any) -> dict | None:
+    """The grammar consolidated from the bible's references (style_reference.start_merge), as stored."""
+    if not isinstance(raw, dict) or not raw:
+        return None
+    grammar = raw.get("grammar")
+    sources = [{"id": str(s.get("id") or ""), "updated_at": str(s.get("updated_at") or ""),
+                "scene_tags": [str(t) for t in (s.get("scene_tags") or [])][:8]}
+               for s in raw.get("sources") or [] if isinstance(s, dict)]
+    cost = raw.get("cost_usd")
+    return {
+        "status": _text(raw.get("status"), 20) or "failed",
+        "sources": sources[:MAX_STYLE_REFERENCES],
+        "grammar": copy.deepcopy(grammar) if isinstance(grammar, dict) and grammar else None,
+        "summary": str(raw.get("summary") or "")[:12000],
+        "model": _text(raw.get("model"), 120),
+        "cost_usd": cost if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None,
+        "updated_at": _text(raw.get("updated_at"), 40),
+        "error": _text(raw.get("error"), 400),
+    }
+
+
 def normalize_bible(raw: Any, folder: Path) -> dict:
     """The stored fields of a bible, bounded; ids and timestamps are kept as given."""
     raw = raw if isinstance(raw, dict) else {}
@@ -283,6 +304,7 @@ def normalize_bible(raw: Any, folder: Path) -> dict:
     for kind, plural in KINDS.items():
         bible[plural] = _elements(raw.get(plural), kind, folder)
     bible["style_references"] = _style_references(raw.get("style_references"), folder)
+    bible["style_grammar"] = _style_grammar(raw.get("style_grammar"))
     return bible
 
 
@@ -406,6 +428,7 @@ def save_bible(raw: dict, *, bible_id: str | None = None) -> dict:
                         variant["images"] = []
                     element["image"] = None
             bible["style_references"] = []
+            bible["style_grammar"] = None
         else:
             previous = get_bible(bible_id) or {}
             if not previous:
@@ -422,6 +445,7 @@ def save_bible(raw: dict, *, bible_id: str | None = None) -> dict:
             keep_layouts(bible, previous)
             # Reference videos and their analyses have their own endpoints.
             bible["style_references"] = copy.deepcopy(previous.get("style_references") or [])
+            bible["style_grammar"] = copy.deepcopy(previous.get("style_grammar"))
         bible["id"] = bible_id
         _write(_stamp(bible, previous))
     return bible

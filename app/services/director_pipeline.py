@@ -8048,15 +8048,19 @@ def _apply_style_references(pid: str, params: dict, skill_type: str = "") -> str
     the CINEMA GRAMMAR block is on it carries the references' measured numbers
     (rhythm, shot mix), so this block keeps only their rules and patterns.
     """
+    from services.director import bibles
     from services.director.cinema_grammar import cinema_grammar_mode
-    from services.director.style_reference import planner_block
+    from services.director.style_reference import CHOICE_AUTO, merged_grammar, planner_block
 
     choice, bible_id, references = _selected_style_references(params)
     params["director_style_reference"] = choice
     numbers_in_cinema = bool(references) and cinema_grammar_mode(params, skill_type) == "on" and bool(
         _style_reference_calibration(bible_id, references))
     brief = "\n".join(str(params.get(key) or "") for key in ("scene_description", "story", "concept"))
-    block = planner_block(references, brief=brief, numbers=not numbers_in_cinema)
+    # The grammar consolidated from every enabled reference, when it is up to date.
+    merged = merged_grammar(bibles.get_bible(bible_id), references) if choice == CHOICE_AUTO and bible_id else None
+    params["_director_style_grammar_merged"] = bool(merged)
+    block = planner_block(references, brief=brief, numbers=not numbers_in_cinema, merged=merged)
     params["_director_style_references"] = [
         {"id": r["id"], "label": r.get("label"), "scene_tags": r.get("scene_tags") or [],
          "target_asl_sec": ((r.get("grammar") or {}).get("rhythm") or {}).get("target_asl_sec")}
@@ -8064,7 +8068,8 @@ def _apply_style_references(pid: str, params: dict, skill_type: str = "") -> str
     ] if block else []
     if block:
         print(f"[Pipeline {pid}] Style references: {', '.join(r.get('label') or r['id'] for r in references)} "
-              f"({len(block)} chars{', numbers in the cinema grammar' if numbers_in_cinema else ''})")
+              f"({len(block)} chars{', merged' if merged else ''}"
+              f"{', numbers in the cinema grammar' if numbers_in_cinema else ''})")
     return block
 
 

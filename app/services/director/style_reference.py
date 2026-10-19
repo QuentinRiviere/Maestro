@@ -80,6 +80,12 @@ LOCAL_MODEL = "analyst"
 MAX_LOCAL_STILLS = 24
 LONG_SHOT_SEC = 3.0
 STILL_LONG_SIDE = 768
+# The local pass is free: a whole episode can go through it.
+MAX_LOCAL_ANALYSED_SEC = 2 * 3600
+# Consolidation of several references into one grammar (start_merge).
+MERGE_ATTEMPTS = 2
+MERGED_RULES = 14
+MIN_MERGE_REFERENCES = 2
 MAX_STORED_SHOTS = 1500
 MAX_SYNTHESIS_SHOTS = 400
 
@@ -119,13 +125,36 @@ detection (start and end in seconds from the start of THIS excerpt). Describe ev
   time_jump, scene_change, rhythm (pace or music), other.
 - If a listed cut is not a real cut (a flash, a fast pan, a light change), set "false_cut": true on the shot that
   starts there.
+- The video may be a whole episode: set "credits": true on a shot that belongs to the opening titles or title
+  sequence, the end credits, a broadcaster or studio logo, a title card, a recap or a preview of the next episode
+  (text over the picture, cast names, a logo animation). Still describe it. Such shots are left out of the grammar.
 
 Return ONLY a JSON object, no prose, no markdown:
 {{"shots": [{{"shot": 1, "shot_size": "{'|'.join(SHOT_SIZES)}", "angle": "{'|'.join(ANGLES)}",
   "movement": "{'|'.join(MOVEMENTS)}", "subject": "who or what the frame shows, generic",
   "action": "what happens, short", "cut_reason": "{'|'.join(CUT_REASONS)}",
   "transition": "{'|'.join(TRANSITIONS)}", "lighting": "light and colour, short",
-  "audio": "{'|'.join(AUDIO_KINDS)}", "false_cut": false}}]}}"""
+  "audio": "{'|'.join(AUDIO_KINDS)}", "false_cut": false, "credits": false}}]}}"""
+
+MERGE_SYSTEM_PROMPT = """You are a senior editor consolidating the staging grammars of SEVERAL reference videos
+into ONE grammar for an AI storyboard planner that will direct NEW productions with their own story and cast.
+You receive, for each reference, its label, the scenes it was chosen for (tags, or every scene), its weight (shot
+count), its measured editing statistics (exact) and the grammar learned from it. Write the grammar the references
+share: where they agree, state the principle once with the weighted numbers; where they differ, keep the habit of
+the heavier references and say so ("most references..."); where a difference follows the scene tags, put it in
+"scene_notes" keyed by tag. Never mention a reference's specific content, characters, names, places, plot or
+dialogue; write "a character", "the listener", "the speaker", "an object".
+
+Return ONLY a JSON object, no prose outside it:
+{"rhythm": {"target_asl_sec": number, "pace_with_emotion": "how pace changes with emotion and tension",
+            "notes": "short"},
+ "shot_mix": {"close_up": percent, "medium": percent, "...": percent},
+ "patterns": ["recurring pattern shared by the references, short"],
+ "scene_openings": "short", "scene_closings": "short", "dialogue_coverage": "short",
+ "camera_movement": "short", "lighting_color": "short", "music_silence": "short",
+ "rules": ["8-14 imperative rules a planner can apply shot by shot, numbers where possible"],
+ "scene_notes": {"<tag>": "what changes for scenes of this mood, short"},
+ "summary_markdown": "a readable markdown summary for the user, 150-300 words, with short headings"}"""
 
 SYNTHESIS_SYSTEM_PROMPT = """You are a senior editor writing the staging grammar of a reference video for an AI
 storyboard planner that will direct NEW productions with their own story and cast. You receive measured editing
@@ -241,10 +270,10 @@ def pacing_curve(shots: Sequence[Mapping[str, float]], duration: float,
     return curve
 
 
-def shot_stats(cuts: Sequence[float], duration: float) -> dict:
-    """Editing statistics of a video from its cuts (pure)."""
-    shots = shot_spans(cuts, duration)
-    lengths = [s["duration"] for s in shots]
+def length_stats(shots: Sequence[Mapping[str, float]], duration: float) -> dict:
+    """Shot-length statistics of ``shots`` (pure): count, lengths, average, median, bounds, distribution, pacing."""
+    lengths = [float(s["duration"]) for s in shots]
+    covered = sum(lengths)
     distribution = []
     lower = 0.0
     for label_, upper in LENGTH_BUCKETS:
@@ -253,19 +282,41 @@ def shot_stats(cuts: Sequence[float], duration: float) -> dict:
                              "percent": round(100 * count / len(lengths), 1) if lengths else 0.0})
         lower = upper
     return {
-        "duration_sec": round(float(duration), 3),
         "shot_count": len(shots),
-        "cut_count": len(cuts),
-        "cuts": [round(c, 3) for c in cuts],
         "shot_lengths": [round(d, 3) for d in lengths],
         "asl_sec": round(statistics.fmean(lengths), 2) if lengths else None,
         "median_sec": round(statistics.median(lengths), 2) if lengths else None,
         "min_sec": round(min(lengths), 2) if lengths else None,
         "max_sec": round(max(lengths), 2) if lengths else None,
-        "cuts_per_minute": round(len(cuts) / (duration / 60), 1) if duration > 0 else None,
+        "cuts_per_minute": round(max(0, len(shots) - 1) / (covered / 60), 1) if covered > 0 else None,
         "distribution": distribution,
         "pacing": pacing_curve(shots, duration),
     }
+
+
+def shot_stats(cuts: Sequence[float], duration: float) -> dict:
+    """Editing statistics of a video from its cuts (pure)."""
+    shots = shot_spans(cuts, duration)
+    return {
+        "duration_sec": round(float(duration), 3),
+        "cut_count": len(cuts),
+        "cuts": [round(c, 3) for c in cuts],
+        **length_stats(shots, duration),
+    }
+
+
+def without_credits(shots: Sequence[Mapping[str, Any]], duration: float) -> tuple[list[dict], dict]:
+    """(shots that are not credits, stats of those) once the model has flagged titles, credits and logos.
+
+    The stats carry ``credits_shots`` and ``credits_sec`` for what was left out
+    ({} when nothing was flagged: the measured stats then stand).
+    """
+    flagged = [s for s in shots if s.get("credits")]
+    if not flagged:
+        return [dict(s) for s in shots], {}
+    kept = [dict(s) for s in shots if not s.get("credits")]
+    return kept, {**length_stats(kept, duration), "credits_shots": len(flagged),
+                  "credits_sec": round(sum(float(s["duration"]) for s in flagged), 1)}
 
 
 def local_analysis(path: str, *, threshold: float = SCENE_CUT_THRESHOLD) -> dict:
@@ -351,7 +402,7 @@ def still_times(shot: Mapping[str, float], *, long_shot: float = LONG_SHOT_SEC) 
 
 
 def plan_local_chunks(shots: Sequence[Mapping[str, float]], *, max_stills: int = MAX_LOCAL_STILLS,
-                      limit_sec: float | None = MAX_ANALYSED_SEC) -> list[dict]:
+                      limit_sec: float | None = MAX_LOCAL_ANALYSED_SEC) -> list[dict]:
     """Consecutive shots grouped so that one call shows at most ``max_stills`` stills (same shape as ``plan_chunks``)."""
     chunks: list[dict] = []
     current: list[Mapping[str, float]] = []
@@ -466,6 +517,7 @@ def parse_chunk_shots(text: str, chunk: Mapping[str, Any]) -> dict[int, dict]:
             "lighting": _short(item.get("lighting"), 160),
             "audio": _enum(item.get("audio"), AUDIO_KINDS, "mixed"),
             **({"false_cut": True} if item.get("false_cut") is True else {}),
+            **({"credits": True} if item.get("credits") is True else {}),
         }
     if not records:
         raise StyleReferenceError("The model's shots match none of the listed shots")
@@ -565,8 +617,11 @@ def _number(value: Any) -> float | None:
     return number if math.isfinite(number) else None
 
 
-def parse_grammar(text: str) -> tuple[dict, str]:
-    """(grammar, summary markdown) from the synthesis answer; raises when it has no rules."""
+def parse_grammar(text: str, *, max_rules: int = 10, scene_notes: bool = False) -> tuple[dict, str]:
+    """(grammar, summary markdown) from the synthesis answer; raises when it has no rules.
+
+    ``scene_notes`` keeps the merged grammar's per-tag notes.
+    """
     raw = extract_json(text)
     if not isinstance(raw, dict):
         raise StyleReferenceError("The synthesis returned no JSON object")
@@ -578,9 +633,12 @@ def parse_grammar(text: str) -> tuple[dict, str]:
         size, percent = _enum(key, SHOT_SIZES, ""), _number(value)
         if size and percent is not None and percent > 0:
             mix[size] = round(min(100.0, percent), 1)
-    rules = _text_list(raw.get("rules"), 10)
+    rules = _text_list(raw.get("rules"), max_rules)
     if not rules:
         raise StyleReferenceError("The synthesis returned no rules")
+    notes = raw.get("scene_notes") if scene_notes and isinstance(raw.get("scene_notes"), dict) else {}
+    notes = {bibles._slug(str(k), 24): _short(v, 300) for k, v in list(notes.items())[:8] if _short(v, 300)}
+    notes = {k: v for k, v in notes.items() if k}
     grammar = {
         "rhythm": {"target_asl_sec": round(target, 2) if target and target > 0 else None,
                    "pace_with_emotion": _short(rhythm.get("pace_with_emotion"), 400),
@@ -590,6 +648,7 @@ def parse_grammar(text: str) -> tuple[dict, str]:
         **{key: _short(raw.get(key), 400) for key in ("scene_openings", "scene_closings", "dialogue_coverage",
                                                       "camera_movement", "lighting_color", "music_silence")},
         "rules": rules,
+        **({"scene_notes": notes} if notes else {}),
     }
     summary = str(raw.get("summary_markdown") or raw.get("summary") or "").strip()[:8000]
     return grammar, summary
@@ -628,6 +687,21 @@ def _ask_text(http: Any, fal_key: str, model: str, system: str, prompt: str, ask
                    router=FAL_ROUTER)
 
 
+def _resolve_backend(backend: Any, fal_key: str | None, model: str,
+                     ask: Callable[..., tuple[str, Any]]) -> tuple[Callable[..., tuple[str, Any]], str, str, bool]:
+    """(ask, key, model, local) for the model pass; raises StyleReferenceError when neither backend can be used."""
+    if backend is not None and getattr(backend, "provider", "") == "openai":
+        if not backend.available:
+            raise StyleReferenceError("The local judge has no server URL (Settings → Services); "
+                                      "the measured stats are saved")
+        # The backend's own key authenticates (``key or self.key``), never fal's.
+        return backend.ask, "", str(getattr(backend, "model", "") or LOCAL_MODEL), True
+    if not fal_key:
+        raise StyleReferenceError("The model pass needs a fal.ai API key or the local judge (Settings → Services); "
+                                  "the measured stats are saved")
+    return ask, str(fal_key), model, False
+
+
 def analyse_reference(
     path: str,
     *,
@@ -652,17 +726,7 @@ def analyse_reference(
     stats = local(path)
     shots = [dict(s) for s in shot_spans(stats["cuts"], stats["duration_sec"])]
     on_progress(f"Measured {stats['shot_count']} shots", {"stats": stats})
-    local_backend = backend is not None and getattr(backend, "provider", "") == "openai"
-    if local_backend:
-        if not backend.available:
-            raise StyleReferenceError("The local judge has no server URL (Settings → Services); "
-                                      "the measured stats are saved")
-        ask = backend.ask
-        model = str(getattr(backend, "model", "") or LOCAL_MODEL)
-        fal_key = ""  # the backend's own key authenticates (``key or self.key``), never fal's
-    elif not fal_key:
-        raise StyleReferenceError("The model pass needs a fal.ai API key or the local judge (Settings → Services); "
-                                  "the measured stats are saved")
+    ask, fal_key, model, local_backend = _resolve_backend(backend, fal_key, model, ask)
     chunks = plan_local_chunks(shots) if local_backend else plan_chunks(shots)
     cost = 0.0
     errors: list[str] = []
@@ -705,13 +769,17 @@ def analyse_reference(
                         raise last
                 except (StyleReferenceError, JudgeError, OSError) as error:
                     errors.append(f"Excerpt {number}: {str(error)[:200]}")
-        described = [s for s in shots if s.get("shot_size")]
+        kept, trimmed = without_credits(shots, stats["duration_sec"])
+        described = [s for s in kept if s.get("shot_size")]
         if not described:
             raise StyleReferenceError(errors[0] if errors else "The model described no shot")
-        stats = {**stats, "shot_mix": shot_mix(described), "motion_mix": motion_mix(described),
+        stats = {**stats, **trimmed, "shot_mix": shot_mix(described), "motion_mix": motion_mix(described),
                  "audio_lengths": audio_lengths(described), "described_shots": len(described)}
+        if trimmed:
+            on_progress(f"Left out {trimmed['credits_shots']} credits shots ({trimmed['credits_sec']:.0f} s)",
+                        {"stats": stats})
         on_progress("Writing the staging grammar", {"stats": stats})
-        prompt = synthesis_prompt(stats, shots)
+        prompt = synthesis_prompt(stats, kept)
         last_error: Exception | None = None
         for _ in range(SYNTHESIS_ATTEMPTS):
             text, call_cost = _ask_text(http, fal_key, model, SYNTHESIS_SYSTEM_PROMPT, prompt, ask, sleep)
@@ -818,14 +886,32 @@ def select_references(bible: Mapping[str, Any] | None, choice: Any = CHOICE_AUTO
     return [r for r in references if r.get("id") == choice]
 
 
+def merged_block(merged: Mapping[str, Any], references: Sequence[Mapping[str, Any]], limit: int, *,
+                 brief: str = "", numbers: bool = True) -> str:
+    """The consolidated grammar as planner lines: one block, then the notes of the tags the brief names first."""
+    grammar = merged.get("grammar") or {}
+    pseudo = {"label": f"all {len(references)} references combined", "grammar": grammar, "stats": None,
+              "scene_tags": []}
+    text = reference_block(pseudo, limit, numbers=numbers)
+    notes = grammar.get("scene_notes") or {}
+    ordered = sorted(notes.items(), key=lambda item: 0 if _tag_matches(item[0], brief) else 1)
+    for tag, note in ordered:
+        line = f"- For {tag.replace('_', ' ')} scenes: {_short(note, 300)}"
+        if len(text) + 1 + len(line) <= limit:
+            text += "\n" + line
+    return text
+
+
 def planner_block(references: Sequence[Mapping[str, Any]], *, brief: str = "",
                   total_limit: int = MAX_BLOCK_CHARS, per_reference: int = MAX_REFERENCE_CHARS,
-                  numbers: bool = True) -> str:
+                  numbers: bool = True, merged: Mapping[str, Any] | None = None) -> str:
     """The "REFERENCE STAGING GRAMMAR" planner block ("" without references), at most ``total_limit`` chars.
 
-    Tagged references whose tags appear in the brief come first, then
-    untagged ones, then the other tagged ones; references that no longer fit
-    are named as left out.
+    With a ``merged`` grammar (``merged_grammar``) the block is that one
+    grammar, so every reference speaks whatever their number. Otherwise the
+    references are stacked: tagged ones whose tags appear in the brief first,
+    then untagged ones, then the other tagged ones; references that no longer
+    fit are named as left out.
     """
     if not references:
         return ""
@@ -835,6 +921,9 @@ def planner_block(references: Sequence[Mapping[str, Any]], *, brief: str = "",
     head = ("REFERENCE STAGING GRAMMAR (editing and staging principles learned from reference videos chosen for "
             "this series: apply them to this production's own story and cast, never copy a reference's content, "
             f"characters or story. {rhythm_note})")
+    if merged and (merged.get("grammar") or {}).get("rules"):
+        body = merged_block(merged, references, total_limit - len(head) - 1, brief=brief, numbers=numbers)
+        return (head + "\n" + body)[:total_limit] if body else ""
     if tagged:
         head += ("\nEach reference names the scenes it guides: for each scene, follow the reference whose scenes "
                  "fit its mood; references for every scene always apply.")
@@ -987,6 +1076,146 @@ def delete_reference(bible_id: str, ref_id: str) -> list[dict]:
     return bible.get("style_references") or []
 
 
+# ── one grammar for several references ─────────────────────────────────────
+
+
+def merge_sources(references: Sequence[Mapping[str, Any]]) -> list[dict]:
+    """What a merged grammar was built from: enough to tell when it is stale."""
+    return sorted(({"id": str(r.get("id") or ""), "updated_at": str(r.get("updated_at") or ""),
+                    "scene_tags": list(r.get("scene_tags") or [])} for r in references), key=lambda s: s["id"])
+
+
+def merge_candidates(bible: Mapping[str, Any] | None) -> list[dict]:
+    """The references a merged grammar covers: every enabled, analysed one (the "auto" selection)."""
+    return select_references(bible, CHOICE_AUTO)
+
+
+def merged_grammar(bible: Mapping[str, Any] | None, references: Sequence[Mapping[str, Any]]) -> dict | None:
+    """The bible's merged grammar when it is done and covers exactly ``references``, else None."""
+    merged = (bible or {}).get("style_grammar") or {}
+    if merged.get("status") != "done" or not (merged.get("grammar") or {}).get("rules"):
+        return None
+    if len(references) < MIN_MERGE_REFERENCES or merged.get("sources") != merge_sources(references):
+        return None
+    return merged
+
+
+def merge_prompt(references: Sequence[Mapping[str, Any]]) -> str:
+    parts = []
+    for n, reference in enumerate(references, 1):
+        stats = reference.get("stats") or {}
+        facts = {key: stats.get(key) for key in ("asl_sec", "median_sec", "cuts_per_minute", "shot_mix",
+                                                 "motion_mix", "distribution") if stats.get(key) is not None}
+        tags = reference.get("scene_tags") or []
+        parts.append(f"Reference {n}: \"{_short(reference.get('label'), 60)}\", for "
+                     f"{', '.join(tags) + ' scenes' if tags else 'every scene'}, weight {reference_measures(reference).get('weight', 1)} shots.\n"
+                     "Measured: " + json.dumps(facts, ensure_ascii=False) + "\n"
+                     "Grammar: " + json.dumps(reference.get("grammar") or {}, ensure_ascii=False)[:6000])
+    return f"{len(references)} references to consolidate.\n\n" + "\n\n".join(parts)
+
+
+def merge_grammars(
+    references: Sequence[Mapping[str, Any]],
+    *,
+    fal_key: str | None,
+    model: str = DEFAULT_MODEL,
+    ask: Callable[..., tuple[str, Any]] = _ask,
+    http: Any = None,
+    sleep: Callable[[float], None] = time.sleep,
+    backend: Any = None,
+) -> dict:
+    """One grammar for ``references``: {grammar, summary, cost_usd, model}; raises StyleReferenceError."""
+    ask, fal_key, model, _ = _resolve_backend(backend, fal_key, model, ask)
+    prompt = merge_prompt(references)
+    cost = 0.0
+    owns_http = http is None
+    if owns_http:
+        import httpx
+        http = httpx.Client(timeout=120)
+    try:
+        last_error: Exception | None = None
+        for _ in range(MERGE_ATTEMPTS):
+            text, call_cost = _ask_text(http, fal_key, model, MERGE_SYSTEM_PROMPT, prompt, ask, sleep)
+            cost += float(call_cost or 0)
+            try:
+                grammar, summary = parse_grammar(text, max_rules=MERGED_RULES, scene_notes=True)
+            except StyleReferenceError as error:
+                last_error = error
+                continue
+            break
+        else:
+            raise StyleReferenceError(f"Merge failed: {last_error}")
+    finally:
+        if owns_http:
+            http.close()
+    return {"grammar": grammar, "summary": summary, "cost_usd": round(cost, 4), "model": model}
+
+
+def _set_grammar(bible_id: str, value: dict | None) -> dict | None:
+    def change(bible: dict) -> dict | None:
+        bible["style_grammar"] = value
+        return value
+    return bibles._mutate(bible_id, change)[1]
+
+
+_MERGE_SLOT = threading.Semaphore(1)
+
+
+def start_merge(bible_id: str, *, fal_key: str | None, model: str = DEFAULT_MODEL, backend: Any = None,
+                merge: Callable[..., dict] | None = None, force: bool = False, wait: bool = False) -> dict | None:
+    """Keep the bible's merged grammar in step with its references; returns the stored record.
+
+    Fewer than MIN_MERGE_REFERENCES usable references: the merged grammar is
+    dropped (the single reference speaks for itself). A merged grammar that
+    covers the current references is kept unless ``force``. Otherwise a
+    background thread rebuilds it and the record reads ``merging`` meanwhile.
+    """
+    bible = bibles.get_bible(bible_id)
+    if not bible:
+        raise BibleError("Unknown bible")
+    references = merge_candidates(bible)
+    if len(references) < MIN_MERGE_REFERENCES:
+        if bible.get("style_grammar"):
+            _set_grammar(bible_id, None)
+        return None
+    sources = merge_sources(references)
+    current = bible.get("style_grammar") or {}
+    if not force and current.get("sources") == sources and current.get("status") in ("done", "merging"):
+        return current
+    record = _set_grammar(bible_id, {"status": "merging", "sources": sources, "grammar": None, "summary": "",
+                                     "model": "", "cost_usd": None, "updated_at": _now(), "error": ""})
+    thread = threading.Thread(target=_run_merge, args=(bible_id, references, fal_key, model, backend,
+                                                       merge or merge_grammars),
+                              name=f"style-merge-{bible_id}", daemon=True)
+    thread.start()
+    if wait:
+        thread.join()
+    return record
+
+
+def _run_merge(bible_id: str, references: list[dict], fal_key: str | None, model: str, backend: Any,
+               merge: Callable[..., dict]) -> None:
+    sources = merge_sources(references)
+    try:
+        with _MERGE_SLOT:
+            try:
+                result = merge(references, fal_key=fal_key, model=model, backend=backend)
+            except Exception as error:  # noqa: BLE001 - recorded on the bible
+                print(f"[Style reference] {bible_id}: merge failed: {error}")
+                _set_grammar(bible_id, {"status": "failed", "sources": sources, "grammar": None, "summary": "",
+                                        "model": "", "cost_usd": None, "updated_at": _now(),
+                                        "error": _short(error, 400)})
+                return
+            _set_grammar(bible_id, {"status": "done", "sources": sources, "updated_at": _now(), "error": "",
+                                    **result})
+            print(f"[Style reference] {bible_id}: merged {len(references)} references, "
+                  f"{len(result['grammar'].get('rules') or [])} rules, cost ${result.get('cost_usd')}")
+    except BibleError:
+        pass  # the bible was deleted meanwhile
+    except Exception as error:  # noqa: BLE001
+        print(f"[Style reference] {bible_id}: merge error: {error}")
+
+
 # ── background analysis ────────────────────────────────────────────────────
 
 # One analysis at a time: each sends minutes of video to the model.
@@ -994,8 +1223,13 @@ _ANALYSIS_SLOT = threading.Semaphore(1)
 
 
 def start_analysis(bible_id: str, ref_id: str, *, fal_key: str | None, model: str = DEFAULT_MODEL,
-                   analyse: Callable[..., dict] | None = None, wait: bool = False, backend: Any = None) -> dict:
-    """Queue the analysis of one reference in a background thread; returns the queued reference."""
+                   analyse: Callable[..., dict] | None = None, wait: bool = False, backend: Any = None,
+                   on_done: Callable[[str], Any] | None = None) -> dict:
+    """Queue the analysis of one reference in a background thread; returns the queued reference.
+
+    ``on_done(bible_id)`` runs after a successful analysis (the routes use it
+    to refresh the merged grammar).
+    """
     if ref_id in bibles._LIVE_ANALYSES:
         raise BibleError("This reference is already being analysed")
     bibles._LIVE_ANALYSES.add(ref_id)
@@ -1005,7 +1239,8 @@ def start_analysis(bible_id: str, ref_id: str, *, fal_key: str | None, model: st
         bibles._LIVE_ANALYSES.discard(ref_id)
         raise
     thread = threading.Thread(target=_run_analysis,
-                              args=(bible_id, ref_id, fal_key, model, analyse or analyse_reference, backend),
+                              args=(bible_id, ref_id, fal_key, model, analyse or analyse_reference, backend,
+                                    on_done),
                               name=f"style-reference-{ref_id}", daemon=True)
     thread.start()
     if wait:
@@ -1014,7 +1249,8 @@ def start_analysis(bible_id: str, ref_id: str, *, fal_key: str | None, model: st
 
 
 def _run_analysis(bible_id: str, ref_id: str, fal_key: str | None, model: str,
-                  analyse: Callable[..., dict], backend: Any = None) -> None:
+                  analyse: Callable[..., dict], backend: Any = None,
+                  on_done: Callable[[str], Any] | None = None) -> None:
     try:
         with _ANALYSIS_SLOT:
             if ref_id not in bibles._LIVE_ANALYSES:
@@ -1040,6 +1276,11 @@ def _run_analysis(bible_id: str, ref_id: str, fal_key: str | None, model: str,
                 1 for s in shots if s.get("shot_size")), error=("; ".join(errors))[:400] if errors else "", **result)
             print(f"[Style reference] {bible_id}/{ref_id}: done, {result['stats'].get('shot_count')} shots, "
                   f"ASL {result['stats'].get('asl_sec')} s, cost ${result.get('cost_usd')}")
+            if on_done is not None:
+                try:
+                    on_done(bible_id)
+                except Exception as error:  # noqa: BLE001
+                    print(f"[Style reference] {bible_id}: after analysis: {error}")
     except BibleError:
         pass  # the bible or the reference was deleted meanwhile
     except Exception as error:  # noqa: BLE001
@@ -1084,6 +1325,20 @@ def register_routes(api: Any, *, get_fal_key: Callable[[], str | None],
             status = 404 if str(error).startswith("Unknown") or str(error) == "Invalid bible id" else 400
             raise HTTPException(status_code=status, detail=str(error)) from error
 
+    def refresh_merge(bible_id: str, force: bool = False) -> dict | None:
+        return start_merge(bible_id, fal_key=get_fal_key(), model=get_model(), backend=get_backend(), force=force)
+
+    @api.get(base + "/merged")
+    def style_reference_merged(bible_id: str):
+        bible = call(bibles.get_bible, bible_id)
+        if not bible:
+            raise HTTPException(status_code=404, detail="Bible not found")
+        return {"merged": bible.get("style_grammar"), "references": len(merge_candidates(bible))}
+
+    @api.post(base + "/merge")
+    def style_reference_merge(bible_id: str):
+        return {"merged": call(refresh_merge, bible_id, True)}
+
     @api.get(base)
     def style_references_list(bible_id: str):
         return {"references": [_public(r) for r in call(list_references, bible_id)]}
@@ -1117,7 +1372,8 @@ def register_routes(api: Any, *, get_fal_key: Callable[[], str | None],
             target.unlink(missing_ok=True)
             raise
         if str(analyse).strip().lower() not in ("false", "0", "no", "off"):
-            reference = call(start_analysis, bible_id, reference["id"], fal_key=get_fal_key(), model=get_model(), backend=get_backend())
+            reference = call(start_analysis, bible_id, reference["id"], fal_key=get_fal_key(), model=get_model(), backend=get_backend(),
+                             on_done=refresh_merge)
         return {"reference": _public(reference)}
 
     @api.get(base + "/{ref_id}")
@@ -1132,17 +1388,21 @@ def register_routes(api: Any, *, get_fal_key: Callable[[], str | None],
             raise HTTPException(status_code=400, detail="Request body must be JSON") from error
         if not isinstance(body, dict):
             raise HTTPException(status_code=400, detail="Request body must be a JSON object")
-        return {"reference": _public(call(update_reference, bible_id, ref_id, body))}
+        reference = _public(call(update_reference, bible_id, ref_id, body))
+        call(refresh_merge, bible_id)
+        return {"reference": reference}
 
     @api.delete(base + "/{ref_id}")
     def style_reference_delete(bible_id: str, ref_id: str):
         references = call(delete_reference, bible_id, ref_id)
+        call(refresh_merge, bible_id)
         return {"deleted": ref_id, "references": [_public(r) for r in references]}
 
     @api.post(base + "/{ref_id}/analyse")
     def style_reference_analyse(bible_id: str, ref_id: str):
         call(get_reference, bible_id, ref_id)
-        reference = call(start_analysis, bible_id, ref_id, fal_key=get_fal_key(), model=get_model(), backend=get_backend())
+        reference = call(start_analysis, bible_id, ref_id, fal_key=get_fal_key(), model=get_model(), backend=get_backend(),
+                             on_done=refresh_merge)
         return {"reference": _public(reference)}
 
     @api.get(base + "/{ref_id}/video")

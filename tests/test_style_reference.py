@@ -517,5 +517,176 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(self.client.patch(f"{self.base}/missing", json={"label": "x"}).status_code, 404)
 
 
+
+class CreditsTests(unittest.TestCase):
+    def test_flagged_shots_leave_the_stats_and_the_synthesis(self):
+        shots = sr.shot_spans([10.0, 20.0, 30.0], 40.0)
+        shots[0]["credits"] = True
+        shots[3]["credits"] = True
+        kept, trimmed = sr.without_credits(shots, 40.0)
+        self.assertEqual([s["index"] for s in kept], [1, 2])
+        self.assertEqual((trimmed["credits_shots"], trimmed["credits_sec"], trimmed["shot_count"]), (2, 20.0, 2))
+        self.assertEqual(trimmed["asl_sec"], 10.0)
+        self.assertEqual(sr.without_credits(sr.shot_spans([10.0], 20.0), 20.0)[1], {})
+
+    def test_parse_keeps_the_credits_flag(self):
+        answer = json.dumps({"shots": [{"shot": 1, "shot_size": "wide", "credits": True},
+                                       {"shot": 2, "shot_size": "close_up", "credits": False}]})
+        records = sr.parse_chunk_shots(answer, {"shots": [0, 1]})
+        self.assertTrue(records[0].get("credits"))
+        self.assertNotIn("credits", records[1])
+
+    def test_analysis_drops_credits_from_the_grammar(self):
+        first = json.dumps({"shots": [{"shot": 1, "shot_size": "wide", "credits": True},
+                                      {"shot": 2, "shot_size": "close_up"}]})
+        ask = FakeAsk([(first, 0.0), (shots_answer(2), 0.0), (grammar_answer(), 0.0)])
+        progress = []
+        with patch.object(sr, "encode_chunk", lambda src, a, b, dest, **kw: dest), \
+                patch.object(sr, "data_uri", lambda path: "data:video/mp4;base64,AAAA"):
+            result = sr.analyse_reference("video.mp4", fal_key="key", ask=ask, http=object(), sleep=lambda s: None,
+                                          local=fake_local([30.0, 50.0, 80.0], 100.0),
+                                          on_progress=lambda m, p: progress.append(m))
+        self.assertEqual(result["stats"]["credits_shots"], 1)
+        self.assertEqual(result["stats"]["shot_count"], 3)
+        self.assertTrue(result["shots"][0].get("credits"))
+        self.assertNotIn("1 | 0.0s", ask.calls[-1]["prompt"])  # the credits shot is not in the breakdown
+        self.assertIn("2 | 30.0s", ask.calls[-1]["prompt"])
+        self.assertTrue(any(m.startswith("Left out 1 credits shots") for m in progress))
+
+
+def merged_answer(**extra) -> str:
+    body = json.loads(grammar_answer())
+    body["rules"] = [f"Rule {n}." for n in range(1, 15)]
+    body["scene_notes"] = {"dispute": "Cut faster, 1.5 s per shot.", "Confession!": "Hold the listener."}
+    body.update(extra)
+    return json.dumps(body)
+
+
+class MergeTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        patcher = patch.object(bibles, "BIBLES_DIR", Path(self.tmp.name) / "bibles")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.bible = bibles.save_bible({"name": "Seoul Nights"})
+        self.bid = self.bible["id"]
+
+    def put_references(self, references):
+        folder = bibles._folder(self.bid)
+        folder.mkdir(parents=True, exist_ok=True)
+        for r in references:
+            (folder / f"{r['id']}.mp4").write_bytes(b"video")
+
+        def change(bible):
+            bible["style_references"] = [{"file": f"{r['id']}.mp4", "updated_at": "t0", **r} for r in references]
+        bibles._mutate(self.bid, change)
+        return bibles.get_bible(self.bid)
+
+    def fake_merge(self, references, *, fal_key, model, backend=None):
+        self.merged_from = [r["id"] for r in references]
+        grammar, summary = sr.parse_grammar(merged_answer(), max_rules=sr.MERGED_RULES, scene_notes=True)
+        return {"grammar": grammar, "summary": summary, "cost_usd": 0.0, "model": "analyst"}
+
+    def test_parse_grammar_keeps_fourteen_rules_and_scene_notes(self):
+        grammar, _ = sr.parse_grammar(merged_answer(), max_rules=sr.MERGED_RULES, scene_notes=True)
+        self.assertEqual(len(grammar["rules"]), 14)
+        self.assertEqual(grammar["scene_notes"], {"dispute": "Cut faster, 1.5 s per shot.",
+                                                  "confession": "Hold the listener."})
+        self.assertNotIn("scene_notes", sr.parse_grammar(merged_answer())[0])
+
+    def test_merge_grammars_is_one_text_call_on_the_backend(self):
+        class Backend:
+            provider = "openai"
+            available = True
+            model = "analyst"
+            ask = FakeAsk([("nope", 0.0), (merged_answer(), 0.0)])
+
+        backend = Backend()
+        result = sr.merge_grammars([reference("ref_a", tags=["dispute"]), reference("ref_b")], fal_key="",
+                                   backend=backend, http=object(), sleep=lambda s: None)
+        self.assertEqual([c["videos"] for c in backend.ask.calls], [0, 0])
+        self.assertIn("2 references to consolidate", backend.ask.calls[0]["prompt"])
+        self.assertIn("for dispute scenes", backend.ask.calls[0]["prompt"])
+        self.assertEqual(backend.ask.calls[0]["system"], sr.MERGE_SYSTEM_PROMPT)
+        self.assertEqual((result["model"], result["cost_usd"], len(result["grammar"]["rules"])), ("analyst", 0.0, 14))
+
+    def test_one_reference_needs_no_merge_and_drops_a_stale_one(self):
+        self.put_references([reference("ref_a")])
+        bibles._mutate(self.bid, lambda b: b.__setitem__("style_grammar", {"status": "done", "sources": []}))
+        self.assertIsNone(sr.start_merge(self.bid, fal_key="k", merge=self.fake_merge, wait=True))
+        self.assertIsNone(bibles.get_bible(self.bid)["style_grammar"])
+
+    def test_merge_runs_once_per_set_of_references_and_goes_stale_on_edits(self):
+        bible = self.put_references([reference("ref_a", tags=["dispute"]), reference("ref_b"),
+                                     reference("ref_c", status="failed")])
+        record = sr.start_merge(self.bid, fal_key="k", merge=self.fake_merge, wait=True)
+        self.assertEqual(record["status"], "merging")
+        stored = bibles.get_bible(self.bid)["style_grammar"]
+        self.assertEqual(stored["status"], "done")
+        self.assertEqual(self.merged_from, ["ref_a", "ref_b"])
+        self.assertEqual([s["id"] for s in stored["sources"]], ["ref_a", "ref_b"])
+        self.assertEqual(stored["grammar"]["scene_notes"]["dispute"], "Cut faster, 1.5 s per shot.")
+        # Fresh: the same set of references reuses it.
+        references = sr.merge_candidates(bibles.get_bible(self.bid))
+        self.assertIsNotNone(sr.merged_grammar(bibles.get_bible(self.bid), references))
+        self.merged_from = None
+        self.assertEqual(sr.start_merge(self.bid, fal_key="k", merge=self.fake_merge, wait=True)["status"], "done")
+        self.assertIsNone(self.merged_from)
+        # An edit (tags) makes it stale until the next merge; the planner falls back to stacking meanwhile.
+        sr.update_reference(self.bid, "ref_b", {"scene_tags": "confession"})
+        bible = bibles.get_bible(self.bid)
+        self.assertIsNone(sr.merged_grammar(bible, sr.merge_candidates(bible)))
+        sr.start_merge(self.bid, fal_key="k", merge=self.fake_merge, wait=True)
+        bible = bibles.get_bible(self.bid)
+        self.assertEqual(self.merged_from, ["ref_a", "ref_b"])
+        self.assertIsNotNone(sr.merged_grammar(bible, sr.merge_candidates(bible)))
+        # A reference chosen by id never uses the merged grammar.
+        self.assertIsNone(sr.merged_grammar(bible, sr.select_references(bible, "ref_a")))
+
+    def test_a_failed_merge_is_recorded(self):
+        self.put_references([reference("ref_a"), reference("ref_b")])
+
+        def broken(references, **kw):
+            raise sr.StyleReferenceError("model down")
+
+        sr.start_merge(self.bid, fal_key="k", merge=broken, wait=True)
+        stored = bibles.get_bible(self.bid)["style_grammar"]
+        self.assertEqual((stored["status"], stored["error"]), ("failed", "model down"))
+
+    def test_the_merged_grammar_survives_a_bible_save(self):
+        self.put_references([reference("ref_a"), reference("ref_b")])
+        sr.start_merge(self.bid, fal_key="k", merge=self.fake_merge, wait=True)
+        bibles.save_bible({"name": "Seoul Nights 2"}, bible_id=self.bid)
+        stored = bibles.get_bible(self.bid)["style_grammar"]
+        self.assertEqual(stored["status"], "done")
+        self.assertEqual(len(stored["grammar"]["rules"]), 14)
+
+
+class MergedBlockTests(unittest.TestCase):
+    def merged(self):
+        grammar, summary = sr.parse_grammar(merged_answer(), max_rules=sr.MERGED_RULES, scene_notes=True)
+        return {"status": "done", "grammar": grammar, "summary": summary}
+
+    def test_the_merged_grammar_replaces_the_stack(self):
+        references = [reference(f"ref_{n}", label=f"Ref {n}", tags=["dispute"] if n == 2 else ()) for n in range(6)]
+        stacked = sr.planner_block(references)
+        merged = sr.planner_block(references, merged=self.merged(), brief="A confession at the café.")
+        self.assertIn("all 6 references combined", merged)
+        self.assertNotIn("Ref 1", merged)
+        self.assertNotIn("Each reference names the scenes", merged)
+        self.assertIn("- Rule: Rule 14.", merged)
+        self.assertIn("Ref 1", stacked)
+        self.assertNotIn("Left out", merged)
+        self.assertLessEqual(len(merged), sr.MAX_BLOCK_CHARS)
+        # The note of the tag the brief names comes before the other one.
+        self.assertLess(merged.index("For confession scenes"), merged.index("For dispute scenes"))
+
+    def test_a_merged_record_without_rules_stacks(self):
+        references = [reference("ref_a"), reference("ref_b", label="Second")]
+        block = sr.planner_block(references, merged={"status": "done", "grammar": {"rules": []}})
+        self.assertIn("Second", block)
+
+
 if __name__ == "__main__":
     unittest.main()
