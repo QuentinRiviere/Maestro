@@ -1314,6 +1314,147 @@ def _run_merge(bible_id: str, references: list[dict], fal_key: str | None, model
         print(f"[Style reference] {bible_id}: merge error: {error}")
 
 
+# ── a link as a reference (video fetch service) ───────────────────────────
+
+# Recent fetches per bible (in memory: a restart forgets them, the references
+# they made stay).
+MAX_FETCHES = 20
+FETCH_POLL_SEC = 3.0
+FETCH_TIMEOUT_SEC = 3 * 3600
+_FETCHES: dict[str, list[dict]] = {}
+_FETCH_LOCK = threading.Lock()
+
+
+def list_fetches(bible_id: str) -> list[dict]:
+    with _FETCH_LOCK:
+        return [dict(f) for f in _FETCHES.get(bible_id, [])]
+
+
+def _fetch_set(bible_id: str, fetch_id: str, **fields: Any) -> dict:
+    with _FETCH_LOCK:
+        for fetch in _FETCHES.get(bible_id, []):
+            if fetch["id"] == fetch_id:
+                fetch.update(fields, updated_at=_now())
+                return dict(fetch)
+    return {}
+
+
+def _valid_video_url(url: str) -> bool:
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    return parsed.scheme in ("http", "https") and bool(parsed.hostname)
+
+
+def fetch_reference(bible_id: str, url: str, *, fetcher: tuple[str, str] | None, label: str = "",
+                    scene_tags: Any = None, graphics: Any = GRAPHICS_IGNORE,
+                    start: Callable[[str, str], Any] | None = None, http: Any = None,
+                    sleep: Callable[[float], None] = time.sleep, wait: bool = False) -> dict:
+    """Queue a link: the fetch service downloads it at 480p, the file joins the bible, the analysis starts.
+
+    Returns the fetch record ({id, url, status, progress, error, reference_id,
+    ...}); ``start(bible_id, ref_id)`` runs once the reference exists.
+    """
+    if not call_bible_exists(bible_id):
+        raise BibleError("Unknown bible")
+    url = str(url or "").strip()
+    if len(url) > 2000 or not _valid_video_url(url):
+        raise BibleError("Give the http(s) link of a video")
+    if not fetcher or not fetcher[0]:
+        raise BibleError("No video fetch service is configured (Settings → Services)")
+    fetch = {"id": "fetch_" + secrets.token_hex(4), "url": url, "status": "queued", "progress": "Waiting",
+             "error": "", "reference_id": "", "label": _short(label, 80), "created_at": _now(),
+             "updated_at": _now()}
+    with _FETCH_LOCK:
+        fetches = _FETCHES.setdefault(bible_id, [])
+        fetches.append(fetch)
+        del fetches[:-MAX_FETCHES]
+    thread = threading.Thread(target=_run_fetch, args=(bible_id, dict(fetch), fetcher, parse_tags(scene_tags),
+                                                       parse_graphics(graphics), start, http, sleep),
+                              name=f"style-fetch-{fetch['id']}", daemon=True)
+    thread.start()
+    if wait:
+        thread.join()
+    return dict(fetch)
+
+
+def call_bible_exists(bible_id: str) -> bool:
+    try:
+        return bool(bibles.get_bible(bible_id))
+    except BibleError:
+        return False
+
+
+def _run_fetch(bible_id: str, fetch: dict, fetcher: tuple[str, str], tags: list[str], graphics: str,
+               start: Callable[[str, str], Any] | None, http: Any, sleep: Callable[[float], None]) -> None:
+    base, token = fetcher[0].rstrip("/"), fetcher[1]
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    owns_http = http is None
+    if owns_http:
+        import httpx
+        http = httpx.Client(timeout=60)
+    target = None
+    try:
+        response = http.post(f"{base}/api/fetch", headers=headers, json={"url": fetch["url"], "max_height": PROXY_HEIGHT})
+        if response.status_code >= 400:
+            raise StyleReferenceError(f"The fetch service refused: HTTP {response.status_code}: {response.text[:200]}")
+        job = (response.json() or {}).get("job") or {}
+        job_id = str(job.get("id") or "")
+        if not job_id:
+            raise StyleReferenceError("The fetch service returned no job")
+        _fetch_set(bible_id, fetch["id"], status="downloading", progress="Starting")
+        deadline = time.monotonic() + FETCH_TIMEOUT_SEC
+        while True:
+            response = http.get(f"{base}/api/fetch/{job_id}", headers=headers)
+            if response.status_code >= 400:
+                raise StyleReferenceError(f"The fetch service lost the job: HTTP {response.status_code}")
+            job = (response.json() or {}).get("job") or {}
+            if job.get("status") == "failed":
+                raise StyleReferenceError(f"Download failed: {str(job.get('error') or '')[:300]}")
+            if job.get("status") == "done":
+                break
+            _fetch_set(bible_id, fetch["id"], progress=_short(job.get("progress") or "Downloading", 100))
+            if time.monotonic() > deadline:
+                raise StyleReferenceError("The download timed out")
+            sleep(FETCH_POLL_SEC)
+        _fetch_set(bible_id, fetch["id"], progress="Copying into the bible")
+        folder = bibles._folder(bible_id)
+        target = folder / f"styleref_{int(time.time() * 1000)}_{secrets.token_hex(3)}.mp4"
+        written = 0
+        with http.stream("GET", f"{base}/api/fetch/{job_id}/file", headers=headers, timeout=600) as stream:
+            if stream.status_code >= 400:
+                raise StyleReferenceError(f"Could not read the file: HTTP {stream.status_code}")
+            with open(target, "wb") as handle:
+                for chunk in stream.iter_bytes(1024 * 1024):
+                    written += len(chunk)
+                    if written > MAX_UPLOAD_BYTES:
+                        raise StyleReferenceError("Video too large (max 4 GB)")
+                    handle.write(chunk)
+        if not written:
+            raise StyleReferenceError("The downloaded file is empty")
+        title = _short(job.get("title"), 80)
+        reference = add_reference(bible_id, str(target), source_filename=f"{title or job_id}.mp4",
+                                  label=fetch.get("label") or title, scene_tags=tags, graphics=graphics)
+        try:
+            http.delete(f"{base}/api/fetch/{job_id}", headers=headers)
+        except Exception:  # noqa: BLE001 - the service cleans up on its own
+            pass
+        _fetch_set(bible_id, fetch["id"], status="done", progress="", reference_id=reference["id"])
+        if start is not None:
+            start(bible_id, reference["id"])
+    except Exception as error:  # noqa: BLE001 - recorded on the fetch
+        if target is not None:
+            try:
+                target.unlink(missing_ok=True)
+            except OSError:
+                pass
+        print(f"[Style reference] {bible_id}: fetch {fetch['url'][:80]}: {error}")
+        _fetch_set(bible_id, fetch["id"], status="failed", progress="", error=_short(error, 400))
+    finally:
+        if owns_http:
+            http.close()
+
+
 # ── background analysis ────────────────────────────────────────────────────
 
 # One analysis at a time: each sends minutes of video to the model.
@@ -1416,11 +1557,13 @@ def _public(reference: Mapping[str, Any], *, bible_id: str = "", with_shots: boo
 
 def register_routes(api: Any, *, get_fal_key: Callable[[], str | None],
                     get_model: Callable[[], str] = lambda: DEFAULT_MODEL,
-                    get_backend: Callable[[], Any] = lambda: None) -> None:
+                    get_backend: Callable[[], Any] = lambda: None,
+                    get_fetcher: Callable[[], tuple[str, str] | None] = lambda: None) -> None:
     """Mount the style reference endpoints under ``/api/v1/director/bibles/{bible_id}/style-references``.
 
     ``get_backend`` returns the local judge backend when the analysis should
-    run there (see ``analyse_reference``), else None for fal.
+    run there (see ``analyse_reference``), else None for fal. ``get_fetcher``
+    returns the (url, token) of the video fetch service for links.
     """
     base = "/api/v1/director/bibles/{bible_id}/style-references"
 
@@ -1433,6 +1576,29 @@ def register_routes(api: Any, *, get_fal_key: Callable[[], str | None],
 
     def refresh_merge(bible_id: str, force: bool = False) -> dict | None:
         return start_merge(bible_id, fal_key=get_fal_key(), model=get_model(), backend=get_backend(), force=force)
+
+    def analyse_new(bible_id: str, ref_id: str) -> None:
+        start_analysis(bible_id, ref_id, fal_key=get_fal_key(), model=get_model(), backend=get_backend(),
+                       on_done=refresh_merge)
+
+    @api.post(base + "/from-url")
+    async def style_reference_from_url(bible_id: str, request: Request):
+        try:
+            body = await request.json()
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail="Request body must be JSON") from error
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="Request body must be a JSON object")
+        fetch = call(fetch_reference, bible_id, str(body.get("url") or ""), fetcher=get_fetcher(),
+                     label=str(body.get("label") or ""), scene_tags=body.get("scene_tags"),
+                     graphics=body.get("graphics"), start=analyse_new)
+        return {"fetch": fetch}
+
+    @api.get(base + "/fetches")
+    def style_reference_fetches(bible_id: str):
+        if not call(bibles.get_bible, bible_id):
+            raise HTTPException(status_code=404, detail="Bible not found")
+        return {"fetches": list_fetches(bible_id)}
 
     @api.get(base + "/merged")
     def style_reference_merged(bible_id: str):

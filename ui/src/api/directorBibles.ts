@@ -320,6 +320,35 @@ export async function uploadStyleReference(bibleId: string, file: File, label: s
     'Could not upload the video')).reference
 }
 
+export type StyleReferenceFetchStatus = 'queued' | 'downloading' | 'done' | 'failed'
+
+/** A link being turned into a reference by the video fetch service (docs/Spark-video-fetch.md). */
+export interface StyleReferenceFetch {
+  id: string
+  url: string
+  status: StyleReferenceFetchStatus
+  progress: string
+  error: string
+  reference_id: string
+  label: string
+  created_at: string
+  updated_at: string
+}
+
+/** Queue a link: downloaded at 480p on the fetch service, then analysed like an upload. */
+export async function fetchStyleReferenceFromUrl(bibleId: string, url: string, label: string, sceneTags: string[],
+  graphics: StyleReferenceGraphics = 'ignore'): Promise<StyleReferenceFetch> {
+  return (await json<{ fetch: StyleReferenceFetch }>(await fetch(`${styleRefUrl(bibleId)}/from-url`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url, label, scene_tags: sceneTags, graphics }),
+  }), 'Could not fetch the link')).fetch
+}
+
+export async function fetchStyleReferenceFetches(bibleId: string): Promise<StyleReferenceFetch[]> {
+  return (await json<{ fetches: StyleReferenceFetch[] }>(await fetch(`${styleRefUrl(bibleId)}/fetches`),
+    'Could not load the fetches')).fetches
+}
+
 export async function updateStyleReference(bibleId: string, refId: string,
   patch: StyleReferencePatch): Promise<StyleReference> {
   return (await json<{ reference: StyleReference }>(await fetch(styleRefUrl(bibleId, refId), {

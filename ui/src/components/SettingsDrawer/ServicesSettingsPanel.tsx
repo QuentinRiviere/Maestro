@@ -813,6 +813,35 @@ export function ServicesSettingsPanel() {
         </div>
 
         <div>
+          <label className="block text-xs text-text-secondary mb-1">Video fetch service (links as style references)</label>
+          <input
+            type="text"
+            defaultValue={servicesConfig.director_video_fetch_url || ''}
+            placeholder="https://sp1-video-fetch.tailnet.ts.net"
+            onBlur={e => {
+              const value = e.target.value.trim()
+              if (value !== (servicesConfig.director_video_fetch_url || '')) {
+                void updateConfig({ director_video_fetch_url: value })
+              }
+            }}
+            className="w-full bg-bg-tertiary border border-border rounded-lg px-3 py-1.5 text-xs text-text-primary focus:outline-none focus:border-accent-blue"
+            aria-label="Video fetch service URL"
+          />
+          <p className="text-[10px] text-text-muted mt-1">
+            The yt-dlp service of the Spark stack (docs/Spark-video-fetch.md): a YouTube link pasted in a bible's
+            style references is downloaded there at 480p, then analysed like an upload.
+          </p>
+          <div className="mt-2">
+            <ApiKeyField
+              label="Video fetch token"
+              maskedValue={servicesConfig.director_video_fetch_api_key || ''}
+              isSet={Boolean(servicesConfig.director_video_fetch_api_key_set)}
+              onSave={val => updateConfig({ director_video_fetch_api_key: val }, { throwOnError: true })}
+            />
+          </div>
+        </div>
+
+        <div>
           <label className="flex items-start gap-2 cursor-pointer">
             <input
               type="checkbox"

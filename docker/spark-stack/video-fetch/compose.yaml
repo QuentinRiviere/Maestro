@@ -1,0 +1,36 @@
+# Video fetch stack for the Spark (Dockge: ~/stacks/video-fetch/compose.yml).
+# Downloads public videos (YouTube...) at 480p for Maestro's style references;
+# the controller reaches it through tsdproxy (sp1-video-fetch) with the token.
+#
+#   cp this file ~/stacks/video-fetch/compose.yml
+#   printf 'VIDEO_FETCH_TOKEN=%s\n' "$(openssl rand -hex 24)" > ~/stacks/video-fetch/.env
+#   docker compose up -d --build
+#
+# Then in Maestro: Settings -> Services -> video fetch URL
+# https://sp1-video-fetch.<tailnet>.ts.net and the same token.
+services:
+  video-fetch:
+    build: ${MAESTRO_REPO_DIR:-../Maestro}/docker/spark-stack/video-fetch
+    image: spark-video-fetch:local
+    user: "${UID_GID:-1000:1000}"
+    environment:
+      VIDEO_FETCH_TOKEN: ${VIDEO_FETCH_TOKEN:?set VIDEO_FETCH_TOKEN}
+      DATA_DIR: /data
+      TTL_HOURS: ${TTL_HOURS:-48}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-youtube.com,youtu.be,vimeo.com,dailymotion.com}
+    ports:
+      - "${SPARK_BIND_ADDR:-127.0.0.1}:${VIDEO_FETCH_PORT:-8095}:8095"
+    labels:
+      tsdproxy.enable: "true"
+      tsdproxy.name: "sp1-video-fetch"
+      tsdproxy.container_port: "8095"
+    volumes:
+      - ./data:/data
+    tmpfs:
+      - /tmp:size=256m
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    restart: unless-stopped

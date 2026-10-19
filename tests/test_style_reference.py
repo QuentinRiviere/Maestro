@@ -803,5 +803,123 @@ class GraphicsTests(unittest.TestCase):
             self.assertEqual(updated["graphics"], "ignore")
 
 
+
+class FakeFetchHttp:
+    """The video fetch service as the controller sees it: one job, a few polls, a file."""
+
+    def __init__(self, polls=("downloading", "done"), fail_status=None, file=b"mp4 bytes"):
+        self.polls = list(polls)
+        self.fail_status = fail_status
+        self.file = file
+        self.calls = []
+
+    class _Response:
+        def __init__(self, status_code, body=None, text=""):
+            self.status_code, self._body, self.text = status_code, body, text
+
+        def json(self):
+            return self._body
+
+    def post(self, url, headers=None, json=None, **kw):
+        self.calls.append(("POST", url, headers, json))
+        if self.fail_status:
+            return self._Response(self.fail_status, text="no")
+        return self._Response(200, {"job": {"id": "job1", "status": "queued"}})
+
+    def get(self, url, headers=None, **kw):
+        self.calls.append(("GET", url, headers, None))
+        status = self.polls.pop(0) if self.polls else "done"
+        body = {"job": {"id": "job1", "status": status, "progress": "Downloading 40%", "title": "Cafe scene",
+                        "error": "blocked" if status == "failed" else ""}}
+        return self._Response(200, body)
+
+    def stream(self, method, url, headers=None, **kw):
+        self.calls.append(("STREAM", url, headers, None))
+        http = self
+
+        class Stream:
+            status_code = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def iter_bytes(self, size):
+                yield http.file
+        return Stream()
+
+    def delete(self, url, headers=None, **kw):
+        self.calls.append(("DELETE", url, headers, None))
+        return self._Response(200, {"deleted": "job1"})
+
+
+class FetchTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        patcher = patch.object(bibles, "BIBLES_DIR", Path(self.tmp.name) / "bibles")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.bid = bibles.save_bible({"name": "Seoul Nights"})["id"]
+        sr._FETCHES.clear()
+
+    def test_a_link_becomes_a_reference_and_starts_its_analysis(self):
+        http = FakeFetchHttp()
+        started = []
+        fetch = sr.fetch_reference(self.bid, "https://youtu.be/abc123", fetcher=("https://fetch.test/", "tok"),
+                                   scene_tags="dispute", graphics="include", http=http, sleep=lambda s: None,
+                                   start=lambda bible_id, ref_id: started.append((bible_id, ref_id)), wait=True)
+        self.assertEqual(fetch["status"], "done")  # wait=True: the record after the thread
+        done = sr.list_fetches(self.bid)[0]
+        self.assertEqual((done["status"], done["error"]), ("done", ""))
+        self.assertEqual(http.calls[0][:2], ("POST", "https://fetch.test/api/fetch"))
+        self.assertEqual(http.calls[0][2], {"Authorization": "Bearer tok"})
+        self.assertEqual(http.calls[0][3], {"url": "https://youtu.be/abc123", "max_height": 480})
+        self.assertEqual([c[0] for c in http.calls[1:]], ["GET", "GET", "STREAM", "DELETE"])
+        reference = sr.get_reference(self.bid, done["reference_id"])
+        self.assertEqual((reference["label"], reference["scene_tags"], reference["graphics"]),
+                         ("Cafe scene", ["dispute"], "include"))
+        self.assertEqual((bibles._folder(self.bid) / reference["file"]).read_bytes(), b"mp4 bytes")
+        self.assertEqual(started, [(self.bid, reference["id"])])
+
+    def test_a_failed_download_is_recorded_and_leaves_no_file(self):
+        http = FakeFetchHttp(polls=("downloading", "failed"))
+        sr.fetch_reference(self.bid, "https://www.youtube.com/watch?v=x", fetcher=("https://fetch.test", ""),
+                           http=http, sleep=lambda s: None, wait=True)
+        done = sr.list_fetches(self.bid)[0]
+        self.assertEqual(done["status"], "failed")
+        self.assertIn("blocked", done["error"])
+        self.assertEqual(sr.list_references(self.bid), [])
+        self.assertEqual([p.name for p in bibles._folder(self.bid).glob("styleref_*")], [])
+
+    def test_a_refused_job_and_bad_input(self):
+        http = FakeFetchHttp(fail_status=400)
+        sr.fetch_reference(self.bid, "https://youtu.be/abc", fetcher=("https://fetch.test", "t"), http=http,
+                           sleep=lambda s: None, wait=True)
+        self.assertIn("HTTP 400", sr.list_fetches(self.bid)[0]["error"])
+        with self.assertRaises(bibles.BibleError):
+            sr.fetch_reference(self.bid, "ftp://nope", fetcher=("https://fetch.test", "t"))
+        with self.assertRaises(bibles.BibleError):
+            sr.fetch_reference(self.bid, "https://youtu.be/abc", fetcher=None)
+
+    def test_the_route_queues_a_fetch(self):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        api = FastAPI()
+        seen = []
+        sr.register_routes(api, get_fal_key=lambda: "k", get_fetcher=lambda: ("https://fetch.test", "t"))
+        client = TestClient(api)
+        base = f"/api/v1/director/bibles/{self.bid}/style-references"
+        with patch.object(sr, "_run_fetch", lambda *a, **kw: seen.append(a[1]["url"])):
+            response = client.post(f"{base}/from-url", json={"url": "https://youtu.be/abc", "label": "Café"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["fetch"]["status"], "queued")
+        self.assertEqual(client.get(f"{base}/fetches").json()["fetches"][0]["label"], "Café")
+        self.assertEqual(client.post(f"{base}/from-url", json={"url": "nope"}).status_code, 400)
+
+
 if __name__ == "__main__":
     unittest.main()

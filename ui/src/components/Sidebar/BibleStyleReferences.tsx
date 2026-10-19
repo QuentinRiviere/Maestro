@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { Film, Loader2, RefreshCw, Trash2, Upload } from 'lucide-react'
+import { Film, Link, Loader2, RefreshCw, Trash2, Upload } from 'lucide-react'
 import {
-  analyseStyleReference, deleteStyleReference, fetchStyleReferences, STYLE_REFERENCE_ACCEPT, STYLE_REFERENCE_MAX_BYTES,
+  analyseStyleReference, deleteStyleReference, fetchStyleReferenceFetches, fetchStyleReferenceFromUrl,
+  fetchStyleReferences, STYLE_REFERENCE_ACCEPT, STYLE_REFERENCE_MAX_BYTES,
   styleReferenceVideoUrl, updateStyleReference, uploadStyleReference,
-  type StyleReference, type StyleReferencePatch,
+  type StyleReference, type StyleReferenceFetch, type StyleReferencePatch,
 } from '../../api/directorBibles'
 import {
   formatSeconds, formatShotMix, isAnalysing, pacingBars, parseSceneTags, rulesFromText, rulesToText,
@@ -187,6 +188,9 @@ export function BibleStyleReferences({ bibleId, ask }: { bibleId: string; ask: A
   const [newLabel, setNewLabel] = useState('')
   const [newTags, setNewTags] = useState('')
   const [newGraphics, setNewGraphics] = useState(false)
+  const [newUrl, setNewUrl] = useState('')
+  const [fetches, setFetches] = useState<StyleReferenceFetch[]>([])
+  const [fetching, setFetching] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const picker = useRef<HTMLInputElement>(null)
@@ -196,12 +200,37 @@ export function BibleStyleReferences({ bibleId, ask }: { bibleId: string; ask: A
     .catch(e => setError(e instanceof Error ? e.message : 'Could not load the style references')), [bibleId])
   useEffect(() => { void refresh() }, [refresh])
 
-  const running = references.some(r => isAnalysing(r.status))
+  const refreshFetches = useCallback(() => fetchStyleReferenceFetches(bibleId).then(setFetches).catch(() => {}),
+    [bibleId])
+  useEffect(() => { void refreshFetches() }, [refreshFetches])
+
+  const downloading = fetches.some(f => f.status === 'queued' || f.status === 'downloading')
+  const running = references.some(r => isAnalysing(r.status)) || downloading
   useEffect(() => {
     if (!running) return
-    const timer = window.setInterval(() => { void refresh() }, 3000)
+    const timer = window.setInterval(() => { void refresh(); if (downloading) void refreshFetches() }, 3000)
     return () => window.clearInterval(timer)
-  }, [running, refresh])
+  }, [running, downloading, refresh, refreshFetches])
+
+  const fetchLink = async () => {
+    const url = newUrl.trim()
+    if (!url) return
+    setFetching(true)
+    setError(null)
+    try {
+      const queued = await fetchStyleReferenceFromUrl(bibleId, url, newLabel.trim(), parseSceneTags(newTags),
+        newGraphics ? 'include' : 'ignore')
+      setFetches(list => [...list.filter(f => f.id !== queued.id), queued])
+      setNewUrl('')
+      setNewLabel('')
+      setNewTags('')
+      setNewGraphics(false)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not fetch the link')
+    } finally {
+      setFetching(false)
+    }
+  }
 
   const upload = async () => {
     if (!file) return
@@ -253,10 +282,27 @@ export function BibleStyleReferences({ bibleId, ask }: { bibleId: string; ask: A
           <input type="checkbox" className="w-3 h-3" checked={newGraphics} onChange={e => setNewGraphics(e.target.checked)}
             aria-label="New reference graphics" /> Take on-screen graphics into account
         </label>
-        <button onClick={() => void upload()} disabled={!file || uploading}
-          className="px-3 py-1 rounded bg-accent-blue text-white text-[11px] disabled:opacity-40 flex items-center gap-1">
-          {uploading ? <Loader2 size={10} className="animate-spin" /> : <Upload size={10} />} Upload and analyse
-        </button>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <button onClick={() => void upload()} disabled={!file || uploading}
+            className="px-3 py-1 rounded bg-accent-blue text-white text-[11px] disabled:opacity-40 flex items-center gap-1">
+            {uploading ? <Loader2 size={10} className="animate-spin" /> : <Upload size={10} />} Upload and analyse
+          </button>
+          <span className="text-[10px] text-text-muted">or</span>
+          <input className={`${input} flex-1 min-w-[12rem]`} placeholder="YouTube link (fetched at 480p on the Spark)" value={newUrl}
+            onChange={e => setNewUrl(e.target.value)} aria-label="Reference video link"
+            onKeyDown={e => { if (e.key === 'Enter') void fetchLink() }} />
+          <button onClick={() => void fetchLink()} disabled={!newUrl.trim() || fetching}
+            className="px-3 py-1 rounded bg-accent-blue text-white text-[11px] disabled:opacity-40 flex items-center gap-1">
+            {fetching ? <Loader2 size={10} className="animate-spin" /> : <Link size={10} />} Fetch and analyse
+          </button>
+        </div>
+        {fetches.filter(f => f.status !== 'done').map(f => (
+          <p key={f.id} className={`text-[10px] ${f.status === 'failed' ? 'text-chip-red' : 'text-text-muted'}`}
+            title={f.url}>
+            {f.status !== 'failed' && <Loader2 size={10} className="inline animate-spin mr-1" />}
+            {f.label || f.url}: {f.status === 'failed' ? f.error || 'failed' : f.progress || f.status}
+          </p>
+        ))}
       </div>
       {error && <p className="text-[10px] text-chip-red">{error}</p>}
       {loaded && !references.length && <p className="text-[10px] text-text-muted">No style reference yet.</p>}
