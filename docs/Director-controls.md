@@ -255,12 +255,17 @@ automatic ones.
 After the analysis a second pass describes the first and last frame of up
 to `director_style_frames` shots (default 150, evenly sampled, credits left
 out; 0 = off) as the image prompt that would regenerate the frame (`prompt`,
-`shot_size`, `lighting`, `palette`, `mood`; sidecar `<file>.frames.json`,
+`shot_size`, `lighting`, `palette`, `mood`, plus the cinematography read from
+the frame: `camera` {lens_mm, aperture, format, height, angle, look},
+`lighting_setup`, `grade`, `aspect_ratio`; sidecar `<file>.frames.json`,
 `GET .../{ref}/frames`, `POST .../{ref}/frames` to run it again, resumable).
 The Shots dialog shows them under each shot. Runs that use the references
 get a "REFERENCE IMAGE PROMPT STYLE" block after the staging grammar: up to
-6 of those prompts spread over shot sizes, so the image prompts come out in
-the same register (the image model's own family wrote them).
+6 of those prompts spread over shot sizes, each with its camera line, and
+the references' camera profile (`camera_profile` on the reference: median
+and usual lenses, aperture, format, aspect ratio, look, grade, lighting), so
+the image prompts come out in the same register (the image model's own
+family wrote them).
 
 Each reference has a `graphics` mode (`ignore`, the default, or `include`;
 a toggle in the bible panel, `graphics` on the upload form and in the PATCH

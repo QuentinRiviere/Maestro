@@ -148,6 +148,14 @@ function ReferenceCard({ bibleId, reference, ask, onChange, onDeleted }: {
           {analysing && reference.progress && stats && <p className="text-[10px] text-accent-blue">{reference.progress}</p>}
           {reference.error && <p className="text-[10px] text-chip-red">{reference.error}</p>}
           {reference.frames_error && <p className="text-[10px] text-chip-red">Frame prompts: {reference.frames_error}</p>}
+          {reference.camera_profile && (
+            <p className="text-[10px] text-text-secondary" title="What the frame prompts agree on">
+              <span className="text-text-muted">Camera: </span>
+              {[reference.camera_profile.lenses_mm?.length ? `${[...reference.camera_profile.lenses_mm].sort((a, b) => a - b).join('/')} mm` : '',
+                reference.camera_profile.aperture, reference.camera_profile.format, reference.camera_profile.aspect_ratio].filter(Boolean).join(', ')}
+              {reference.camera_profile.grade ? ` · ${reference.camera_profile.grade}` : ''}
+            </p>
+          )}
           {reference.cost_usd != null && (
             <p className="text-[9px] text-text-muted">Analysis: ${reference.cost_usd.toFixed(3)}{reference.model ? ` · ${reference.model}` : ''}
               {reference.described_shots ? ` · ${reference.described_shots} shots described` : ''}</p>

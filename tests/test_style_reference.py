@@ -1079,7 +1079,11 @@ def frame_answer(n: int) -> str:
     return json.dumps({"prompt": f"Frame {n}: a young woman in a beige coat sits at a café table, soft window light "
                                  "from the left, warm wood tones, shallow depth of field, quiet tension.",
                        "shot_size": "close_up" if n % 2 else "medium", "lighting": "soft window light",
-                       "palette": ["beige", "warm wood", "cream"], "mood": "quiet tension"})
+                       "palette": ["beige", "warm wood", "cream"], "mood": "quiet tension",
+                       "camera": {"lens_mm": "50mm" if n % 2 else 35, "aperture": "f/2", "format": "Super 35",
+                                  "height": "eye level", "angle": "slightly low", "look": "soft roll-off, light grain"},
+                       "lighting_setup": "soft key from a window camera left, warm practical back light",
+                       "grade": "warm, lifted blacks", "aspect_ratio": "2.39:1"})
 
 
 class FramesTests(unittest.TestCase):
@@ -1120,6 +1124,17 @@ class FramesTests(unittest.TestCase):
                          [(0, "first"), (0, "last"), (1, "first"), (2, "first"), (2, "last")])
         self.assertEqual(result["frames"][0]["prompt"], "kept from before")
         self.assertEqual(result["frames"][1]["palette"], ["beige", "warm wood", "cream"])
+        self.assertEqual(result["frames"][1]["camera"], {"lens_mm": 50, "aperture": "f/2", "format": "Super 35",
+                                                         "height": "eye level", "angle": "slightly low",
+                                                         "look": "soft roll-off, light grain"})
+        self.assertEqual((result["frames"][1]["grade"], result["frames"][1]["aspect_ratio"]), ("warm, lifted blacks", "2.39:1"))
+        profile = sr.camera_profile(result["frames"])
+        self.assertEqual((profile["frames"], profile["lens_mm_median"], sorted(profile["lenses_mm"]), profile["format"],
+                          profile["aspect_ratio"]), (5, 50, [35, 50], "super 35", "2.39:1"))
+        self.assertIn("lenses 35/50 mm (median 50), f/2, super 35, 2.39:1", sr.camera_profile_text(profile))
+        block = sr.prompt_examples_block(result["frames"][1:3], profile=profile)
+        self.assertIn("Camera profile of the references: lenses 35/50 mm", block)
+        self.assertIn("(camera: 50 mm, f/2, Super 35, eye level, slightly low, 2.39:1; light: soft key", block)
         self.assertEqual((result["cost_usd"], result["errors"]), (0.0, []))
         self.assertEqual(progress[0], ("Describing frame 1 of 4", 1))
 

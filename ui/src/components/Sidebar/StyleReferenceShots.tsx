@@ -137,6 +137,15 @@ export function StyleReferenceShots({ bibleId, reference, onClose }: {
                           <div className="min-w-0 space-y-0.5">
                             <p className="select-all text-text-primary">{frame.prompt}</p>
                             {frame.palette?.length ? <p className="text-text-muted">Palette: {frame.palette.join(', ')}</p> : null}
+                            {frame.camera && (
+                              <p className="text-text-muted">
+                                Camera: {[frame.camera.lens_mm ? `${frame.camera.lens_mm} mm` : '', frame.camera.aperture, frame.camera.format,
+                                  frame.camera.height, frame.camera.angle, frame.aspect_ratio].filter(Boolean).join(', ')}
+                                {frame.camera.look ? ` · ${frame.camera.look}` : ''}
+                              </p>
+                            )}
+                            {frame.lighting_setup && <p className="text-text-muted">Light: {frame.lighting_setup}</p>}
+                            {frame.grade && <p className="text-text-muted">Grade: {frame.grade}</p>}
                           </div>
                         </div>
                       </details>

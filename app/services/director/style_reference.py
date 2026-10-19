@@ -176,11 +176,21 @@ woman in a beige coat, an older man in a chef's jacket), their pose, gesture, ga
 size, camera height and angle, lens feel, where the subjects sit in the frame, depth of field); the setting and the
 props that matter; the light (sources, direction, colour, hardness, time of day); the colour palette; the mood and
 the texture of the image (film grain, softness, contrast). 60-120 words, one paragraph, present tense, concrete,
-no camera brands, no story, no dialogue, no on-screen text unless it is part of the image.
+no story, no dialogue, no on-screen text unless it is part of the image.
+
+Then read the cinematography like a DP: the focal length the perspective and compression suggest (in mm, full-frame
+equivalent), the aperture the depth of field suggests, the capture format (digital cinema full-frame, Super 35,
+16 mm film, phone...), camera height and angle, the camera's rendering (highlight roll-off, sharpness, halation,
+grain), the lighting setup (key, fill, back light and practicals: where they are, how soft, what colour), the colour
+grade (contrast, blacks, saturation, temperature, any teal-orange or faded look) and the aspect ratio of the frame.
 
 Return ONLY a JSON object:
 {"prompt": "the paragraph", "shot_size": "extreme_wide|wide|medium|medium_close_up|close_up|extreme_close_up|insert",
- "lighting": "short", "palette": ["3-5 colour words"], "mood": "2-4 words"}"""
+ "lighting": "short", "palette": ["3-5 colour words"], "mood": "2-4 words",
+ "camera": {"lens_mm": 35, "aperture": "f/2", "format": "digital cinema full-frame", "height": "eye level",
+            "angle": "slightly low", "look": "clean digital, soft highlight roll-off, no grain"},
+ "lighting_setup": "soft key from a window camera left, warm practical lamp as back light, low fill",
+ "grade": "warm, lifted blacks, low contrast, muted saturation", "aspect_ratio": "2.39:1"}"""
 
 MERGE_SYSTEM_PROMPT = """You are a senior editor consolidating the staging grammars of SEVERAL reference videos
 into ONE grammar for an AI storyboard planner that will direct NEW productions with their own story and cast.
@@ -1313,13 +1323,73 @@ def parse_frame(text: str) -> dict:
     prompt = re.sub(r"\s+", " ", str(raw.get("prompt") or "")).strip()[:1200]
     if len(prompt) < 20:
         raise StyleReferenceError("The frame answer has no prompt")
+    camera_raw = raw.get("camera") if isinstance(raw.get("camera"), dict) else {}
+    lens = _number(re.sub(r"[^0-9.]", "", str(camera_raw.get("lens_mm") or "")) or "x")
+    camera = {
+        "lens_mm": int(round(lens)) if lens and 4 <= lens <= 1200 else None,
+        "aperture": _short(camera_raw.get("aperture"), 20),
+        "format": _short(camera_raw.get("format"), 60),
+        "height": _short(camera_raw.get("height"), 40),
+        "angle": _short(camera_raw.get("angle"), 40),
+        "look": _short(camera_raw.get("look"), 160),
+    }
     return {
         "prompt": prompt,
         "shot_size": _enum(raw.get("shot_size"), SHOT_SIZES, ""),
         "lighting": _short(raw.get("lighting"), 200),
         "palette": _text_list(raw.get("palette"), 5, 30),
         "mood": _short(raw.get("mood"), 60),
+        "camera": camera,
+        "lighting_setup": _short(raw.get("lighting_setup"), 300),
+        "grade": _short(raw.get("grade"), 200),
+        "aspect_ratio": _short(raw.get("aspect_ratio"), 12),
     }
+
+
+def camera_profile(frames: Sequence[Mapping[str, Any]]) -> dict:
+    """What the frames agree on: median lens, the usual aperture, format, aspect ratio, look, grade and lighting."""
+    from collections import Counter
+
+    cameras = [f.get("camera") or {} for f in frames if f.get("prompt")]
+    if not cameras:
+        return {}
+
+    def common(values: Iterable[str], limit: int = 80) -> str:
+        counted = Counter(_short(v, limit).lower() for v in values if _short(v, limit))
+        return counted.most_common(1)[0][0] if counted else ""
+
+    lenses = sorted(c["lens_mm"] for c in cameras if isinstance(c.get("lens_mm"), int))
+    lens_counts = Counter(lenses)
+    return {
+        "frames": len(cameras),
+        "lens_mm_median": lenses[len(lenses) // 2] if lenses else None,
+        "lenses_mm": [mm for mm, _ in lens_counts.most_common(3)],
+        "aperture": common(c.get("aperture", "") for c in cameras),
+        "format": common(c.get("format", "") for c in cameras),
+        "height": common(c.get("height", "") for c in cameras),
+        "look": common((c.get("look", "") for c in cameras), 160),
+        "grade": common((f.get("grade", "") for f in frames), 200),
+        "lighting_setup": common((f.get("lighting_setup", "") for f in frames), 300),
+        "aspect_ratio": common((f.get("aspect_ratio", "") for f in frames), 12),
+    }
+
+
+def camera_profile_text(profile: Mapping[str, Any]) -> str:
+    """One line a planner can read: "lenses 35-50 mm (median 40), f/2, Super 35, 2.39:1; look ...; grade ...; light ..."."""
+    if not profile:
+        return ""
+    bits = []
+    if profile.get("lenses_mm"):
+        lenses = "/".join(str(mm) for mm in sorted(profile["lenses_mm"]))
+        bits.append(f"lenses {lenses} mm" + (f" (median {profile['lens_mm_median']})" if profile.get("lens_mm_median") else ""))
+    for key in ("aperture", "format", "aspect_ratio", "height"):
+        if profile.get(key):
+            bits.append(str(profile[key]))
+    text = ", ".join(bits)
+    for key, title in (("look", "look"), ("grade", "grade"), ("lighting_setup", "light")):
+        if profile.get(key):
+            text += f"; {title}: {profile[key]}"
+    return text
 
 
 def describe_frames(
@@ -1463,7 +1533,8 @@ def _run_frames(bible_id: str, ref_id: str, fal_key: str | None, model: str, bac
             save_frames(bible_id, reference, result["frames"])
             errors = result.get("errors") or []
             _set(bible_id, ref_id, frames_status="done", frames_progress="", frames_count=len(result["frames"]),
-                 frames_error=("; ".join(errors))[:400] if errors else "")
+                 frames_error=("; ".join(errors))[:400] if errors else "",
+                 camera_profile=camera_profile(result["frames"]) or None)
             print(f"[Style reference] {bible_id}/{ref_id}: {len(result['frames'])} frame prompts, "
                   f"cost ${result.get('cost_usd')}")
     except BibleError:
@@ -1498,21 +1569,54 @@ def prompt_examples(bible_id: str, references: Sequence[Mapping[str, Any]], *,
     return chosen
 
 
-def prompt_examples_block(examples: Sequence[Mapping[str, Any]], *, limit: int = MAX_PROMPT_EXAMPLES_CHARS) -> str:
-    """The "REFERENCE IMAGE PROMPT STYLE" planner block ("" without examples)."""
+def _camera_line(example: Mapping[str, Any]) -> str:
+    camera = example.get("camera") or {}
+    bits = []
+    if camera.get("lens_mm"):
+        bits.append(f"{camera['lens_mm']} mm")
+    for key in ("aperture", "format", "height", "angle"):
+        if camera.get(key):
+            bits.append(str(camera[key]))
+    if example.get("aspect_ratio"):
+        bits.append(str(example["aspect_ratio"]))
+    text = ", ".join(bits)
+    for key, title in (("lighting_setup", "light"), ("grade", "grade")):
+        if example.get(key):
+            text += f"; {title}: {example[key]}"
+    return text
+
+
+def prompt_examples_block(examples: Sequence[Mapping[str, Any]], *, limit: int = MAX_PROMPT_EXAMPLES_CHARS,
+                          profile: Mapping[str, Any] | None = None) -> str:
+    """The "REFERENCE IMAGE PROMPT STYLE" planner block ("" without examples), with the camera profile when known."""
     if not examples:
         return ""
     head = ("REFERENCE IMAGE PROMPT STYLE (frames of the reference videos, written as the image prompts that would "
-            "regenerate them: write this production's image prompts in the same register, with the same kind of "
-            "detail about framing, light, palette and texture, for its own characters and places, never these):")
+            "regenerate them, each with the camera, light and grade read from the frame: write this production's "
+            "image prompts in the same register, with the same kind of detail about framing, lens, light, palette "
+            "and texture, for its own characters and places, never these):")
+    profile_text = camera_profile_text(profile or {})
+    if profile_text:
+        head += f"\nCamera profile of the references: {profile_text}."
     text = head
     for example in examples:
         size = SHOT_SIZE_LABELS.get(example.get("shot_size") or "", example.get("shot_size") or "shot")
         line = f"- [{size}] {example['prompt']}"
+        camera = _camera_line(example)
+        if camera:
+            line += f" (camera: {camera})"
         if len(text) + 1 + len(line) > limit:
             break
         text += "\n" + line
     return text if text != head else ""
+
+
+def references_camera_profile(bible_id: str, references: Sequence[Mapping[str, Any]]) -> dict:
+    """The camera profile over every frame of ``references``."""
+    frames: list[dict] = []
+    for reference in references:
+        frames.extend(load_frames(bible_id, reference))
+    return camera_profile(frames)
 
 
 # ── one grammar for several references ─────────────────────────────────────

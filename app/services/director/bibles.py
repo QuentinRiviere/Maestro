@@ -277,6 +277,8 @@ def _style_references(raw: Any, folder: Path) -> list[dict]:
             and not isinstance(count, bool) and count > 0 else 0,
             "frames_progress": _text(item.get("frames_progress"), 200),
             "frames_error": _text(item.get("frames_error"), 400),
+            "camera_profile": copy.deepcopy(item["camera_profile"]) if isinstance(item.get("camera_profile"), dict)
+            and item["camera_profile"] else None,
             "cost_usd": cost if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None,
             "model": _text(item.get("model"), 120),
         })

@@ -141,6 +141,7 @@ export interface StyleReference {
   frames_count?: number
   frames_progress?: string
   frames_error?: string
+  camera_profile?: StyleCameraProfile | null
   stats: StyleReferenceStats | null
   described_shots: number
   grammar: StyleGrammar | null
@@ -180,6 +181,23 @@ export interface StyleReferenceFrame {
   lighting?: string
   palette?: string[]
   mood?: string
+  camera?: { lens_mm?: number | null; aperture?: string; format?: string; height?: string; angle?: string; look?: string }
+  lighting_setup?: string
+  grade?: string
+  aspect_ratio?: string
+}
+
+export interface StyleCameraProfile {
+  frames: number
+  lens_mm_median?: number | null
+  lenses_mm?: number[]
+  aperture?: string
+  format?: string
+  height?: string
+  look?: string
+  grade?: string
+  lighting_setup?: string
+  aspect_ratio?: string
 }
 
 export type StyleFramesStatus = 'idle' | 'queued' | 'running' | 'done' | 'failed'

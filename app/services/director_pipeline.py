@@ -8051,7 +8051,7 @@ def _apply_style_references(pid: str, params: dict, skill_type: str = "") -> str
     from services.director import bibles
     from services.director.cinema_grammar import cinema_grammar_mode
     from services.director.style_reference import (CHOICE_AUTO, merged_grammar, planner_block, prompt_examples,
-                                                   prompt_examples_block)
+                                                   prompt_examples_block, references_camera_profile)
 
     choice, bible_id, references = _selected_style_references(params)
     params["director_style_reference"] = choice
@@ -8064,7 +8064,8 @@ def _apply_style_references(pid: str, params: dict, skill_type: str = "") -> str
     block = planner_block(references, brief=brief, numbers=not numbers_in_cinema, merged=merged)
     # Frames of the references written as image prompts: the register the image prompts should use.
     examples = prompt_examples(bible_id, references) if block and bible_id else []
-    examples_block = prompt_examples_block(examples)
+    examples_block = prompt_examples_block(examples, profile=references_camera_profile(bible_id, references)
+                                           if examples else None)
     if examples_block:
         block = block + "\n\n" + examples_block
     params["_director_style_prompt_examples"] = len(examples) if examples_block else 0
