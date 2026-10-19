@@ -8345,6 +8345,9 @@ def get_services_config():
         "director_judge_api_key_set": bool(judge_key),
         "director_judge_api_key_env": bool(judge_key) and not services.get("director_judge_api_key"),
         "director_judge_model": services.get("director_judge_model") or "",
+        # The vision model that breaks down style reference videos: a fal model
+        # ID, or with the openai judge provider the local alias (default "analyst").
+        "director_style_reference_model": services.get("director_style_reference_model") or "",
         "r2_configured": _lora_r2_store() is not None,
         # Director v2 (layered architecture: structured shot planning,
         # mode-specific renderers, prompt validation) is now the default
@@ -8432,6 +8435,7 @@ async def update_services_config(request: Request):
         "director_video_review", "director_video_review_model", "director_takes_per_shot",
         "director_episode_review_model",
         "director_judge_provider", "director_judge_url", "director_judge_api_key", "director_judge_model",
+        "director_style_reference_model",
         "use_director_v2", "nsfw_mode", "nsfw_accepted_at", "director_prompt_polish",
         "civitai_api_key", "voice_reference_enabled", "ltx_progressive_pipeline",
         "show_experimental", "auto_performance", "storage_allow_linked_removal",
@@ -8453,8 +8457,8 @@ async def update_services_config(request: Request):
             raise HTTPException(status_code=400, detail="director_takes_per_shot must be 1, 2 or 3.")
         if key == "director_video_review" and type(value) is not bool:
             raise HTTPException(status_code=400, detail="director_video_review must be true or false.")
-        if key in ("director_video_review_model", "director_episode_review_model", "director_judge_model") and (
-                not isinstance(value, str) or len(value) > 200):
+        if key in ("director_video_review_model", "director_episode_review_model", "director_judge_model",
+                   "director_style_reference_model") and (not isinstance(value, str) or len(value) > 200):
             raise HTTPException(status_code=400, detail=f"{key} must be a model ID.")
         if key == "director_judge_provider" and value not in ("fal", "openai"):
             raise HTTPException(status_code=400, detail="director_judge_provider must be fal or openai.")
@@ -11371,7 +11375,8 @@ def director_bible_image_delete(bible_id: str, element_id: str, variant_id: str,
 
 
 # Reference videos of a bible: their staging, editing and rhythm, analysed by
-# the video LLM the judges use, guide the Director storyboard planners.
+# the video LLM the judges use (fal, or the local judge server with its own
+# "analyst" alias), guide the Director storyboard planners.
 def _style_reference_model() -> str:
     from services.director.video_judge import DEFAULT_MODEL
     return str(wgp.server_config.get("services", {}).get("director_style_reference_model") or DEFAULT_MODEL)
@@ -11382,8 +11387,21 @@ def _style_reference_fal_key() -> str | None:
     return cloud_image.provider_api_key("fal", wgp.server_config.get("services", {}))
 
 
+def _style_reference_backend():
+    """The local judge backend carrying the style reference alias, or None when the judge is fal."""
+    from dataclasses import replace
+    from services.director import judge_backend
+    from services.director.style_reference import LOCAL_MODEL
+    services = wgp.server_config.get("services", {})
+    backend = judge_backend.settings(services)
+    if backend.provider != "openai":
+        return None
+    return replace(backend, model=str(services.get("director_style_reference_model") or LOCAL_MODEL))
+
+
 from services.director.style_reference import register_routes as _register_style_references
-_register_style_references(api, get_fal_key=_style_reference_fal_key, get_model=_style_reference_model)
+_register_style_references(api, get_fal_key=_style_reference_fal_key, get_model=_style_reference_model,
+                           get_backend=_style_reference_backend)
 
 
 @api.post("/api/v1/director/pipeline/{pid}/bible")

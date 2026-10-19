@@ -138,6 +138,20 @@ class ChunkTests(unittest.TestCase):
         chunks = sr.plan_chunks(shots, max_sec=60, limit_sec=120)
         self.assertLess(max(c["start"] for c in chunks), 120)
 
+    def test_local_chunks_group_by_stills_and_long_shots_take_two(self):
+        shots = sr.shot_spans([1.0, 2.0, 6.0, 7.0, 8.0], 20.0)
+        self.assertEqual(sr.still_times(shots[0]), [0.5])
+        self.assertEqual(sr.still_times(shots[2]), [3.0, 5.0])
+        chunks = sr.plan_local_chunks(shots, max_stills=4)
+        # shots: 1 s (1 still), 1 s (1), 4 s (2) | 1 s (1), 1 s (1), 12 s (2)
+        self.assertEqual([c["shots"] for c in chunks], [[0, 1, 2], [3, 4, 5]])
+        self.assertEqual((chunks[1]["start"], chunks[1]["end"]), (6.0, 20.0))
+
+    def test_stills_note_maps_images_to_shots(self):
+        note = sr.stills_note([(1, 12.5, "a.jpg"), (2, 13.0, "b.jpg"), (2, 14.0, "c.jpg")], 12.0)
+        self.assertIn("Image 1 = shot 1 at 0.5 s, Image 2 = shot 2 at 1.0 s, Image 3 = shot 2 at 2.0 s", note)
+        self.assertIn("silent stills", note)
+
     def test_chunk_prompt_lists_times_relative_to_the_chunk(self):
         shots = sr.shot_spans([20.0, 45.0], 60.0)
         prompt = sr.chunk_prompt({"start": 20.0, "end": 60.0, "shots": [1, 2]}, shots, 2, 3, 60.0)
@@ -204,11 +218,11 @@ def fake_local(cuts, duration):
 
 
 class AnalyseTests(unittest.TestCase):
-    def run_analysis(self, ask, cuts=(30.0, 50.0, 80.0), duration=100.0, **kwargs):
+    def run_analysis(self, ask, cuts=(30.0, 50.0, 80.0), duration=100.0, fal_key="key", **kwargs):
         progress = []
         with patch.object(sr, "encode_chunk", lambda src, a, b, dest, **kw: dest), \
                 patch.object(sr, "data_uri", lambda path: "data:video/mp4;base64,AAAA"):
-            result = sr.analyse_reference("video.mp4", fal_key="key", ask=ask, http=object(),
+            result = sr.analyse_reference("video.mp4", fal_key=fal_key, ask=ask, http=object(),
                                           sleep=lambda s: None, local=fake_local(list(cuts), duration),
                                           on_progress=lambda message, partial: progress.append((message, partial)),
                                           **kwargs)
@@ -245,6 +259,44 @@ class AnalyseTests(unittest.TestCase):
             sr.analyse_reference("v.mp4", fal_key="", ask=FakeAsk([]), local=fake_local([1.0], 2.0),
                                  on_progress=lambda m, p: progress.append(p))
         self.assertEqual(progress[0]["stats"]["shot_count"], 2)
+
+    def test_local_backend_sends_stills_for_nothing(self):
+        class Backend:
+            provider = "openai"
+            available = True
+            model = ""
+
+            def __init__(self):
+                self.ask = FakeAsk([(shots_answer(2), 0.0), (shots_answer(2), 0.0), (grammar_answer(), 0.0)])
+
+        backend = Backend()
+        made = []
+
+        def fake_stills(source, chunk, shots, dest_dir, **kw):
+            stills = [(n, float(shots[i]["start"]) + 0.5, os.path.join(dest_dir, f"{n}.jpg"))
+                      for n, i in enumerate(chunk["shots"], 1)]
+            made.append(len(stills))
+            return stills
+
+        with patch.object(sr, "shot_stills", fake_stills), \
+                patch.object(sr, "plan_local_chunks", lambda shots, **kw: sr.plan_chunks(shots, max_sec=60)):
+            result, _ = self.run_analysis(backend.ask, fal_key="", backend=backend)
+        self.assertEqual(made, [2, 2])
+        self.assertEqual([c["videos"] for c in backend.ask.calls], [2, 2, 0])
+        self.assertIn("Image 1 = shot 1 at 0.5 s", backend.ask.calls[0]["prompt"])
+        self.assertEqual(result["cost_usd"], 0.0)
+        self.assertEqual(result["model"], sr.LOCAL_MODEL)
+        self.assertTrue(all(s.get("shot_size") for s in result["shots"]))
+
+    def test_local_backend_without_a_url_keeps_stats_and_raises(self):
+        class Backend:
+            provider = "openai"
+            available = False
+            model = "analyst"
+            ask = FakeAsk([])
+
+        with self.assertRaises(sr.StyleReferenceError):
+            sr.analyse_reference("v.mp4", fal_key="", backend=Backend(), local=fake_local([1.0], 2.0))
 
     def test_bad_synthesis_twice_fails(self):
         ask = FakeAsk([(shots_answer(2), 0.0), (shots_answer(2), 0.0), ("nope", 0.0), ("still nope", 0.0)])
@@ -378,7 +430,7 @@ class RouteTests(unittest.TestCase):
         self.client = TestClient(api)
         self.base = f"/api/v1/director/bibles/{self.bible['id']}/style-references"
 
-    def fake_analyse(self, path, *, fal_key, model, on_progress):
+    def fake_analyse(self, path, *, fal_key, model, on_progress, backend=None):
         self.seen = (fal_key, model)
         on_progress("Measured", {"stats": {"asl_sec": 2.5, "shot_count": 2}})
         return {"stats": {"asl_sec": 2.5, "shot_count": 2, "cuts": [1.0], "shot_lengths": [1.0, 1.0]},

@@ -231,7 +231,12 @@ With the `openai` provider nothing goes to fal.ai and nothing is billed: the
 `cost_usd` of every verdict is 0 and the review report records
 `"backend": "openai"` with the model alias. The per-shot, episode and
 storyboard model fields are ignored in that mode (the alias replaces them),
-and a fal key is not needed. Media are sent as `image_url` data URIs on
+and a fal key is not needed. Style reference videos are analysed there too,
+as silent stills (one per shot, two for a shot of 3 s or more, at most 24 per
+call) sent to the alias of `director_style_reference_model` (default
+`analyst`: on the Spark a Qwen3.6 vision model, the family Qwen-Image encodes
+its prompts with); the measured cuts and rhythm stay exact, only the sound
+column of the shot breakdown becomes a guess from the picture. Media are sent as `image_url` data URIs on
 `/v1/chat/completions`:
 
 - a still (shot image, draft candidate, character sheet) is one JPEG,

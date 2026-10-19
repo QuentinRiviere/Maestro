@@ -18,6 +18,12 @@ K-drama scene, a trailer, a short). It is analysed in two passes:
   5-10 rules a storyboard planner can follow. Only transferable principles
   are kept: never the reference's content, characters or story.
 
+With the local judge backend (``judge_backend`` provider ``openai``) the model
+pass costs nothing: the excerpts become silent stills, one or two per shot,
+sent to the ``analyst`` alias of the local server (a Qwen vision model, the
+family Qwen-Image encodes its prompts with, so the grammar comes out in the
+image model's own dialect). The sound column is then a guess from the picture.
+
 References live in a bible (``style_references``, files in the bible's
 folder). An enabled, analysed reference reaches the Director planners as a
 bounded "REFERENCE STAGING GRAMMAR" block (``planner_block``).
@@ -67,6 +73,13 @@ MAX_ANALYSED_SEC = 15 * 60
 CHUNK_ATTEMPTS = 2
 SYNTHESIS_ATTEMPTS = 2
 TEXT_ROUTER = "openrouter/router"
+# Local backend: the alias of the vision model on the local server, and how an
+# excerpt is shown to it (stills instead of a video: one per shot, two for a
+# shot long enough to move, at most MAX_LOCAL_STILLS per call).
+LOCAL_MODEL = "analyst"
+MAX_LOCAL_STILLS = 24
+LONG_SHOT_SEC = 3.0
+STILL_LONG_SIDE = 768
 MAX_STORED_SHOTS = 1500
 MAX_SYNTHESIS_SHOTS = 400
 
@@ -325,6 +338,72 @@ def chunk_prompt(chunk: Mapping[str, Any], shots: Sequence[Mapping[str, Any]], n
             f"Shot list of this excerpt ({len(lines)} shots):\n" + "\n".join(lines))
 
 
+# ── stills for the local backend ──────────────────────────────────────────
+
+
+def still_times(shot: Mapping[str, float], *, long_shot: float = LONG_SHOT_SEC) -> list[float]:
+    """When a shot is sampled: its middle, or a quarter and three quarters in when it is long enough to move."""
+    start, end = float(shot["start"]), float(shot["end"])
+    length = max(0.0, end - start)
+    if length >= long_shot:
+        return [round(start + length * 0.25, 3), round(start + length * 0.75, 3)]
+    return [round(start + length / 2, 3)]
+
+
+def plan_local_chunks(shots: Sequence[Mapping[str, float]], *, max_stills: int = MAX_LOCAL_STILLS,
+                      limit_sec: float | None = MAX_ANALYSED_SEC) -> list[dict]:
+    """Consecutive shots grouped so that one call shows at most ``max_stills`` stills (same shape as ``plan_chunks``)."""
+    chunks: list[dict] = []
+    current: list[Mapping[str, float]] = []
+    count = 0
+
+    def close() -> None:
+        if current:
+            chunks.append({"start": round(float(current[0]["start"]), 3), "end": round(float(current[-1]["end"]), 3),
+                           "shots": [int(s["index"]) for s in current]})
+
+    for shot in shots:
+        if limit_sec is not None and shot["start"] >= limit_sec:
+            break
+        needed = len(still_times(shot))
+        if current and count + needed > max_stills:
+            close()
+            current, count = [], 0
+        current.append(shot)
+        count += needed
+    close()
+    return chunks
+
+
+def shot_stills(source: str, chunk: Mapping[str, Any], shots: Sequence[Mapping[str, Any]], dest_dir: str,
+                *, long_side: int = STILL_LONG_SIDE, timeout: float = 120) -> list[tuple[int, float, str]]:
+    """(shot number in the chunk, time, jpeg path) of every still of ``chunk``; raises StyleReferenceError."""
+    scale = f"scale=w='if(gt(iw,ih),min({long_side},iw),-2)':h='if(gt(iw,ih),-2,min({long_side},ih))'"
+    stills: list[tuple[int, float, str]] = []
+    for n, index in enumerate(chunk["shots"], 1):
+        for seconds in still_times(shots[index]):
+            dest = os.path.join(dest_dir, f"shot_{n:03d}_{len(stills):03d}.jpg")
+            command = ["ffmpeg", "-v", "error", "-y", "-ss", f"{seconds:.3f}", "-i", source, "-frames:v", "1",
+                       "-vf", scale, "-q:v", "4", dest]
+            try:
+                subprocess.run(command, check=True, capture_output=True, timeout=timeout)
+            except (OSError, subprocess.SubprocessError) as error:
+                raise StyleReferenceError(f"Could not extract a still: {str(error)[:200]}") from error
+            if not os.path.exists(dest):
+                raise StyleReferenceError(f"No still at {seconds:.1f} s")
+            stills.append((n, seconds, dest))
+    return stills
+
+
+def stills_note(stills: Sequence[tuple[int, float, str]], origin: float) -> str:
+    """How the stills map to the shot list: appended to the chunk prompt for the local backend."""
+    labels = ", ".join(f"Image {i} = shot {n} at {seconds - origin:.1f} s" for i, (n, seconds, _) in enumerate(stills, 1))
+    return ("This excerpt is shown as silent stills, one per shot (two for a longer shot, a quarter and three "
+            f"quarters in): {labels}. You cannot hear the sound: set \"audio\" from what the picture suggests "
+            "(dialogue when people talk to each other, ambience otherwise) and read movement from how the two "
+            "stills of a shot differ.")
+
+
 # ── parsing ────────────────────────────────────────────────────────────────
 
 
@@ -559,20 +638,31 @@ def analyse_reference(
     sleep: Callable[[float], None] = time.sleep,
     on_progress: Callable[[str, dict], None] = lambda message, partial: None,
     local: Callable[[str], dict] = local_analysis,
+    backend: Any = None,
 ) -> dict:
     """Both passes on one video: {stats, shots, grammar, summary, cost_usd, model, chunk_errors}.
 
     ``on_progress(message, partial)`` gets the local stats as soon as they
     exist, so they survive a failing model pass. Raises StyleReferenceError
-    when the model pass gives nothing usable.
+    when the model pass gives nothing usable. A ``backend`` of the ``openai``
+    provider (``judge_backend.JudgeBackend``) replaces fal: its ``ask`` is
+    called with stills instead of video chunks, with its model (``LOCAL_MODEL``
+    when it names none), for nothing.
     """
     stats = local(path)
     shots = [dict(s) for s in shot_spans(stats["cuts"], stats["duration_sec"])]
     on_progress(f"Measured {stats['shot_count']} shots", {"stats": stats})
-    if not fal_key:
-        raise StyleReferenceError("The model pass needs a fal.ai API key (Settings → Services); "
+    local_backend = backend is not None and getattr(backend, "provider", "") == "openai"
+    if local_backend:
+        if not backend.available:
+            raise StyleReferenceError("The local judge has no server URL (Settings → Services); "
+                                      "the measured stats are saved")
+        ask = backend.ask
+        model = str(getattr(backend, "model", "") or LOCAL_MODEL)
+    elif not fal_key:
+        raise StyleReferenceError("The model pass needs a fal.ai API key or the local judge (Settings → Services); "
                                   "the measured stats are saved")
-    chunks = plan_chunks(shots)
+    chunks = plan_local_chunks(shots) if local_backend else plan_chunks(shots)
     cost = 0.0
     errors: list[str] = []
     owns_http = http is None
@@ -585,12 +675,20 @@ def analyse_reference(
                 on_progress(f"Analysing excerpt {number} of {len(chunks)}", {})
                 prompt = chunk_prompt(chunk, shots, number, len(chunks), stats["duration_sec"])
                 try:
-                    clip = encode_chunk(path, chunk["start"], chunk["end"], os.path.join(tmp, f"chunk_{number}.mp4"),
-                                        has_audio=bool(stats.get("has_audio", True)))
-                    url = data_uri(clip)
+                    if local_backend:
+                        still_dir = os.path.join(tmp, f"stills_{number}")
+                        os.makedirs(still_dir, exist_ok=True)
+                        stills = shot_stills(path, chunk, shots, still_dir)
+                        media = [still for _, _, still in stills]
+                        prompt += "\n" + stills_note(stills, float(chunk["start"]))
+                    else:
+                        clip = encode_chunk(path, chunk["start"], chunk["end"],
+                                            os.path.join(tmp, f"chunk_{number}.mp4"),
+                                            has_audio=bool(stats.get("has_audio", True)))
+                        media = [data_uri(clip)]
                     last: Exception | None = None
                     for _ in range(CHUNK_ATTEMPTS):
-                        text, call_cost = ask(http, fal_key, model, SHOT_SYSTEM_PROMPT, prompt, [url], sleep,
+                        text, call_cost = ask(http, fal_key, model, SHOT_SYSTEM_PROMPT, prompt, media, sleep,
                                               max_tokens=12000)
                         cost += float(call_cost or 0)
                         try:
@@ -895,7 +993,7 @@ _ANALYSIS_SLOT = threading.Semaphore(1)
 
 
 def start_analysis(bible_id: str, ref_id: str, *, fal_key: str | None, model: str = DEFAULT_MODEL,
-                   analyse: Callable[..., dict] | None = None, wait: bool = False) -> dict:
+                   analyse: Callable[..., dict] | None = None, wait: bool = False, backend: Any = None) -> dict:
     """Queue the analysis of one reference in a background thread; returns the queued reference."""
     if ref_id in bibles._LIVE_ANALYSES:
         raise BibleError("This reference is already being analysed")
@@ -906,7 +1004,7 @@ def start_analysis(bible_id: str, ref_id: str, *, fal_key: str | None, model: st
         bibles._LIVE_ANALYSES.discard(ref_id)
         raise
     thread = threading.Thread(target=_run_analysis,
-                              args=(bible_id, ref_id, fal_key, model, analyse or analyse_reference),
+                              args=(bible_id, ref_id, fal_key, model, analyse or analyse_reference, backend),
                               name=f"style-reference-{ref_id}", daemon=True)
     thread.start()
     if wait:
@@ -915,7 +1013,7 @@ def start_analysis(bible_id: str, ref_id: str, *, fal_key: str | None, model: st
 
 
 def _run_analysis(bible_id: str, ref_id: str, fal_key: str | None, model: str,
-                  analyse: Callable[..., dict]) -> None:
+                  analyse: Callable[..., dict], backend: Any = None) -> None:
     try:
         with _ANALYSIS_SLOT:
             if ref_id not in bibles._LIVE_ANALYSES:
@@ -929,7 +1027,7 @@ def _run_analysis(bible_id: str, ref_id: str, fal_key: str | None, model: str,
                 _set(bible_id, ref_id, progress=_short(message, 200), **partial)
 
             try:
-                result = analyse(str(path), fal_key=fal_key, model=model, on_progress=progress)
+                result = analyse(str(path), fal_key=fal_key, model=model, on_progress=progress, backend=backend)
             except Exception as error:  # noqa: BLE001 - recorded on the reference
                 print(f"[Style reference] {bible_id}/{ref_id}: {error}")
                 _set(bible_id, ref_id, status="failed", error=_short(error, 400), progress="")
@@ -969,8 +1067,13 @@ def _public(reference: Mapping[str, Any], *, bible_id: str = "", with_shots: boo
 
 
 def register_routes(api: Any, *, get_fal_key: Callable[[], str | None],
-                    get_model: Callable[[], str] = lambda: DEFAULT_MODEL) -> None:
-    """Mount the style reference endpoints under ``/api/v1/director/bibles/{bible_id}/style-references``."""
+                    get_model: Callable[[], str] = lambda: DEFAULT_MODEL,
+                    get_backend: Callable[[], Any] = lambda: None) -> None:
+    """Mount the style reference endpoints under ``/api/v1/director/bibles/{bible_id}/style-references``.
+
+    ``get_backend`` returns the local judge backend when the analysis should
+    run there (see ``analyse_reference``), else None for fal.
+    """
     base = "/api/v1/director/bibles/{bible_id}/style-references"
 
     def call(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
@@ -1013,7 +1116,7 @@ def register_routes(api: Any, *, get_fal_key: Callable[[], str | None],
             target.unlink(missing_ok=True)
             raise
         if str(analyse).strip().lower() not in ("false", "0", "no", "off"):
-            reference = call(start_analysis, bible_id, reference["id"], fal_key=get_fal_key(), model=get_model())
+            reference = call(start_analysis, bible_id, reference["id"], fal_key=get_fal_key(), model=get_model(), backend=get_backend())
         return {"reference": _public(reference)}
 
     @api.get(base + "/{ref_id}")
@@ -1038,7 +1141,7 @@ def register_routes(api: Any, *, get_fal_key: Callable[[], str | None],
     @api.post(base + "/{ref_id}/analyse")
     def style_reference_analyse(bible_id: str, ref_id: str):
         call(get_reference, bible_id, ref_id)
-        reference = call(start_analysis, bible_id, ref_id, fal_key=get_fal_key(), model=get_model())
+        reference = call(start_analysis, bible_id, ref_id, fal_key=get_fal_key(), model=get_model(), backend=get_backend())
         return {"reference": _public(reference)}
 
     @api.get(base + "/{ref_id}/video")
