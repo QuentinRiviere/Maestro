@@ -204,7 +204,7 @@ class FakeAsk:
 
     def __call__(self, http, key, model, system, prompt, urls, sleep, **kwargs):
         self.calls.append({"router": kwargs.get("router", FAL_ROUTER), "system": system, "prompt": prompt,
-                           "videos": len(urls)})
+                           "videos": len(urls), "key": key})
         answer = self.answers.pop(0)
         if isinstance(answer, Exception):
             raise answer
@@ -280,8 +280,10 @@ class AnalyseTests(unittest.TestCase):
 
         with patch.object(sr, "shot_stills", fake_stills), \
                 patch.object(sr, "plan_local_chunks", lambda shots, **kw: sr.plan_chunks(shots, max_sec=60)):
-            result, _ = self.run_analysis(backend.ask, fal_key="", backend=backend)
+            result, _ = self.run_analysis(backend.ask, fal_key="fal-key", backend=backend)
         self.assertEqual(made, [2, 2])
+        # The local server authenticates with its own key, never fal's.
+        self.assertEqual({c["key"] for c in backend.ask.calls}, {""})
         self.assertEqual([c["videos"] for c in backend.ask.calls], [2, 2, 0])
         self.assertIn("Image 1 = shot 1 at 0.5 s", backend.ask.calls[0]["prompt"])
         self.assertEqual(result["cost_usd"], 0.0)

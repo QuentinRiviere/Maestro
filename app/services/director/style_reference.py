@@ -659,6 +659,7 @@ def analyse_reference(
                                       "the measured stats are saved")
         ask = backend.ask
         model = str(getattr(backend, "model", "") or LOCAL_MODEL)
+        fal_key = ""  # the backend's own key authenticates (``key or self.key``), never fal's
     elif not fal_key:
         raise StyleReferenceError("The model pass needs a fal.ai API key or the local judge (Settings → Services); "
                                   "the measured stats are saved")
