@@ -77,7 +77,7 @@ TEXT_ROUTER = "openrouter/router"
 # excerpt is shown to it (stills instead of a video: one per shot, two for a
 # shot long enough to move, at most MAX_LOCAL_STILLS per call).
 LOCAL_MODEL = "analyst"
-MAX_LOCAL_STILLS = 24
+MAX_LOCAL_STILLS = 16
 LONG_SHOT_SEC = 3.0
 STILL_LONG_SIDE = 768
 # The local pass is free: a whole episode can go through it.
@@ -95,7 +95,9 @@ MERGE_ATTEMPTS = 2
 MERGED_RULES = 14
 MIN_MERGE_REFERENCES = 2
 MAX_STORED_SHOTS = 1500
-MAX_SYNTHESIS_SHOTS = 400
+# Synthesis prompt bounds: a whole episode must fit one local context slot.
+MAX_SYNTHESIS_SHOTS = 250
+MAX_SYNTHESIS_PACING = 40
 
 # Uploads: a whole episode fits; it is reduced to a 480p proxy before anything
 # reads it (cut detection, stills, chunks), and the proxy replaces the upload.
@@ -791,6 +793,10 @@ def synthesis_prompt(stats: Mapping[str, Any], shots: Sequence[Mapping[str, Any]
                      graphics: str = GRAPHICS_IGNORE) -> str:
     facts = {key: stats.get(key) for key in ("duration_sec", "shot_count", "asl_sec", "median_sec", "min_sec",
                                              "max_sec", "cuts_per_minute", "distribution", "pacing", "shot_mix")}
+    pacing = facts.get("pacing") or []
+    if len(pacing) > MAX_SYNTHESIS_PACING:  # a long video: the pace curve, downsampled
+        step = len(pacing) / MAX_SYNTHESIS_PACING
+        facts["pacing"] = [pacing[int(i * step)] for i in range(MAX_SYNTHESIS_PACING)]
     described = [s for s in shots if s.get("shot_size")]
     if len(described) > MAX_SYNTHESIS_SHOTS:
         step = len(described) / MAX_SYNTHESIS_SHOTS
@@ -799,7 +805,7 @@ def synthesis_prompt(stats: Mapping[str, Any], shots: Sequence[Mapping[str, Any]
     lines = [" | ".join([f"{s['index'] + 1}", f"{s['start']:.1f}s", f"{s['duration']:.1f}s", s["shot_size"],
                          s.get("angle", ""), s.get("movement", ""), s.get("cut_reason", ""),
                          s.get("transition", ""), s.get("audio", ""),
-                         _short(f"{s.get('subject', '')}: {s.get('action', '')}", 140)]
+                         _short(f"{s.get('subject', '')}: {s.get('action', '')}", 110)]
                         + ([_short(s.get("graphics") or "none", 100)] if with_graphics else []))
              for s in described]
     return ("Measured editing statistics (exact):\n" + json.dumps(facts, ensure_ascii=False)

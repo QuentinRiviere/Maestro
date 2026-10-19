@@ -1187,5 +1187,19 @@ class FramesTests(unittest.TestCase):
         self.assertEqual([c["shot_size"] for c in chosen], ["close_up", "wide", "medium", "insert"])
 
 
+
+class SynthesisBoundsTests(unittest.TestCase):
+    def test_a_long_video_is_downsampled_for_the_synthesis(self):
+        shots = sr.shot_spans([float(t) for t in range(3, 3000, 3)], 3000.0)
+        for shot in shots:
+            shot.update({"shot_size": "medium", "subject": "a man", "action": "x" * 200})
+        stats = {"duration_sec": 3000.0, "shot_count": len(shots), "pacing": [{"t": t, "asl_sec": 3.0} for t in range(0, 3000, 10)]}
+        prompt = sr.synthesis_prompt(stats, shots)
+        lines = [l for l in prompt.split("\n") if " | " in l and not l.startswith("Shot breakdown")]
+        self.assertEqual(len(lines), sr.MAX_SYNTHESIS_SHOTS)
+        self.assertEqual(json.loads(prompt.split("\n")[1])["pacing"].__len__(), sr.MAX_SYNTHESIS_PACING)
+        self.assertLess(len(prompt), 60000)  # ~15k tokens: fits one 32k slot with room for the answer
+
+
 if __name__ == "__main__":
     unittest.main()
