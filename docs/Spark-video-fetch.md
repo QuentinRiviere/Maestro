@@ -69,7 +69,11 @@ used to reach this host's network. (A redirect met during the download is
 not re-checked; only the token holder can submit a URL.)
 
 yt-dlp picks the best streams at or under `max_height`, H.264 and AAC when
-available, merged into MP4 by ffmpeg. One download at a time (`PARALLEL`).
+available, merged into MP4 by ffmpeg; the result is then re-encoded on the
+Spark (H.264 CRF 26, mono AAC, at most `max_height` tall, never upscaled)
+unless it already is such a file, so an HLS episode with a single 1080p
+rendition crosses the network as a 480p proxy and the controller keeps it
+as is. One download at a time (`PARALLEL`).
 Node is the JavaScript runtime yt-dlp needs for YouTube; `yt-dlp-ejs` ships
 the challenge scripts so nothing is fetched from GitHub at run time. Update
 the image (`docker compose build --pull && docker compose up -d`) when

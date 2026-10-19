@@ -31,6 +31,10 @@ TOKEN = os.environ.get("VIDEO_FETCH_TOKEN", "")
 TTL_HOURS = float(os.environ.get("TTL_HOURS", "48"))
 MAX_JOBS = 200
 DEFAULT_HEIGHT = 480
+# After the download the file is re-encoded here (H.264, CRF 26, mono AAC, at
+# most max_height tall) so that what crosses the network is already the proxy
+# the controller would make.
+PROXY_CRF = int(os.environ.get("PROXY_CRF", "26"))
 # Optional allow-list of hosts (subdomains included); empty = any public host
 # yt-dlp can read. Private, loopback, link-local and reserved addresses are
 # always refused, so the service cannot be pointed at this network.
@@ -96,6 +100,50 @@ def _set(job_id: str, **fields: Any) -> None:
             job.update(fields, updated_at=_now())
 
 
+def _probe(path: str) -> dict:
+    import json
+    import subprocess
+
+    try:
+        out = subprocess.run(["ffprobe", "-v", "error", "-print_format", "json", "-show_streams", "-show_format", path],
+                             check=True, capture_output=True, text=True, timeout=120).stdout
+        data = json.loads(out or "{}")
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return {}
+    video = next((s for s in data.get("streams") or [] if s.get("codec_type") == "video"), {})
+    try:
+        duration = float((data.get("format") or {}).get("duration") or 0)
+    except (TypeError, ValueError):
+        duration = 0.0
+    return {"width": video.get("width"), "height": video.get("height"), "codec": video.get("codec_name"),
+            "duration_sec": duration or None,
+            "has_audio": any(s.get("codec_type") == "audio" for s in data.get("streams") or [])}
+
+
+def _reduce(job_id: str, path: str, max_height: int) -> str:
+    """Re-encode ``path`` to an H.264 MP4 at most ``max_height`` tall (never upscaled); returns the new path."""
+    import subprocess
+
+    facts = _probe(path)
+    height = facts.get("height")
+    small_enough = isinstance(height, int) and height <= max_height and facts.get("codec") == "h264" \
+        and path.lower().endswith(".mp4")
+    if small_enough:
+        return path
+    dest = os.path.splitext(path)[0] + f"_{max_height}p.mp4"
+    command = ["ffmpeg", "-v", "error", "-y", "-i", path, "-map", "0:v:0",
+               "-vf", f"scale=-2:'min({max_height},ih)',format=yuv420p", "-c:v", "libx264", "-preset", "veryfast",
+               "-crf", str(PROXY_CRF)]
+    command += ["-map", "0:a:0?", "-c:a", "aac", "-b:a", "64k", "-ac", "1"] if facts.get("has_audio", True) else ["-an"]
+    command += ["-movflags", "+faststart", dest]
+    _set(job_id, progress=f"Reducing to {max_height}p")
+    subprocess.run(command, check=True, capture_output=True, timeout=4 * 3600)
+    if not os.path.exists(dest) or os.path.getsize(dest) == 0:
+        raise RuntimeError(f"The {max_height}p re-encode produced no file")
+    os.remove(path)
+    return dest
+
+
 def _run(job_id: str) -> None:
     import yt_dlp
 
@@ -138,10 +186,11 @@ def _run(job_id: str) -> None:
             if not files:
                 raise RuntimeError("yt-dlp produced no file")
             filename = max(files, key=lambda name: os.path.getsize(os.path.join(folder, name)))
-            path = os.path.join(folder, filename)
-            _set(job_id, status="done", progress="", filename=filename, bytes=os.path.getsize(path),
-                 title=str(info.get("title") or "")[:200], duration_sec=info.get("duration"),
-                 width=info.get("width"), height=info.get("height"))
+            path = _reduce(job_id, os.path.join(folder, filename), int(job["max_height"]))
+            facts = _probe(path)
+            _set(job_id, status="done", progress="", filename=os.path.basename(path), bytes=os.path.getsize(path),
+                 title=str(info.get("title") or "")[:200], duration_sec=facts.get("duration_sec") or info.get("duration"),
+                 width=facts.get("width") or info.get("width"), height=facts.get("height") or info.get("height"))
         except Exception as error:  # noqa: BLE001 - recorded on the job
             _set(job_id, status="failed", progress="", error=str(error)[:400])
 

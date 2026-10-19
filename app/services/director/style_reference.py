@@ -1450,10 +1450,13 @@ def _run_fetch(bible_id: str, fetch: dict, fetcher: tuple[str, str], tags: list[
                 if time.monotonic() > deadline:
                     raise StyleReferenceError("The download timed out")
                 sleep(FETCH_POLL_SEC)
-            _fetch_set(bible_id, fetch["id"], progress="Copying into the bible")
+            total = int(job.get("bytes") or 0)
+            _fetch_set(bible_id, fetch["id"], progress=f"Copying into the bible ({total / 1e6:.0f} MB)" if total
+                       else "Copying into the bible")
             folder = bibles._folder(bible_id)
             target = folder / f"styleref_{int(time.time() * 1000)}_{secrets.token_hex(3)}.mp4"
             written = 0
+            reported = 0
             with http.stream("GET", f"{base}/api/fetch/{job_id}/file", headers=headers, timeout=600) as stream:
                 if stream.status_code >= 400:
                     raise StyleReferenceError(f"Could not read the file: HTTP {stream.status_code}")
@@ -1463,6 +1466,10 @@ def _run_fetch(bible_id: str, fetch: dict, fetcher: tuple[str, str], tags: list[
                         if written > MAX_UPLOAD_BYTES:
                             raise StyleReferenceError("Video too large (max 4 GB)")
                         handle.write(chunk)
+                        if written - reported >= 20 * 1024 * 1024:
+                            reported = written
+                            _fetch_set(bible_id, fetch["id"], progress=f"Copying into the bible {written / 1e6:.0f}"
+                                       + (f" / {total / 1e6:.0f} MB" if total else " MB"))
             if not written:
                 raise StyleReferenceError("The downloaded file is empty")
             title = _short(job.get("title"), 80)
