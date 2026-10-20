@@ -139,11 +139,17 @@ def start_prompt(character: Mapping[str, Any], location: Mapping[str, Any] | Non
     return f"{text} {look}".strip()
 
 
+# LTX-2.5 drifts into slow motion when the prompt reads calm; the clip has to ask for real-time pace outright.
+PACE = ("Real-time speed, brisk natural motion as in a phone video, the whole move completes within the clip, "
+        "no slow motion.")
+NEGATIVE = "slow motion, slowed down, frozen pose, static, blurry, text, watermark, extra fingers, deformed hands"
+
+
 def clip_prompt(character: Mapping[str, Any], settings: Mapping[str, Any]) -> str:
     name = character.get("name") or "The character"
     body = settings.get("prompt") or (
         f"{name} performs the signature move in one continuous take: {settings['gesture']}. Facing the camera, "
-        "steady handheld framing, the place unchanged, no camera cut, no text.")
+        f"handheld phone framing, the place unchanged, no camera cut, no text. {PACE}")
     silence = " Silent clip: nobody speaks, the mouth stays closed." if settings.get("audio") == "silent" else ""
     return f"{body}{silence}"
 
@@ -155,8 +161,8 @@ def clip_job(prompt: str, start_image: str, settings: Mapping[str, Any]) -> dict
         "image_start": start_image, "generation_mode": "video", "num_inference_steps": 8, "guidance_scale": 1.0,
         "input_video_strength": 1.0, "resolution": cover_video.ORIENTATIONS[settings["orientation"]][0],
         "video_length": int(settings["frames"]), "sliding_window_size": int(settings["frames"]),
-        "seed": int(settings.get("seed", -1)), "settings_version": 2.52, "repeat_generation": 1, "negative_prompt": "",
-        "activated_loras": [], "loras_multipliers": "", "_director_cost_stage": "persona_clip",
+        "seed": int(settings.get("seed", -1)), "settings_version": 2.52, "repeat_generation": 1,
+        "negative_prompt": NEGATIVE, "activated_loras": [], "loras_multipliers": "", "_director_cost_stage": "persona_clip",
     }
     job["audio_prompt_type"] = "A" if settings.get("audio") == "silent" else ""
     return job

@@ -364,6 +364,8 @@ class PersonaClipTests(unittest.TestCase):
         self.assertNotIn("audio_guide", clip)
         self.assertEqual(clip["video_length"], 145)
         self.assertIn("signature move in one continuous take: a slow finger-gun wink", clip["prompt"])
+        self.assertIn("no slow motion", clip["prompt"])
+        self.assertIn("slow motion", clip["negative_prompt"])
         self.assertIn("mouth stays closed", clip["prompt"])
         self.assertEqual(pc.file_path(record["id"], "clip").name, "clip.mp4")
         self.assertEqual(pc.file_path(record["id"], "start").name, "start.png")
