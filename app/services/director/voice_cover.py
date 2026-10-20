@@ -201,7 +201,10 @@ def _run(cover_id: str, submit, jobs) -> None:
             finally:
                 done.set()
                 follower.join(timeout=5)
-            made = {key: name for key, name in OUTPUTS.items() if name in (outputs or []) and (folder / name).is_file()}
+            # The worker lists every output; the profile (.npz) is not a media file, so trust the folder.
+            made = {key: name for key, name in OUTPUTS.items() if (folder / name).is_file()}
+            if "cover" in made and OUTPUTS["cover"] not in (outputs or []):
+                made.pop("cover")
             if "cover" not in made:
                 job = jobs.get(job_id) or {}
                 raise BibleError("Cancelled" if job.get("status") == "cancelled" else "The worker returned no cover")
