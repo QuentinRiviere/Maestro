@@ -112,6 +112,8 @@ def clip_settings(raw: Mapping[str, Any] | None) -> dict:
     if audio not in AUDIO_MODES:
         raise BibleError(f"Unknown audio mode (one of {', '.join(AUDIO_MODES)})")
     base = cover_video.video_settings({**raw, "seconds": raw.get("seconds") or DEFAULT_SECONDS, "start_sec": 0})
+    if base["frames"] > cover_video.MAX_FRAMES:
+        raise BibleError(f"A persona clip fits one window: at most {cover_video.seconds_for(cover_video.MAX_FRAMES):.0f} s")
     return {
         "character_id": base["character_id"], "location_id": base["location_id"], "gesture": gesture,
         "orientation": base["orientation"], "frames": base["frames"], "seconds": base["seconds"],

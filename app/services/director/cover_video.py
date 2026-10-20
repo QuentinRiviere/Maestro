@@ -39,7 +39,12 @@ VIDEO_MODEL = "ltx2_25"
 FPS = 24
 FRAME_STEP = 8
 MIN_FRAMES = 17
+# One LTX window; longer videos run as sliding windows that continue each other (overlap 9, 8 frames dropped).
+WINDOW_FRAMES = 289
 MAX_FRAMES = 345
+WINDOW_OVERLAP = 9
+WINDOW_DISCARD = 8
+MAX_VIDEO_SECONDS = 120.0
 DEFAULT_SECONDS = 12.0
 MAX_START_SECONDS = 36000.0
 ORIENTATIONS = {"portrait": ("576x1024", "720x1280"), "landscape": ("1024x576", "1280x720")}
@@ -55,11 +60,19 @@ _LIVE: set[str] = set()
 _SLOT = threading.Semaphore(1)
 
 
-def frames_for(seconds: float) -> int:
-    """The LTX frame count (8k+1) that covers ``seconds`` at 24 fps, within the single-window limits."""
+def frames_for(seconds: float, *, maximum: int = MAX_FRAMES) -> int:
+    """The LTX frame count (8k+1) that covers ``seconds`` at 24 fps, at most ``maximum``."""
     wanted = int(math.ceil(max(0.0, float(seconds)) * FPS))
     frames = int(math.ceil(max(wanted - 1, 0) / FRAME_STEP)) * FRAME_STEP + 1
-    return max(MIN_FRAMES, min(MAX_FRAMES, frames))
+    return max(MIN_FRAMES, min(maximum, frames))
+
+
+def window_params(frames: int) -> dict:
+    """One window when the clip fits; sliding windows of WINDOW_FRAMES that continue each other otherwise."""
+    if frames <= MAX_FRAMES:
+        return {"sliding_window_size": int(frames)}
+    return {"sliding_window_size": WINDOW_FRAMES, "sliding_window_overlap": WINDOW_OVERLAP,
+            "sliding_window_discard_last_frames": WINDOW_DISCARD}
 
 
 def seconds_for(frames: int) -> float:
@@ -78,7 +91,9 @@ def video_settings(raw: Mapping[str, Any] | None) -> dict:
         raise BibleError("start_sec and seconds must be numbers") from error
     if seconds <= 0:
         raise BibleError("seconds must be positive")
-    frames = frames_for(seconds)
+    if seconds > MAX_VIDEO_SECONDS:
+        raise BibleError(f"seconds must be at most {MAX_VIDEO_SECONDS:.0f}")
+    frames = frames_for(seconds, maximum=frames_for(MAX_VIDEO_SECONDS, maximum=10 ** 6))
     try:
         seed = int(raw.get("seed") if raw.get("seed") not in (None, "") else -1)
     except (TypeError, ValueError):
@@ -144,7 +159,7 @@ def video_job(prompt: str, start_image: str, mix: str, vocals: str, settings: Ma
         "model_type": settings["model_type"], "prompt": prompt, "image_mode": 0, "image_prompt_type": "S",
         "image_start": start_image, "generation_mode": "video", "num_inference_steps": 8, "guidance_scale": 1.0,
         "input_video_strength": 1.0, "resolution": ORIENTATIONS[settings["orientation"]][0],
-        "video_length": int(settings["frames"]), "sliding_window_size": int(settings["frames"]),
+        "video_length": int(settings["frames"]), **window_params(int(settings["frames"])),
         "audio_prompt_type": "A", "audio_guide": mix, "audio_conditioning_guide": vocals, "audio_frame_offset": 0,
         "seed": int(settings.get("seed", -1)), "settings_version": 2.52, "repeat_generation": 1, "negative_prompt": "",
         "activated_loras": [], "loras_multipliers": "", "_director_cost_stage": "cover_video",

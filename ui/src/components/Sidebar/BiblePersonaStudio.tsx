@@ -8,7 +8,7 @@ import {
 } from '../../api/directorPersona'
 import { generateMusic, getFileUrl } from '../../api/client'
 import type { DirectorBible } from '../../api/directorBibles'
-import { clipFrames, clipSeconds, formatSeconds, MAX_CLIP_SECONDS, normaliseWeights } from '../../lib/persona'
+import { clipFrames, clipSeconds, formatSeconds, MAX_CLIP_SECONDS, MAX_VIDEO_SECONDS, normaliseWeights, videoFrames, videoWindows } from '../../lib/persona'
 
 const input = 'w-full bg-bg-tertiary border border-border rounded px-2 py-1 text-[11px] text-text-primary focus:outline-none focus:border-accent-blue'
 const label = 'text-[9px] text-text-muted uppercase tracking-wider block mb-0.5'
@@ -269,7 +269,8 @@ function CoverVideoForm({ bible, cover, onChange }: { bible: DirectorBible; cove
   const [start, setStart] = useState(0)
   const [lyrics, setLyrics] = useState('')
   const { busy, error, act } = useAct()
-  const frames = clipFrames(seconds)
+  const frames = videoFrames(seconds)
+  const windows = videoWindows(frames)
   return (
     <div className="space-y-2 rounded border border-border/60 p-2">
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
@@ -279,15 +280,15 @@ function CoverVideoForm({ bible, cover, onChange }: { bible: DirectorBible; cove
           <ElementSelect bible={bible} kind="locations" value={locationId} onChange={setLocationId} allowNone="A home studio" ariaLabel="Video place" /></label>
         <label className="block"><span className={label}>From (s)</span>
           <input className={input} type="number" min={0} step={0.5} value={start} onChange={e => setStart(Number(e.target.value) || 0)} /></label>
-        <label className="block"><span className={label}>Length (s, one window ≤ {MAX_CLIP_SECONDS.toFixed(1)})</span>
-          <input className={input} type="number" min={1} max={MAX_CLIP_SECONDS} step={1} value={seconds} onChange={e => setSeconds(Number(e.target.value) || 12)} /></label>
+        <label className="block"><span className={label}>Length (s, ≤ {MAX_VIDEO_SECONDS}; beyond {MAX_CLIP_SECONDS.toFixed(0)} s LTX chains windows)</span>
+          <input className={input} type="number" min={1} max={MAX_VIDEO_SECONDS} step={1} value={seconds} onChange={e => setSeconds(Number(e.target.value) || 12)} /></label>
       </div>
       <label className="block"><span className={label}>Lyrics of that part (quoted in the prompt, optional)</span>
         <input className={input} value={lyrics} onChange={e => setLyrics(e.target.value)} placeholder="City lights are falling on the window pane / …" /></label>
       {error && <p role="alert" className="text-[10px] text-chip-red">{error}</p>}
       <button className={primary} disabled={busy || !characterId}
         onClick={() => void act(async () => onChange(await startCoverVideo(cover.id, { character_id: characterId, location_id: locationId, start_sec: start, seconds, lyrics })))}>
-        {busy ? <Loader2 size={10} className="animate-spin" /> : <Video size={10} />} Render {formatSeconds(start)} to {formatSeconds(start + clipSeconds(frames))} ({frames} frames, 9:16)
+        {busy ? <Loader2 size={10} className="animate-spin" /> : <Video size={10} />} Render {formatSeconds(start)} to {formatSeconds(start + clipSeconds(frames))} ({frames} frames, {windows} window{windows === 1 ? '' : 's'}, 9:16)
       </button>
     </div>
   )

@@ -212,6 +212,16 @@ class VideoTests(unittest.TestCase):
         self.assertEqual(cvid.frames_for(1.0), 25)
         self.assertEqual(cvid.frames_for(12.0), 289)
         self.assertEqual(cvid.frames_for(40.0), cvid.MAX_FRAMES)
+        self.assertEqual(cvid.frames_for(40.0, maximum=10 ** 6), 961)
+        self.assertEqual(cvid.window_params(289), {"sliding_window_size": 289})
+        self.assertEqual(cvid.window_params(961)["sliding_window_size"], cvid.WINDOW_FRAMES)
+        self.assertEqual(cvid.window_params(961)["sliding_window_overlap"], 9)
+        long = cvid.video_settings({"seconds": 40})
+        self.assertEqual(long["frames"], 961)
+        with self.assertRaises(bibles.BibleError):
+            cvid.video_settings({"seconds": 500})
+        with self.assertRaises(bibles.BibleError):
+            pc.clip_settings({"gesture": "wave", "seconds": 40})
         settings = cvid.video_settings({"seconds": 12, "start_sec": "3.5", "lyrics": "la la"})
         self.assertEqual(settings["frames"], 289)
         self.assertEqual(settings["seconds"], 12.0)

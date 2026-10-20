@@ -396,8 +396,9 @@ A finished cover gets its singing video with `POST
 …/covers/{id}/video` (`services/director/cover_video.py`, state under the
 record's `video`): multipart `character_id` (defaults to the cover's),
 optional `location_id`, `orientation` (`portrait` 576×1024 or `landscape`
-1024×576), `start_sec` / `seconds` (one LTX-2.5 window: 12 s by default,
-at most 345 frames at 24 fps), `lyrics` (quoted in the prompt), `prompt` /
+1024×576), `start_sec` / `seconds` (12 s by default; one LTX-2.5 window
+holds 345 frames at 24 fps, longer videos up to 120 s run as sliding
+windows of 289 frames that continue each other, overlap 9), `lyrics` (quoted in the prompt), `prompt` /
 `start_prompt` overrides, `seed`, `model_type` (an `ltx2_25*` model) or a
 `start_image` upload. Two worker jobs follow: the Director's image editor
 paints `start.png` (the character, reference 1, at a studio microphone in
