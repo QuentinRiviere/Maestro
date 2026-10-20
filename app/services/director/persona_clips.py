@@ -68,6 +68,10 @@ DEFAULT_TEMPLATE = "single"
 # Engines: LTX-2.5 (default, 576x1024, 8k+1 frames) or MiniMax H3 image-to-video (480x864 on the Spark, 17n+5 frames,
 # the 8-step turbo preset, its own prompt grammar: a shot list in integrated_multimodal_description).
 ENGINES = ("ltx", "h3")
+# Post-processing the worker applies to every shot (the LTX Director workflow's RIFE + grain idea): RIFE x2 doubles the
+# frames before the speed-up so the result stays smooth, a touch of film grain reads as phone footage.
+SMOOTH = "rife2"
+GRAIN = 0.08
 H3_MODEL = "minimax_h3"
 H3_TURBO_PRESET = "alibaba-pai-fl2va-pdd-8step"
 H3_RESOLUTIONS = {"portrait": "480x864", "landscape": "864x480"}
@@ -180,6 +184,8 @@ def clip_settings(raw: Mapping[str, Any] | None) -> dict:
         "orientation": base["orientation"], "frames": shots[0]["frames"], "seconds": total,
         "speed": speed, "rendered_seconds": round(sum(s["rendered_seconds"] for s in shots), 3),
         "template": template, "shots": shots, "engine": engine,
+        "smooth": bool(raw.get("smooth", True)) if str(raw.get("smooth", "true")).lower() not in ("false", "0", "") else False,
+        "grain": max(0.0, min(0.5, float(raw.get("grain", GRAIN) if raw.get("grain") not in (None, "") else GRAIN))),
         "seed": base["seed"], "model_type": H3_MODEL if engine == "h3" else base["model_type"], "audio": audio,
         "prompt": base["prompt"], "start_prompt": base["start_prompt"],
         "place": str(raw.get("place") or "").strip()[:300],
@@ -246,10 +252,22 @@ def h3_prompt(character: Mapping[str, Any], settings: Mapping[str, Any], *, fram
             f"\n\nintegrated_multimodal_description: {description}\n\noverall_soundscape: N/A.\n\nnon_diegetic_music: N/A")
 
 
+def post_params(settings: Mapping[str, Any]) -> dict:
+    """RIFE x2 and film grain on the worker, as the clip settings ask."""
+    out: dict = {}
+    if settings.get("smooth", True):
+        out["temporal_upsampling"] = SMOOTH
+    grain = float(settings.get("grain") or 0.0)
+    if grain > 0:
+        out["film_grain_intensity"] = grain
+        out["film_grain_saturation"] = 0.5
+    return out
+
+
 def h3_job(prompt: str, start_image: str, settings: Mapping[str, Any], *, frames: int | None = None) -> dict:
     """MiniMax H3 image-to-video with the official 8-step turbo preset."""
     frames = int(frames or settings["frames"])
-    return {
+    return {**post_params(settings),
         "model_type": H3_MODEL, "prompt": prompt, "image_mode": 0, "image_prompt_type": "S",
         "image_start": start_image, "generation_mode": "video", "num_inference_steps": 8, "guidance_scale": 1.0,
         "input_video_strength": 1.0, "resolution": H3_RESOLUTIONS[settings["orientation"]],
@@ -263,7 +281,7 @@ def h3_job(prompt: str, start_image: str, settings: Mapping[str, Any], *, frames
 def clip_job(prompt: str, start_image: str, settings: Mapping[str, Any], *, frames: int | None = None) -> dict:
     """LTX-2.5 image-to-video; "A" without a soundtrack makes WanGP condition on silence."""
     frames = int(frames or settings["frames"])
-    job = {
+    job = {**post_params(settings),
         "model_type": settings["model_type"], "prompt": prompt, "image_mode": 0, "image_prompt_type": "S",
         "image_start": start_image, "generation_mode": "video", "num_inference_steps": 8, "guidance_scale": 1.0,
         "input_video_strength": 1.0, "resolution": cover_video.ORIENTATIONS[settings["orientation"]][0],
@@ -279,7 +297,7 @@ def speed_up(source: str, output: str, speed: float, *, silent: bool = True) -> 
     """Play the rendered clip ``speed`` times faster (ffmpeg); a kept soundtrack is tempo-shifted to match."""
     import subprocess
 
-    command = ["ffmpeg", "-v", "error", "-y", "-i", source, "-filter:v", f"setpts=PTS/{speed:.4f}", "-r", "24",
+    command = ["ffmpeg", "-v", "error", "-y", "-i", source, "-filter:v", f"setpts=PTS/{speed:.4f},fps=24",
                "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p", "-movflags", "+faststart"]
     if silent:
         command.append("-an")
@@ -522,13 +540,14 @@ def register_routes(api: Any, *, settings_dir: Callable[[], str]) -> None:
                           name: str = Form(""), orientation: str = Form("portrait"),
                           seconds: float = Form(DEFAULT_SECONDS), speed: float = Form(DEFAULT_SPEED), seed: int = Form(-1),
                           audio: str = Form("silent"), template: str = Form(DEFAULT_TEMPLATE), engine: str = Form("ltx"),
+                          smooth: bool = Form(True), grain: float = Form(GRAIN),
                           prompt: str = Form(""), start_prompt: str = Form(""),
                           model_type: str = Form(cover_video.VIDEO_MODEL), run: bool = Form(True),
                           start_image: UploadFile | None = File(None)):
         raw = {"character_id": character_id, "persona_id": persona_id, "location_id": location_id, "gesture": gesture,
                "place": place,
                "orientation": orientation, "seconds": seconds, "speed": speed, "seed": seed, "audio": audio, "prompt": prompt,
-               "template": template, "engine": engine,
+               "template": template, "engine": engine, "smooth": smooth, "grain": grain,
                "start_prompt": start_prompt, "model_type": model_type}
         uploaded = ""
         if start_image is not None and start_image.filename:
