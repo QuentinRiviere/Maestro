@@ -575,7 +575,7 @@ export async function cancelStyleLora(bibleId: string, loraId: string): Promise<
 }
 
 /** Render the sample images again at the LoRA's current weight. */
-export async function resampleStyleLora(bibleId: string, loraId: string, options: { sampler?: 'turbo' | 'base'; scale?: number } = {}):
+export async function resampleStyleLora(bibleId: string, loraId: string, options: { sampler?: 'turbo' | 'base'; scale?: number; cast?: boolean } = {}):
   Promise<StyleLora> {
   return (await json<{ lora: StyleLora }>(await fetch(`${styleLoraUrl(bibleId, loraId)}/samples`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(options),

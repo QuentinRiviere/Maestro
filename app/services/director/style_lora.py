@@ -568,10 +568,46 @@ def _install(bible_id: str, lora_id: str, weights: str, folder: Path) -> str:
 
 
 SAMPLERS = ("turbo", "base")
+# The cast check: the bible's own people and places as reference images, as a run sends them.
+CAST_SCENES = (
+    "Medium two-shot of {a} (reference 1) and {b} (reference 2) talking at {place} (reference 3), "
+    "{a} listening, {b} mid-sentence, late afternoon.",
+    "Wide shot of {a} (reference 1) alone at {place} (reference 2), standing by the window, looking out, morning.",
+    "Medium close-up of {a} (reference 1) at {place} (reference 2), turning to look over the shoulder, evening practicals.",
+)
+
+
+def cast_samples(bible_id: str, bible: Mapping[str, Any]) -> list[tuple[str, list[str]]]:
+    """Up to three (prompt, reference images) scenes from the bible's characters and locations with images."""
+    folder = bibles._folder(bible_id)
+
+    def with_images(kind: str) -> list[tuple[str, str]]:
+        out = []
+        for element in bible.get(kind) or []:
+            image = element.get("image")
+            if image and (folder / image).is_file():
+                out.append((str(element.get("name") or element.get("tag") or ""), str(folder / image)))
+        return out
+
+    people, places = with_images("characters"), with_images("locations")
+    if not people:
+        return []
+    scenes: list[tuple[str, list[str]]] = []
+    for index, template in enumerate(CAST_SCENES):
+        a = people[(2 * index) % len(people)]
+        b = people[(2 * index + 1) % len(people)]
+        place = places[index % len(places)] if places else None
+        if index == 0 and len(people) >= 2 and place:
+            scenes.append((template.format(a=a[0], b=b[0], place=place[0]), [a[1], b[1], place[1]]))
+        elif place:
+            scenes.append((template.format(a=a[0], place=place[0]), [a[1], place[1]]))
+        else:
+            scenes.append((template.replace(" at {place} (reference 2)", "").format(a=a[0]), [a[1]]))
+    return scenes
 
 
 def _render_samples(bible_id: str, lora: Mapping[str, Any], submit, folder: Path, *, sampler: str = "turbo",
-                    scale: float | None = None) -> list[str]:
+                    scale: float | None = None, cast: bool = False) -> list[str]:
     """Three images with the LoRA at ``scale`` (its own by default); names in the bible folder.
 
     ``turbo`` is the Director's image sampler (Viggle 6 steps, CFG 1);
@@ -587,10 +623,17 @@ def _render_samples(bible_id: str, lora: Mapping[str, Any], submit, folder: Path
     samples = []
     out_dir = folder / "samples"
     out_dir.mkdir(parents=True, exist_ok=True)
-    for number, text in enumerate(SAMPLE_PROMPTS[:SAMPLE_COUNT], start=1):
+    bible = bibles.get_bible(bible_id) or {}
+    look = str((bible.get("world") or {}).get("look") or "").strip() if cast else ""
+    scenes = cast_samples(bible_id, bible) if cast else [(text, []) for text in SAMPLE_PROMPTS]
+    if cast and not scenes:
+        raise StyleLoraError("The bible has no character with an image")
+    for number, (text, refs) in enumerate(scenes[:SAMPLE_COUNT], start=1):
+        prompt = f"{text} {look}".strip() if look else text
         params = {
-            "model_type": IMAGE_MODEL, "prompt": f"{text} {lora['trigger']}", "image_mode": 1,
-            "image_prompt_type": "", "video_prompt_type": "", "generation_mode": "image",
+            "model_type": IMAGE_MODEL, "prompt": f"{prompt} {lora['trigger']}", "image_mode": 1,
+            "image_prompt_type": "", "video_prompt_type": "I" if refs else "", "generation_mode": "image",
+            **({"image_refs": refs, "remove_background_images_ref": 0} if refs else {}),
             "num_inference_steps": steps, "guidance_scale": guidance, "resolution": SAMPLE_RESOLUTION,
             "seed": 1000 + number, "settings_version": 2.52, "repeat_generation": 1, "negative_prompt": "",
             "video_length": 1, "activated_loras": [lora["file"]], "loras_multipliers": f"{weight:.2f}",
@@ -611,8 +654,12 @@ def _render_samples(bible_id: str, lora: Mapping[str, Any], submit, folder: Path
 
 
 def start_samples(bible_id: str, lora_id: str, *, submit: Callable[..., list[str]] | None = None,
-                  wait: bool = False, sampler: str = "turbo", scale: float | None = None) -> dict:
-    """Render the sample images again (background thread) at ``scale`` (the LoRA's own by default)."""
+                  wait: bool = False, sampler: str = "turbo", scale: float | None = None, cast: bool = False) -> dict:
+    """Render the sample images again (background thread) at ``scale`` (the LoRA's own by default).
+
+    ``cast`` renders the bible's own characters and locations from their
+    images instead of the invented cast.
+    """
     sampler = sampler if sampler in SAMPLERS else "turbo"
     lora = get_lora(bible_id, lora_id)
     if lora.get("status") != "done" or not lora.get("file"):
@@ -623,7 +670,7 @@ def start_samples(bible_id: str, lora_id: str, *, submit: Callable[..., list[str
     _LIVE_TRAININGS.add(lora_id)
     try:
         lora = _set(bible_id, lora_id, status="sampling", error="",
-                    progress=f"Rendering the sample images ({sampler} sampler, weight {weight:.2f})")
+                    progress=f"Rendering the {'cast ' if cast else ''}samples ({sampler} sampler, weight {weight:.2f})")
     except Exception:
         _LIVE_TRAININGS.discard(lora_id)
         raise
@@ -638,9 +685,9 @@ def start_samples(bible_id: str, lora_id: str, *, submit: Callable[..., list[str
                     except OSError:
                         pass
                 samples = _render_samples(bible_id, current, submit or _director()._submit_and_wait,
-                                          lora_folder(bible_id, lora_id), sampler=sampler, scale=scale)
+                                          lora_folder(bible_id, lora_id), sampler=sampler, scale=scale, cast=cast)
                 _set(bible_id, lora_id, samples=samples, status="done", progress="",
-                     samples_note=f"{sampler} sampler, weight {weight:.2f}")
+                     samples_note=f"{'bible cast, ' if cast else ''}{sampler} sampler, weight {weight:.2f}")
         except Exception as error:  # noqa: BLE001
             try:
                 _set(bible_id, lora_id, status="done", progress="", error=_short(error, 400))
@@ -757,7 +804,7 @@ def register_routes(api: Any, *, ensure_pipeline: Callable[[], Any] | None = Non
         except (TypeError, ValueError):
             scale = None
         return {"lora": call(start_samples, bible_id, lora_id, sampler=str(body.get("sampler") or "turbo"),
-                             scale=scale)}
+                             scale=scale, cast=body.get("cast") is True)}
 
     @api.get(base + "/{lora_id}/samples/{number}")
     def style_lora_sample(bible_id: str, lora_id: str, number: int):

@@ -298,6 +298,44 @@ class BibleLoraTests(unittest.TestCase):
         self.assertEqual(len(record["samples"]), 3)
         self.assertEqual(submitted[0]["loras_multipliers"], "0.40")
 
+    def test_cast_samples_use_the_bible_images(self):
+        folder = bibles._folder(self.bible_id)
+        for name in ("a.png", "b.png", "l.png"):
+            Path(folder, name).write_bytes(b"png")
+
+        def change(bible: dict) -> None:
+            bible["characters"] = [
+                {"id": "a", "kind": "character", "name": "Ana", "tag": "@ana", "image": "a.png",
+                 "variants": [{"id": "default", "label": "Default", "images": [
+                     {"id": "i1", "file": "a.png", "status": "approved", "view": ""}]}]},
+                {"id": "b", "kind": "character", "name": "Bo", "tag": "@bo", "image": "b.png",
+                 "variants": [{"id": "default", "label": "Default", "images": [
+                     {"id": "i2", "file": "b.png", "status": "approved", "view": ""}]}]}]
+            bible["locations"] = [{"id": "l", "kind": "location", "name": "Loft", "tag": "@loft", "image": "l.png",
+                                   "variants": [{"id": "default", "label": "Default", "images": [
+                                       {"id": "i3", "file": "l.png", "status": "approved", "view": ""}]}]}]
+
+        bibles._mutate(self.bible_id, change)
+        scenes = sl.cast_samples(self.bible_id, bibles.get_bible(self.bible_id))
+        self.assertEqual(len(scenes), 3)
+        self.assertIn("Ana (reference 1) and Bo (reference 2) talking at Loft (reference 3)", scenes[0][0])
+        self.assertEqual([os.path.basename(r) for r in scenes[0][1]], ["a.png", "b.png", "l.png"])
+        self.assertEqual(len(scenes[1][1]), 2)
+        lora = sl.create_lora(self.bible_id, {"name": "c"})
+        sl._set(self.bible_id, lora["id"], status="done", file="c.safetensors")
+        submitted = []
+
+        def submit(params, timeout_s, out_dir, **_):
+            submitted.append(params)
+            os.makedirs(out_dir, exist_ok=True)
+            Path(out_dir, "s.png").write_bytes(b"png")
+            return ["s.png"]
+
+        record = sl.start_samples(self.bible_id, lora["id"], submit=submit, wait=True, cast=True, scale=0.5)
+        self.assertEqual(record["samples_note"], "bible cast, turbo sampler, weight 0.50")
+        self.assertEqual(submitted[0]["video_prompt_type"], "I")
+        self.assertEqual(len(submitted[0]["image_refs"]), 3)
+
     def test_training_fails_cleanly_without_frames(self):
         lora = sl.create_lora(self.bible_id, {"name": "Empty"})
         record = sl.start_training(self.bible_id, lora["id"], submit=lambda *a, **k: [], jobs={}, wait=True)

@@ -326,7 +326,11 @@ def _style_loras(raw: Any) -> list[dict]:
         status = item.get("status") if item.get("status") in STYLE_LORA_STATES else "failed"
         error = _text(item.get("error"), 400)
         if status in STYLE_LORA_LIVE and lora_id not in _LIVE_TRAININGS:
-            status, error = "failed", "Interrupted"
+            # A sample render cut by a restart keeps the trained adapter.
+            if status == "sampling" and item.get("file"):
+                status, error = "done", "The sample render was interrupted"
+            else:
+                status, error = "failed", "Interrupted"
         scale = item.get("scale")
         config = item.get("config") if isinstance(item.get("config"), dict) else {}
         loras.append({

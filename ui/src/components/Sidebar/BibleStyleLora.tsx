@@ -72,6 +72,10 @@ function LoraCard({ bibleId, lora, ask, onChange, onDeleted }: {
               onClick={() => void act(async () => onChange(await resampleStyleLora(bibleId, lora.id, { sampler: 'turbo', scale })))}>
               <ImageIcon size={10} /> Samples
             </button>
+            <button className={button} disabled={busy} title="Render the bible's own characters and locations from their images, as a run does, at the slider's weight"
+              onClick={() => void act(async () => onChange(await resampleStyleLora(bibleId, lora.id, { sampler: 'turbo', scale, cast: true })))}>
+              <ImageIcon size={10} /> Cast
+            </button>
             <button className={button} disabled={busy} title="Render the samples with the plain model (40 steps, CFG 4): tells a LoRA problem from a turbo-stack problem"
               onClick={() => void act(async () => onChange(await resampleStyleLora(bibleId, lora.id, { sampler: 'base', scale })))}>
               <ImageIcon size={10} /> Base
@@ -117,7 +121,7 @@ function LoraCard({ bibleId, lora, ask, onChange, onDeleted }: {
       )}
       {lora.samples.length > 0 && (
         <div>
-          <span className={label}>Samples (an invented cast: nobody here should look like the references){lora.samples_note ? ` · ${lora.samples_note}` : ''}</span>
+          <span className={label}>Samples ({lora.samples_note?.startsWith('bible cast') ? 'the bible cast from its images' : 'an invented cast: nobody here should look like the references'}){lora.samples_note ? ` · ${lora.samples_note}` : ''}</span>
           <div className="flex gap-1.5">
             {lora.samples.map((name, index) => (
               <a key={name} href={styleLoraSampleUrl(bibleId, lora.id, index + 1)} target="_blank" rel="noreferrer">
