@@ -563,6 +563,7 @@ class PersonaTests(unittest.TestCase):
         self.assertEqual(len(submitted), 12)
         self.assertEqual(submitted[0]["image_refs"], [persona["portrait"]])
         self.assertIn("wide shot", submitted[0]["prompt"])
+        self.assertTrue(submitted[0]["prompt"].startswith("CAMERA: a wide shot"))
         self.assertIn("smartphone", submitted[0]["prompt"])
         self.assertIn("the opening of the move", submitted[1]["prompt"])
         self.assertIn("blows a whistle", submitted[1]["prompt"])

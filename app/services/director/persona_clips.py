@@ -45,10 +45,12 @@ OUTPUTS = {"start": "start.png", "clip": "clip.mp4", "raw": "clip_raw.mp4"}
 SHOTS = {
     "full": ("a full-body shot facing the camera, phone at chest height", "handheld phone framing, slight sway",
              "the whole move"),
-    "wide": ("a wide shot filmed from across the way with a phone held at chest height, the character small but "
-             "clearly visible in the middle of the scene, passers-by crossing the foreground, the place filling the frame",
+    "wide": ("a wide shot filmed from far across the way with a phone held at chest height, the character small (a "
+             "quarter of the frame height) in the middle of the scene, whole body and feet visible with ground around him, "
+             "passers-by crossing the foreground, the place filling the frame",
              "the phone drifts sideways and pushes in a little, people walk through the frame", "the opening of the move"),
-    "side": ("a medium shot from a three-quarter side angle, waist up, phone at eye level, the place blurred behind",
+    "side": ("a medium shot from the side, the character seen in three-quarter profile turned away from the camera, "
+             "waist up, phone at eye level, the place blurred behind",
              "handheld with a slight sway, the phone slowly circles a quarter turn around him", "the middle of the move"),
     "low": ("a low angle from knee height looking up, full body, the place towering behind him",
             "handheld low angle with a slight tilt up", "the middle of the move"),
@@ -220,8 +222,10 @@ def start_prompt(character: Mapping[str, Any], location: Mapping[str, Any] | Non
         place = ""
     beat = {"the opening of the move": "the first beat", "the middle of the move": "the middle beat",
             "the finish of the move": "the final beat"}.get(shot[2], "the first beat")
-    text = (f"{character.get('name') or 'The character'} from reference 1, same face, hair and clothes,{place}, "
-            f"at {beat} of this move: {settings['gesture']}. {shot[0]}, {aspect}, {REALISM}.")
+    # The editor copies the reference's framing unless the camera is dictated first and the pose is released.
+    text = (f"CAMERA: {shot[0]}, {aspect}. Do not copy the framing or pose of reference 1, only the person. "
+            f"{character.get('name') or 'The character'} (the person of reference 1: same face, hair and clothes){place}, "
+            f"at {beat} of this move: {settings['gesture']}. {REALISM}.")
     return f"{text} {look}".strip()
 
 
