@@ -67,7 +67,9 @@ EVALUATION_SYSTEM = (
 START_CHECK_SYSTEM = (
     "You compare an AI persona's portrait (first image) with a new still of the same persona (second image), as a "
     "harsh continuity supervisor. Check the face first (same person: age, skin, head, facial hair), then each trait "
-    "of the checklist; any doubt counts as missing, a prop that looks like something else counts as missing. "
+    "of the checklist; any doubt counts as missing, a prop that looks like something else counts as missing. The "
+    "still may be a close-up or a crop: a trait that falls outside the frame or is hidden by the pose is NOT "
+    "missing, only list traits whose place is visible and that are absent, wrong or deformed there. "
     "Answer with one JSON object only: {\"same_face\": true/false, \"missing\": [traits absent, wrong or deformed], "
     "\"note\": one short sentence}."
 )

@@ -97,7 +97,8 @@ REALISM = ("candid vertical smartphone video still, natural light, imperfect fra
            "nobody looks at him, true-to-life colours, no text, no watermark")
 # The editor turns a move told in beats into a storyboard: one frame is demanded, and checked (``split_panels``).
 ONE_FRAME = ("One single photograph filling the whole frame: not a storyboard, no split panels, no collage, no grid. "
-             "Every prop appears exactly once, drawn sharp and recognisable.")
+             "Every prop appears exactly once, drawn sharp and recognisable: a prop held in the hand is no longer at its "
+             "resting place.")
 START_RETRIES = 2
 _LOCK = threading.RLock()
 _LIVE: set[str] = set()
