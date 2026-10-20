@@ -346,7 +346,7 @@ def _style_loras(raw: Any) -> list[dict]:
             and not isinstance(total, bool) else 0,
             "error": error,
             "enabled": item.get("enabled") is True and status == "done",
-            "scale": round(float(scale), 2) if isinstance(scale, (int, float)) and not isinstance(scale, bool) else 0.7,
+            "scale": round(float(scale), 2) if isinstance(scale, (int, float)) and not isinstance(scale, bool) else 0.4,
             "config": copy.deepcopy(config),
             "dataset": copy.deepcopy(item["dataset"]) if isinstance(item.get("dataset"), dict) else None,
             "samples": [os.path.basename(str(s)) for s in item.get("samples") or [] if s][:6],

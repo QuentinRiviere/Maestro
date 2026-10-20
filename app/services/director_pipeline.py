@@ -8015,7 +8015,7 @@ def _apply_bible(pid: str, params: dict) -> str:
     choice = str(params.get("director_style_lora") or "auto").strip()
     lora = enabled_lora(bible, "" if choice in ("auto", "") else choice) if choice != "off" else None
     params["_director_style_lora"] = ({"id": lora["id"], "file": lora["file"], "trigger": lora.get("trigger", ""),
-                                       "scale": float(lora.get("scale") or 0.7)} if lora else None)
+                                       "scale": float(lora.get("scale") or 0.4)} if lora else None)
     if lora:
         print(f"[Pipeline {pid}] Style LoRA {lora['file']} at {params['_director_style_lora']['scale']}")
     _update_pipeline(pid, bible={"id": bible["id"], "name": bible["name"],
@@ -9787,7 +9787,7 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
         if _style_lora["file"] not in [os.path.basename(n) for n in _names]:
             _mults = _mults + [""] * (len(_names) - len(_mults))
             _names.append(_style_lora["file"])
-            _mults.append(f"{float(_style_lora.get('scale') or 0.7):.2f}")
+            _mults.append(f"{float(_style_lora.get('scale') or 0.4):.2f}")
             image_loras = {"activated_loras": _names, "loras_multipliers": " ".join(m or "1.00" for m in _mults)}
         _style_trigger = str(_style_lora.get("trigger") or "").strip()
         print(f"[Pipeline {pid}] Style LoRA {_style_lora['file']} added to the image LoRAs")

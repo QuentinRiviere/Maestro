@@ -48,7 +48,7 @@ DEFAULT_STEPS = 1500
 DEFAULT_RANK = 16
 DEFAULT_LR = 1e-4
 DEFAULT_RESOLUTION = 768
-DEFAULT_SCALE = 0.7
+DEFAULT_SCALE = 0.4
 SAMPLE_COUNT = 3
 SAMPLE_RESOLUTION = "1280x720"
 # The identity check: nobody from the references, three registers.

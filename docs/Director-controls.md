@@ -285,7 +285,7 @@ loss, MMGP key format). The adapter lands in `loras/qwen21` with a registry
 sidecar (trigger word), three sample images with an invented cast are
 rendered as the identity check (nobody should look like the references),
 and the first trained LoRA is enabled. A run that uses the bible adds the
-enabled LoRA to its shot images at its weight (default 0.7) and closes every
+enabled LoRA to its shot images at its weight (default 0.4: on the 6-step turbo sampler 0.7 melts textures, the plain 40-step sampler takes 0.7) and closes every
 image prompt with the trigger word; `director_style_lora` is `auto`, `off`
 or a LoRA id; the params snapshot records `_director_style_lora`. A bible
 keeps up to 5 LoRAs, one enabled. A training cut by a restart reads as

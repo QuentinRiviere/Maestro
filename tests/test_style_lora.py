@@ -259,7 +259,7 @@ class BibleLoraTests(unittest.TestCase):
         self.assertTrue(training["lora_dataset"].endswith("dataset.zip"))
         sample = submitted[1]
         self.assertEqual(sample["activated_loras"], [record["file"]])
-        self.assertEqual(sample["loras_multipliers"], "0.70")
+        self.assertEqual(sample["loras_multipliers"], "0.40")
         self.assertTrue(sample["prompt"].endswith("k_love_style"))
         self.assertIsNotNone(sl.sample_path(self.bible_id, lora["id"], 1))
         # Delete removes the registry files too.
