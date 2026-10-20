@@ -32,7 +32,7 @@ function useAct() {
 function PersonaForm({ bibles, formats, onCreated, onCancel }: {
   bibles: DirectorBibleSummary[]; formats: Record<string, string>; onCreated: (persona: Persona) => void; onCancel: () => void
 }) {
-  const [draft, setDraft] = useState<PersonaRequest>({ name: '', handle: '', look: '', move: '', format: 'silent_move', world: '', music: '', places: '', orientation: 'portrait', seconds: 6, audio: 'silent' })
+  const [draft, setDraft] = useState<PersonaRequest>({ name: '', handle: '', look: '', move: '', format: 'silent_move', world: '', music: '', places: '', orientation: 'portrait', seconds: 6, speed: 1.5, audio: 'silent' })
   const [source, setSource] = useState<'look' | 'character'>('look')
   const [bibleId, setBibleId] = useState('')
   const [bible, setBible] = useState<DirectorBible | null>(null)
@@ -94,13 +94,15 @@ function PersonaForm({ bibles, formats, onCreated, onCancel }: {
       <label className="block"><span className={label}>Places to visit, one per line, more absurd each time</span>
         <textarea className={input} rows={4} value={draft.places} onChange={e => set('places', e.target.value)}
           placeholder={'the queue of a busy boulangerie at 8 am\nthe platform of a crowded metro station\nthe Louvre pyramid courtyard\na cow pasture in Normandy'} /></label>
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
         <label className="block"><span className={label}>Orientation</span>
           <select className={input} value={draft.orientation} onChange={e => set('orientation', e.target.value)} aria-label="Orientation">
             <option value="portrait">Portrait 9:16</option><option value="landscape">Landscape 16:9</option>
           </select></label>
         <label className="block"><span className={label}>Clip length (s)</span>
           <input className={input} type="number" min={2} max={14} value={draft.seconds} onChange={e => set('seconds', Number(e.target.value) || 6)} /></label>
+        <label className="block" title="LTX moves at about two thirds of real pace: the clip is rendered this many times longer and sped up in post. 1.5 reads as a phone video."><span className={label}>Pace ×</span>
+          <input className={input} type="number" min={1} max={3} step={0.25} value={draft.speed} onChange={e => set('speed', Number(e.target.value) || 1.5)} /></label>
         <label className="block"><span className={label}>Sound</span>
           <select className={input} value={draft.audio} onChange={e => set('audio', e.target.value)} aria-label="Sound">
             <option value="silent">Silent</option><option value="model">Let LTX invent a soundtrack</option>
@@ -156,7 +158,7 @@ function PersonaDetail({ persona, clips, bibles, ask, onChange, onClips, onDelet
           <p className="text-[10px] text-text-secondary"><span className={label}>Signature move</span>{persona.move}</p>
           {persona.world && <p className="text-[10px] text-text-secondary"><span className={label}>World</span>{persona.world}</p>}
           {persona.music && <p className="text-[10px] text-text-secondary"><span className={label}>Music</span>{persona.music}</p>}
-          <p className="text-[10px] text-text-muted">{persona.orientation} · {persona.seconds} s · {persona.audio} · {persona.places.length} places · {clips.length} clip{clips.length === 1 ? '' : 's'}</p>
+          <p className="text-[10px] text-text-muted">{persona.orientation} · {persona.seconds} s · pace ×{persona.speed ?? 1} · {persona.audio} · {persona.places.length} places · {clips.length} clip{clips.length === 1 ? '' : 's'}</p>
           {judged.length > 0 && (
             <p className="text-[10px] text-text-secondary">
               Judge on {judged.length} clip{judged.length === 1 ? '' : 's'}: overall {mean('overall')} · identity {mean('identity')} · move {mean('move')} · place {mean('place')} · artefacts {mean('artefacts')} · hook {mean('hook')}

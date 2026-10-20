@@ -140,7 +140,12 @@ def persona_fields(raw: Mapping[str, Any] | None) -> dict:
         seconds = float(raw.get("seconds") or 6.0)
     except (TypeError, ValueError):
         seconds = 6.0
-    seconds = max(1.0, min(cover_video.seconds_for(cover_video.MAX_FRAMES), seconds))
+    try:
+        speed = float(raw.get("speed") if raw.get("speed") not in (None, "") else 1.5)
+    except (TypeError, ValueError):
+        speed = 1.5
+    speed = max(1.0, min(3.0, speed))
+    seconds = max(1.0, min(cover_video.seconds_for(cover_video.MAX_FRAMES) / speed, seconds))
     handle = str(raw.get("handle") or "").strip().lstrip("@")[:40]
     return {
         "handle": handle,
@@ -152,6 +157,7 @@ def persona_fields(raw: Mapping[str, Any] | None) -> dict:
         "places": _places(raw.get("places")),
         "orientation": orientation,
         "seconds": round(seconds, 2),
+        "speed": speed,
         "audio": audio if audio in ("silent", "model") else "silent",
     }
 
@@ -289,6 +295,7 @@ def series(persona_id: str, places: list[str] | None = None, *, count: int = 0, 
         clip = persona_clips.create_clip(f"{record['name']} · {place[:40]}", {
             "persona_id": persona_id, "gesture": record["move"], "place": place,
             "orientation": record["orientation"], "seconds": seconds or record["seconds"], "audio": record["audio"],
+            "speed": record.get("speed", 1.5),
         }, bible_id=record.get("bible_id") or "")
         made.append(persona_clips.start_clip(clip["id"], submit=submit, jobs=jobs, wait=wait))
     _set(persona_id, clips=int(record.get("clips") or 0) + len(made))
@@ -432,10 +439,11 @@ def register_routes(api: Any, *, settings_dir: Callable[[], str]) -> None:
     async def persona_create(request: Request, name: str = Form(...), handle: str = Form(""), look: str = Form(""),
                              move: str = Form(...), format: str = Form("silent_move"), world: str = Form(""),
                              music: str = Form(""), places: str = Form(""), orientation: str = Form("portrait"),
-                             seconds: float = Form(6.0), audio: str = Form("silent"), bible_id: str = Form(""),
+                             seconds: float = Form(6.0), speed: float = Form(1.5), audio: str = Form("silent"),
+                             bible_id: str = Form(""),
                              character_id: str = Form(""), portrait: UploadFile | None = File(None)):
         raw = {"handle": handle, "look": look, "move": move, "format": format, "world": world, "music": music,
-               "places": places, "orientation": orientation, "seconds": seconds, "audio": audio}
+               "places": places, "orientation": orientation, "seconds": seconds, "speed": speed, "audio": audio}
         uploaded = ""
         if portrait is not None and portrait.filename:
             if os.path.splitext(portrait.filename)[1].lower() not in cover_video.IMAGE_SUFFIXES:

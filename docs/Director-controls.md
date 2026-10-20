@@ -445,7 +445,9 @@ gesture, a different place per clip, no speech) lives in
 multipart: `bible_id`, `character_id`, `gesture` (the move, in words),
 optional `location_id` (a bible place) or `place` (a place in words),
 `name`, `orientation` (`portrait` by default), `seconds` (6, one LTX-2.5
-window), `seed`, `audio` (`silent` by default: the job asks for audio
+window), `speed` (1.5: LTX-2.5 moves at about two thirds of real pace
+whatever the prompt says, so the clip is rendered that many times longer
+and sped up in post with ffmpeg, `clip_raw.mp4` kept), `seed`, `audio` (`silent` by default: the job asks for audio
 conditioning without a soundtrack, which WanGP fills with silence so the
 mouth stays shut; `model` lets LTX invent a soundtrack), `prompt` /
 `start_prompt` overrides, `model_type` (an `ltx2_25*` model), a

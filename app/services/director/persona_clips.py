@@ -35,8 +35,12 @@ from . import bibles, cover_video, style_lora, voice_cover
 from .bibles import BibleError
 
 DEFAULT_SECONDS = 6.0
+# LTX-2.5 moves at about two thirds of real pace whatever the prompt says, so a clip is rendered ``speed`` times
+# longer than asked and sped up in post (silent clips lose nothing); 1.5 reads as a phone video.
+DEFAULT_SPEED = 1.5
+MAX_SPEED = 3.0
 AUDIO_MODES = ("silent", "model")
-OUTPUTS = {"start": "start.png", "clip": "clip.mp4"}
+OUTPUTS = {"start": "start.png", "clip": "clip.mp4", "raw": "clip_raw.mp4"}
 _LOCK = threading.RLock()
 _LIVE: set[str] = set()
 _SLOT = threading.Semaphore(1)
@@ -111,13 +115,21 @@ def clip_settings(raw: Mapping[str, Any] | None) -> dict:
     audio = str(raw.get("audio") or "silent").strip().lower()
     if audio not in AUDIO_MODES:
         raise BibleError(f"Unknown audio mode (one of {', '.join(AUDIO_MODES)})")
-    base = cover_video.video_settings({**raw, "seconds": raw.get("seconds") or DEFAULT_SECONDS, "start_sec": 0})
+    try:
+        speed = float(raw.get("speed") if raw.get("speed") not in (None, "") else DEFAULT_SPEED)
+    except (TypeError, ValueError):
+        speed = DEFAULT_SPEED
+    speed = max(1.0, min(MAX_SPEED, speed))
+    wanted = float(raw.get("seconds") or DEFAULT_SECONDS)
+    base = cover_video.video_settings({**raw, "seconds": wanted * speed, "start_sec": 0})
     if base["frames"] > cover_video.MAX_FRAMES:
-        raise BibleError(f"A persona clip fits one window: at most {cover_video.seconds_for(cover_video.MAX_FRAMES):.0f} s")
+        raise BibleError("A persona clip fits one window: at most "
+                         f"{cover_video.seconds_for(cover_video.MAX_FRAMES) / speed:.0f} s at speed {speed:g}")
     return {
         "persona_id": str(raw.get("persona_id") or "").strip(),
         "character_id": base["character_id"], "location_id": base["location_id"], "gesture": gesture,
-        "orientation": base["orientation"], "frames": base["frames"], "seconds": base["seconds"],
+        "orientation": base["orientation"], "frames": base["frames"], "seconds": round(base["seconds"] / speed, 3),
+        "speed": speed, "rendered_seconds": base["seconds"],
         "seed": base["seed"], "model_type": base["model_type"], "audio": audio,
         "prompt": base["prompt"], "start_prompt": base["start_prompt"],
         "place": str(raw.get("place") or "").strip()[:300],
@@ -166,6 +178,20 @@ def clip_job(prompt: str, start_image: str, settings: Mapping[str, Any]) -> dict
     }
     job["audio_prompt_type"] = "A" if settings.get("audio") == "silent" else ""
     return job
+
+
+def speed_up(source: str, output: str, speed: float, *, silent: bool = True) -> str:
+    """Play the rendered clip ``speed`` times faster (ffmpeg); a kept soundtrack is tempo-shifted to match."""
+    import subprocess
+
+    command = ["ffmpeg", "-v", "error", "-y", "-i", source, "-filter:v", f"setpts=PTS/{speed:.4f}", "-r", "24",
+               "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p", "-movflags", "+faststart"]
+    if silent:
+        command.append("-an")
+    else:
+        command += ["-filter:a", f"atempo={min(2.0, speed):.4f}", "-c:a", "aac"]
+    subprocess.run(command + [output], check=True, capture_output=True, text=True)
+    return output
 
 
 def create_clip(name: str, raw: Mapping[str, Any] | None, *, bible_id: str = "", start_image: str = "") -> dict:
@@ -273,7 +299,14 @@ def _run(clip_id: str, submit, jobs) -> None:
             prompt = clip_prompt(character, settings)
             outputs = cover_video.run_stage(submit, jobs, clip_job(prompt, str(folder / made["start"]), settings),
                                             folder, "Clip", update)
-            cover_video.keep_last_video(folder, outputs, OUTPUTS["clip"])
+            speed = float(settings.get("speed") or 1.0)
+            if speed > 1.0:
+                cover_video.keep_last_video(folder, outputs, OUTPUTS["raw"])
+                speed_up(str(folder / OUTPUTS["raw"]), str(folder / OUTPUTS["clip"]), speed,
+                         silent=settings.get("audio") == "silent")
+                made["raw"] = OUTPUTS["raw"]
+            else:
+                cover_video.keep_last_video(folder, outputs, OUTPUTS["clip"])
             made["clip"] = OUTPUTS["clip"]
             _set(clip_id, status="done", progress="", outputs=made, prompt=prompt,
                  seconds=round(time.time() - started))
@@ -351,13 +384,14 @@ def register_routes(api: Any, *, settings_dir: Callable[[], str]) -> None:
                           persona_id: str = Form(""),
                           gesture: str = Form(...), location_id: str = Form(""), place: str = Form(""),
                           name: str = Form(""), orientation: str = Form("portrait"),
-                          seconds: float = Form(DEFAULT_SECONDS), seed: int = Form(-1), audio: str = Form("silent"),
+                          seconds: float = Form(DEFAULT_SECONDS), speed: float = Form(DEFAULT_SPEED), seed: int = Form(-1),
+                          audio: str = Form("silent"),
                           prompt: str = Form(""), start_prompt: str = Form(""),
                           model_type: str = Form(cover_video.VIDEO_MODEL), run: bool = Form(True),
                           start_image: UploadFile | None = File(None)):
         raw = {"character_id": character_id, "persona_id": persona_id, "location_id": location_id, "gesture": gesture,
                "place": place,
-               "orientation": orientation, "seconds": seconds, "seed": seed, "audio": audio, "prompt": prompt,
+               "orientation": orientation, "seconds": seconds, "speed": speed, "seed": seed, "audio": audio, "prompt": prompt,
                "start_prompt": start_prompt, "model_type": model_type}
         uploaded = ""
         if start_image is not None and start_image.filename:

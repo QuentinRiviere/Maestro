@@ -234,6 +234,9 @@ export interface PersonaClipSettings {
   orientation: 'portrait' | 'landscape'
   frames: number
   seconds: number
+  /** Rendered ``speed`` times longer and sped up in post (LTX moves at about two thirds of real pace). */
+  speed?: number
+  rendered_seconds?: number
   seed: number
   model_type: string
   audio: 'silent' | 'model'
@@ -277,6 +280,7 @@ export interface Persona {
   places: string[]
   orientation: 'portrait' | 'landscape'
   seconds: number
+  speed: number
   audio: 'silent' | 'model'
   bible_id: string
   character_id: string
@@ -310,6 +314,7 @@ export interface PersonaRequest {
   places?: string
   orientation?: 'portrait' | 'landscape'
   seconds?: number
+  speed?: number
   audio?: 'silent' | 'model'
   bible_id?: string
   character_id?: string
@@ -363,6 +368,7 @@ export interface PersonaClipRequest {
   name?: string
   orientation?: 'portrait' | 'landscape'
   seconds?: number
+  speed?: number
   seed?: number
   audio?: 'silent' | 'model'
   prompt?: string

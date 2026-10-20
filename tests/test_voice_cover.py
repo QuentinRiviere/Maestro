@@ -222,7 +222,7 @@ class VideoTests(unittest.TestCase):
         with self.assertRaises(bibles.BibleError):
             cvid.video_settings({"seconds": 500})
         with self.assertRaises(bibles.BibleError):
-            pc.clip_settings({"gesture": "wave", "seconds": 40})
+            pc.clip_settings({"gesture": "wave", "seconds": 40, "speed": 1})
         settings = cvid.video_settings({"seconds": 12, "start_sec": "3.5", "lyrics": "la la"})
         self.assertEqual(settings["frames"], 289)
         self.assertEqual(settings["seconds"], 12.0)
@@ -346,9 +346,15 @@ class PersonaClipTests(unittest.TestCase):
                 return "KI"
 
         record = pc.create_clip("Mina cafe", {"character_id": "mina", "location_id": "cafe",
-                                              "gesture": "a slow finger-gun wink", "seconds": 6}, bible_id=self.bible_id)
+                                              "gesture": "a slow finger-gun wink", "seconds": 6, "speed": 1},
+                                bible_id=self.bible_id)
         self.assertEqual(record["status"], "queued")
         self.assertEqual(record["settings"]["frames"], 145)
+        # The default speed renders one and a half times longer, then the clip is sped up to the asked length.
+        faster = pc.clip_settings({"gesture": "wave", "seconds": 6})
+        self.assertEqual((faster["speed"], faster["frames"], faster["seconds"]), (1.5, 217, 6.0))
+        with self.assertRaises(bibles.BibleError):
+            pc.clip_settings({"gesture": "wave", "seconds": 12, "speed": 2})
         self.assertEqual(record["settings"]["audio"], "silent")
         submitted = []
         with patch.object(vc, "_director", lambda: Pipeline):
@@ -377,7 +383,7 @@ class PersonaClipTests(unittest.TestCase):
         start = os.path.join(self.tmp, "pose.png")
         Image.new("RGB", (8, 8)).save(start)
         record = pc.create_clip("", {"character_id": "mina", "gesture": "thumbs up", "audio": "model",
-                                     "place": "a rooftop at dusk"}, bible_id=self.bible_id, start_image=start)
+                                     "place": "a rooftop at dusk", "speed": 1}, bible_id=self.bible_id, start_image=start)
         self.assertEqual(record["name"], "Mina")
         self.assertEqual(record["outputs"], {"start": "start.png"})
         submitted = []
@@ -514,7 +520,7 @@ class PersonaTests(unittest.TestCase):
         with patch.object(vc, "_director", lambda: Pipeline):
             persona = ps.create_persona("Marcel Ventôse", {
                 "handle": "@marcel", "look": "a retired lifeguard in a bathrobe", "move": "blows a whistle",
-                "places": "a boulangerie\na metro platform\n\na boulangerie", "seconds": 6},
+                "places": "a boulangerie\na metro platform\n\na boulangerie", "seconds": 6, "speed": 1},
                 submit=self._submit(submitted), jobs={}, wait=True)
         self.assertEqual(persona["status"], "done", persona.get("error"))
         self.assertEqual(persona["handle"], "marcel")

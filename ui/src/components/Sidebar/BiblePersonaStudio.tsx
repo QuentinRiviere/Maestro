@@ -438,7 +438,7 @@ export function ClipCard({ bible, clip, ask, onChange, onDeleted, title }: {
         <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-text-primary" title={clip.settings.gesture}>
           {title ?? `${character?.name ?? clip.settings.character_id} · ${location?.name ?? clip.settings.place ?? 'no place'}`}
         </span>
-        <span className="text-[10px] text-text-muted">{clip.settings.seconds} s · {clip.settings.audio}{clip.seconds ? ` · ${Math.round(clip.seconds / 60)} min` : ''}</span>
+        <span className="text-[10px] text-text-muted">{clip.settings.seconds} s{clip.settings.speed && clip.settings.speed > 1 ? ` (×${clip.settings.speed})` : ''} · {clip.settings.audio}{clip.seconds ? ` · ${Math.round(clip.seconds / 60)} min` : ''}</span>
         <Status status={clip.status} progress={clip.progress} error={clip.error} />
         {live && <button className={button} disabled={busy} title="Stop the clip"
           onClick={() => void act(async () => onChange(await cancelPersonaClip(clip.id)))}><XCircle size={10} /> Stop</button>}
