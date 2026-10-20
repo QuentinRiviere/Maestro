@@ -50,16 +50,29 @@ _settings_dir: Callable[[], str] | None = None
 style_analyst_backend: Callable[[], Any] | None = None
 
 EVALUATION_SYSTEM = (
-    "You judge short vertical AI persona clips for social media. You receive the persona's portrait (first image) "
-    "and a sheet of frames from one clip in time order (second image), plus the move and place the clip was meant "
-    "to show. Answer with one JSON object only: {\"identity\": 1-5 (same face, hair and outfit as the portrait in "
-    "every frame), \"move\": 1-5 (the described move is clearly performed), \"place\": 1-5 (the place reads as "
-    "described), \"artefacts\": 1-5 (5 = no AI artefacts: extra fingers, melting, flicker, text; the sheet is one strip of "
-    "frames taken from the clip, which is normal, but a single frame that is itself cut into several panels, a "
-    "storyboard or a collage, is 1), \"hook\": 1-5 "
-    "(would a viewer stop scrolling: absurdity, contrast, deadpan), \"verdict\": one sentence, \"fix\": one short "
-    "suggestion}. Be strict: 5 is rare."
+    "You judge short vertical AI persona clips for social media, as a harsh continuity supervisor. You receive the "
+    "persona's portrait (first image) and a sheet of frames from one clip in time order (second image), plus the "
+    "move, the place and a checklist of traits the persona must keep. Go through the checklist trait by trait and "
+    "frame by frame before scoring; any doubt counts as missing. Answer with one JSON object only: "
+    "{\"traits\": {trait: number of frames where it is clearly present}, \"face_changes\": true/false (the face, "
+    "age, hair or skin differ from the portrait in any frame), \"identity\": 1-5 (5 only when every trait is "
+    "present in every frame and the face never changes; 3 when one trait drops in some frames; 1 when the face "
+    "changes, hair or glasses appear, or two traits are missing or deformed), \"move\": 1-5 (the described move "
+    "is clearly performed), \"place\": 1-5 (the place reads as described), \"artefacts\": 1-5 (5 = no AI "
+    "artefacts: extra fingers, melting, flicker, text, a prop that changes shape; the sheet is one strip of frames "
+    "taken from the clip, which is normal, but a single frame that is itself cut into several panels, a storyboard "
+    "or a collage, is 1), \"hook\": 1-5 (would a viewer stop scrolling: absurdity, contrast, deadpan), "
+    "\"verdict\": one sentence, \"fix\": one short suggestion}. Be strict: 5 is rare."
 )
+START_CHECK_SYSTEM = (
+    "You compare an AI persona's portrait (first image) with a new still of the same persona (second image), as a "
+    "harsh continuity supervisor. Check the face first (same person: age, skin, head, facial hair), then each trait "
+    "of the checklist; any doubt counts as missing, a prop that looks like something else counts as missing. "
+    "Answer with one JSON object only: {\"same_face\": true/false, \"missing\": [traits absent, wrong or deformed], "
+    "\"note\": one short sentence}."
+)
+SHEET_FRAMES = 10
+SHEET_WIDTH = 320
 
 
 def _dir() -> Path:
@@ -133,6 +146,32 @@ def _places(raw: Any) -> list[str]:
     return out[:MAX_PLACES]
 
 
+MAX_TRAITS = 12
+
+
+def _traits(raw: Any) -> list[str]:
+    """A list of must-have visual traits from a list, or a text split on newlines / semicolons."""
+    if isinstance(raw, str):
+        raw = [part for part in raw.replace(";", "\n").split("\n")]
+    if not isinstance(raw, (list, tuple)):
+        return []
+    traits = []
+    for item in raw:
+        text = str(item or "").strip().strip(",.").strip()[:80]
+        if text and text.lower() not in {t.lower() for t in traits}:
+            traits.append(text)
+    return traits[:MAX_TRAITS]
+
+
+def derive_traits(look: str) -> list[str]:
+    """The look split on commas: each piece is a trait to keep (a face, a prop, a garment)."""
+    return _traits([part for part in look.split(",") if len(part.strip()) > 3])
+
+
+def traits_text(record: Mapping[str, Any]) -> str:
+    return "; ".join(record.get("traits") or derive_traits(str(record.get("look") or "")))
+
+
 def persona_fields(raw: Mapping[str, Any] | None) -> dict:
     raw = dict(raw or {})
     fmt = str(raw.get("format") or "silent_move").strip()
@@ -160,9 +199,11 @@ def persona_fields(raw: Mapping[str, Any] | None) -> dict:
     if engine not in ENGINES:
         raise BibleError(f"Unknown engine (one of {', '.join(ENGINES)})")
     handle = str(raw.get("handle") or "").strip().lstrip("@")[:40]
+    look = str(raw.get("look") or "").strip()[:1200]
     return {
         "handle": handle,
-        "look": str(raw.get("look") or "").strip()[:1200],
+        "look": look,
+        "traits": _traits(raw.get("traits")) or derive_traits(look),
         "move": str(raw.get("move") or "").strip()[:500],
         "format": fmt,
         "world": str(raw.get("world") or "").strip()[:600],
@@ -381,12 +422,14 @@ def evaluate_clip(clip_id: str, *, backend: Any = None, ask: Callable[..., Any] 
     ask, fal_key, model, local_backend = _resolve_backend(backend, None, "analyst", ask or _ask)
     work = tempfile.mkdtemp(prefix="persona_eval_")
     try:
-        sheet = frame_sheet(str(video), os.path.join(work, "sheet.jpg"))
+        sheet = frame_sheet(str(video), os.path.join(work, "sheet.jpg"), frames=SHEET_FRAMES, width=SHEET_WIDTH)
         media = [portrait, sheet] if local_backend else [data_uri_image(portrait), data_uri_image(sheet)]
         framings = [s.get("framing", "full") for s in (settings.get("shots") or [])]
+        traits = traits_text(persona) if persona else ""
         prompt = (f"Persona: {persona['name'] if persona else settings.get('character_id', '')}. "
-                  f"Move meant: {settings.get('gesture', '')}. Place meant: {settings.get('place') or 'a bible place'}. "
-                  f"Clip length {settings.get('seconds')} s"
+                  + (f"Traits to keep: {traits}. " if traits else "")
+                  + f"Move meant: {settings.get('gesture', '')}. Place meant: {settings.get('place') or 'a bible place'}. "
+                  f"The sheet holds {SHEET_FRAMES} frames. Clip length {settings.get('seconds')} s"
                   + (f", {len(framings)} shots cut together ({', '.join(framings)}); each shot shows one part of "
                      "the move (opening, middle, finish) from its own angle, so the move is spread over the shots, "
                      "judge it as a whole" if len(framings) > 1 else "")
@@ -410,11 +453,46 @@ def evaluate_clip(clip_id: str, *, backend: Any = None, ask: Callable[..., Any] 
         except (TypeError, ValueError):
             scores[key] = None
     known = [v for v in scores.values() if v is not None]
+    present = raw.get("traits") if isinstance(raw.get("traits"), dict) else {}
     evaluation = {**scores, "overall": round(sum(known) / len(known), 2) if known else None,
+                  "traits": {str(k)[:80]: v for k, v in list(present.items())[:MAX_TRAITS]},
+                  "face_changes": bool(raw.get("face_changes")),
                   "verdict": str(raw.get("verdict") or "")[:300], "fix": str(raw.get("fix") or "")[:300],
                   "model": model, "evaluated_at": voice_cover._now()}
     persona_clips._set(clip_id, evaluation=evaluation)
     return evaluation
+
+
+def check_start_image(persona: Mapping[str, Any], image: str, *, backend: Any = None,
+                      ask: Callable[..., Any] | None = None) -> dict:
+    """Ask the analyst whether a start image keeps the persona's face and traits; {} when no analyst is set."""
+    from .room_spec import _ask, _resolve_backend, extract_json
+    from .style_reference import StyleReferenceError, data_uri_image
+
+    portrait = portrait_path(persona)
+    if not portrait:
+        return {}
+    if backend is None and callable(style_analyst_backend):
+        backend = style_analyst_backend()
+    try:
+        ask, fal_key, model, local_backend = _resolve_backend(backend, None, "analyst", ask or _ask)
+    except StyleReferenceError:
+        return {}
+    media = [portrait, image] if local_backend else [data_uri_image(portrait), data_uri_image(image)]
+    prompt = f"Persona: {persona['name']}. Checklist: {traits_text(persona) or persona.get('look', '')}."
+    import httpx
+    with httpx.Client(timeout=180) as http:
+        try:
+            text, _cost = ask(http, fal_key, model, START_CHECK_SYSTEM, prompt, media, time.sleep,
+                              max_tokens=400, timeout=180)
+        except StyleReferenceError:
+            return {}
+    raw = extract_json(text)
+    if not isinstance(raw, dict):
+        return {}
+    missing = raw.get("missing") if isinstance(raw.get("missing"), list) else []
+    return {"same_face": bool(raw.get("same_face", True)), "missing": [str(m)[:80] for m in missing[:MAX_TRAITS]],
+            "note": str(raw.get("note") or "")[:200], "model": model}
 
 
 def evaluate_persona(persona_id: str) -> list[dict]:

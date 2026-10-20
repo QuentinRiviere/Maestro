@@ -280,6 +280,8 @@ export interface Persona {
   name: string
   handle: string
   look: string
+  /** Must-have visual traits (face, props, garments) the editor keeps and the judge checks, derived from the look. */
+  traits: string[]
   move: string
   format: PersonaFormat
   world: string
@@ -316,6 +318,7 @@ export interface PersonaRequest {
   name: string
   handle?: string
   look?: string
+  traits?: string
   move: string
   format?: PersonaFormat
   world?: string

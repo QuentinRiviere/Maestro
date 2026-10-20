@@ -168,6 +168,7 @@ function PersonaDetail({ persona, clips, bibles, ask, onChange, onClips, onDelet
             {persona.character_id && <span className="text-[10px] text-text-muted" title={persona.bible_id}>· in bible as a character</span>}
           </div>
           <p className="text-[10px] text-text-secondary"><span className={label}>Look</span>{persona.look || '–'}</p>
+          {persona.traits?.length > 0 && <p className="text-[10px] text-text-secondary"><span className={label}>Traits</span>{persona.traits.join(' · ')}</p>}
           <p className="text-[10px] text-text-secondary"><span className={label}>Signature move</span>{persona.move}</p>
           {persona.world && <p className="text-[10px] text-text-secondary"><span className={label}>World</span>{persona.world}</p>}
           {persona.music && <p className="text-[10px] text-text-secondary"><span className={label}>Music</span>{persona.music}</p>}

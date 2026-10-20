@@ -563,6 +563,8 @@ class PersonaTests(unittest.TestCase):
                 "places": "a boulangerie\na metro platform\n\na boulangerie", "seconds": 6, "speed": 1},
                 submit=self._submit(submitted), jobs={}, wait=True)
         self.assertEqual(persona["status"], "done", persona.get("error"))
+        self.assertEqual(persona["traits"], ["a retired lifeguard in a bathrobe"])
+        self.assertEqual(ps.derive_traits("bald, a steel whistle on a red lanyard, stocky"), ["bald", "a steel whistle on a red lanyard", "stocky"])
         self.assertEqual(persona["handle"], "marcel")
         # The portrait, then the three-quarter view painted from it.
         self.assertEqual(len(submitted), 2)

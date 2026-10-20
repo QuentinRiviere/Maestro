@@ -259,9 +259,11 @@ def start_prompt(character: Mapping[str, Any], location: Mapping[str, Any] | Non
     beat = {"the opening of the move": "the first beat", "the middle of the move": "the middle beat",
             "the finish of the move": "the final beat"}.get(shot[2], "the first beat")
     # The editor copies the reference's framing unless the camera is dictated first and the pose is released.
+    traits = character.get("traits") or ""
+    keep = f" He keeps every one of these, exactly as in reference 1: {traits}." if traits else ""
     text = (f"CAMERA: {shot[0]}, {aspect}. {ONE_FRAME} Do not copy the framing or pose of reference 1, only the "
             f"person. {character.get('name') or 'The character'} (the person of reference 1: same face, hair and "
-            f"clothes){place}, frozen at {beat} of this move: {settings['gesture']}. {REALISM}.")
+            f"clothes){place}, frozen at {beat} of this move: {settings['gesture']}.{keep} {REALISM}.")
     return f"{text} {look}".strip()
 
 
@@ -274,9 +276,11 @@ NEGATIVE = "slow motion, slowed down, frozen pose, static, blurry, text, waterma
 def clip_prompt(character: Mapping[str, Any], settings: Mapping[str, Any], *, framing: str = "full") -> str:
     name = character.get("name") or "The character"
     shot = SHOTS.get(framing) or SHOTS["full"]
+    traits = character.get("traits") or ""
+    keep = f" Throughout, his face and look never change: {traits}." if traits else ""
     body = settings.get("prompt") or (
         f"{name} performs {shot[2]} in one continuous take: {settings['gesture']}. {shot[1]}, smartphone footage, "
-        f"passers-by ignore him, the place unchanged, no camera cut, no text. {PACE}")
+        f"passers-by ignore him, the place unchanged, no camera cut, no text.{keep} {PACE}")
     silence = " Silent clip: nobody speaks, the mouth stays closed." if settings.get("audio") == "silent" else ""
     return f"{body}{silence}"
 
@@ -287,9 +291,11 @@ def h3_prompt(character: Mapping[str, Any], settings: Mapping[str, Any], *, fram
     shot = SHOTS.get(framing) or SHOTS["full"]
     aspect = "vertical 9:16" if settings["orientation"] == "portrait" else "16:9"
     seconds = next((s["seconds"] for s in settings.get("shots") or [] if s.get("framing") == framing), settings["seconds"])
+    traits = character.get("traits") or ""
+    keep = f" His face and look never change: {traits}." if traits else ""
     description = (f"[Shot 1] Live-action, {aspect}, handheld smartphone footage, {seconds:g}-second single take. {name} "
                    f"performs {shot[2]}: {settings['gesture']}. {shot[1]}. Passers-by ignore him, the place unchanged, "
-                   "real-time pace, no slow motion, nobody speaks.")
+                   f"real-time pace, no slow motion, nobody speaks.{keep}")
     return ("For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced."
             f"\n\nintegrated_multimodal_description: {description}\n\noverall_soundscape: N/A.\n\nnon_diegetic_music: N/A")
 
@@ -471,10 +477,11 @@ def _run(clip_id: str, submit, jobs) -> None:
             if settings.get("persona_id"):
                 from . import personas
                 persona = personas.get_persona(settings["persona_id"])
-                character = {"name": persona["name"]}
+                character = {"name": persona["name"], "traits": personas.traits_text(persona)}
                 identity = personas.portrait_path(persona)
                 side_view = personas.view_path(persona, "three_quarter")
             else:
+                persona = None
                 character = bibles.find_element(bible, settings["character_id"])[1]
                 identity = style_lora.element_view(record["bible_id"], character, "")
             location = bibles.find_element(bible, settings["location_id"])[1] if settings.get("location_id") else None
@@ -508,11 +515,22 @@ def _run(clip_id: str, submit, jobs) -> None:
                         outputs = cover_video.run_stage(submit, jobs, params, folder, f"Start image {index}/{len(shots)}",
                                                         update)
                         shutil.move(str(folder / outputs[0]), str(folder / start_name))
-                        if not split_panels(str(folder / start_name)):
-                            break
-                        update(progress=f"Start image {index} came as panels, painting again ({attempt + 1})")
+                        if split_panels(str(folder / start_name)):
+                            why = "came as panels"
+                        else:
+                            # The analyst checks the face and the trait checklist before three minutes of video.
+                            check = personas.check_start_image(persona, str(folder / start_name)) if persona else {}
+                            checks = dict(made.get("start_checks") or {})
+                            checks[str(index)] = check
+                            made["start_checks"] = checks
+                            _set(clip_id, outputs=made)
+                            if not check or (check.get("same_face", True) and not check.get("missing")):
+                                break
+                            why = ("lost the face" if not check.get("same_face", True) else
+                                   "lost " + ", ".join(check["missing"])[:120])
+                        update(progress=f"Start image {index} {why}, painting again ({attempt + 1})")
                     else:
-                        raise BibleError(f"Start image {index} keeps coming as split panels")
+                        _set(clip_id, warning=f"Start image {index} still off after {START_RETRIES} repaints ({why})")
                     if index == 1:
                         made["start"] = start_name
                         _set(clip_id, outputs=made, progress="Start image ready")
