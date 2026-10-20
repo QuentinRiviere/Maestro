@@ -413,6 +413,16 @@ class RvcTests(unittest.TestCase):
 
         self.assertEqual(vc.start_cover(cover["id"], submit=sing, jobs={}, wait=True)["status"], "done")
         self.assertEqual(len(voices.training_dataset(voices.get_voice(voice["id"]))), 2)
+        # A cover whose vocals came out silent is not training material.
+        quiet = vc.create_cover("Quiet", self.song, voice_id=voice["id"])
+
+        def mute(params, timeout_s, out_dir, job_id=None, **_):
+            sing(params, timeout_s, out_dir, job_id)
+            sf.write(os.path.join(out_dir, "vocals.wav"), np.zeros(22050, dtype=np.float32), 22050)
+            return list(vc.OUTPUTS.values())
+
+        self.assertEqual(vc.start_cover(quiet["id"], submit=mute, jobs={}, wait=True)["status"], "done")
+        self.assertEqual(len(voices.training_dataset(voices.get_voice(voice["id"]))), 2)
         with self.assertRaises(bibles.BibleError):
             voices.resolve_engine(voices.get_voice(voice["id"]), "rvc")
         submitted = []

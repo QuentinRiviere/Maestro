@@ -208,6 +208,21 @@ def job_voice_params(record: Mapping[str, Any], engine: str = "seedvc") -> dict:
             "cover_weights": [r["weight"] for r in record["references"]]}
 
 
+QUIET_PEAK = 0.1
+
+
+def has_voice(path: str, *, peak: float = QUIET_PEAK) -> bool:
+    """False for a stem that is all but silent (a song the separator found no vocals in)."""
+    try:
+        import numpy as np
+        import soundfile as sf
+
+        data, _ = sf.read(path, dtype="float32", always_2d=True)
+        return bool(data.size) and float(np.abs(data).max()) >= peak
+    except Exception:  # noqa: BLE001 - unreadable files are not training material either
+        return False
+
+
 def training_dataset(record: Mapping[str, Any]) -> list[str]:
     """The recordings an RVC training learns from: the references and the vocals Seed-VC sang for this voice."""
     from . import voice_cover
@@ -219,7 +234,7 @@ def training_dataset(record: Mapping[str, Any]) -> list[str]:
         if (cover.get("config") or {}).get("engine", "seedvc") != "seedvc":
             continue
         vocals = voice_cover.cover_dir(cover["id"]) / voice_cover.OUTPUTS["vocals"]
-        if vocals.is_file():
+        if vocals.is_file() and has_voice(str(vocals)):
             files.append(str(vocals))
     return files
 
