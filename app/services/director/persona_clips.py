@@ -115,6 +115,7 @@ def clip_settings(raw: Mapping[str, Any] | None) -> dict:
     if base["frames"] > cover_video.MAX_FRAMES:
         raise BibleError(f"A persona clip fits one window: at most {cover_video.seconds_for(cover_video.MAX_FRAMES):.0f} s")
     return {
+        "persona_id": str(raw.get("persona_id") or "").strip(),
         "character_id": base["character_id"], "location_id": base["location_id"], "gesture": gesture,
         "orientation": base["orientation"], "frames": base["frames"], "seconds": base["seconds"],
         "seed": base["seed"], "model_type": base["model_type"], "audio": audio,
@@ -161,19 +162,30 @@ def clip_job(prompt: str, start_image: str, settings: Mapping[str, Any]) -> dict
     return job
 
 
-def create_clip(name: str, raw: Mapping[str, Any] | None, *, bible_id: str, start_image: str = "") -> dict:
+def create_clip(name: str, raw: Mapping[str, Any] | None, *, bible_id: str = "", start_image: str = "") -> dict:
+    """A clip of a bible character (``character_id`` in a bible) or of a persona (``persona_id``, its portrait)."""
+    from . import personas
+
     settings = clip_settings(raw)
-    bible = bibles.get_bible(bible_id)
-    if not bible:
-        raise BibleError("Unknown bible")
-    if not settings["character_id"]:
-        raise BibleError("The clip needs a character")
-    kind, character = bibles.find_element(bible, settings["character_id"])
-    if kind != "character":
-        raise BibleError("The persona must be a character")
-    if not start_image and not style_lora.element_view(bible_id, character, ""):
-        raise BibleError("The character needs an approved image")
+    bible = bibles.get_bible(bible_id) if bible_id else None
+    if settings["persona_id"]:
+        persona = personas.get_persona(settings["persona_id"])
+        if not start_image and not personas.portrait_path(persona):
+            raise BibleError("The persona has no portrait yet")
+        character = {"name": persona["name"]}
+    else:
+        if not bible:
+            raise BibleError("Unknown bible")
+        if not settings["character_id"]:
+            raise BibleError("The clip needs a character or a persona")
+        kind, character = bibles.find_element(bible, settings["character_id"])
+        if kind != "character":
+            raise BibleError("The persona must be a character")
+        if not start_image and not style_lora.element_view(bible_id, character, ""):
+            raise BibleError("The character needs an approved image")
     if settings["location_id"]:
+        if not bible:
+            raise BibleError("A bible place needs a bible")
         kind, location = bibles.find_element(bible, settings["location_id"])
         if kind != "location" or (not start_image and not style_lora.element_view(bible_id, location, "")):
             raise BibleError("The place needs an approved image")
@@ -230,11 +242,18 @@ def _run(clip_id: str, submit, jobs) -> None:
             folder = clip_dir(clip_id)
             made = dict(record.get("outputs") or {})
             update = lambda **f: _set(clip_id, **f)  # noqa: E731
-            bible = bibles.get_bible(record["bible_id"]) or {}
-            character = bibles.find_element(bible, settings["character_id"])[1]
+            bible = bibles.get_bible(record["bible_id"]) or {} if record.get("bible_id") else {}
+            if settings.get("persona_id"):
+                from . import personas
+                persona = personas.get_persona(settings["persona_id"])
+                character = {"name": persona["name"]}
+                identity = personas.portrait_path(persona)
+            else:
+                character = bibles.find_element(bible, settings["character_id"])[1]
+                identity = style_lora.element_view(record["bible_id"], character, "")
             location = bibles.find_element(bible, settings["location_id"])[1] if settings.get("location_id") else None
             if "start" not in made or not (folder / made["start"]).is_file():
-                refs = [style_lora.element_view(record["bible_id"], character, "")]
+                refs = [identity]
                 if location:
                     refs.append(style_lora.element_view(record["bible_id"], location, ""))
                 look = str((bible.get("world") or {}).get("look") or "").strip()
@@ -316,19 +335,22 @@ def register_routes(api: Any, *, settings_dir: Callable[[], str]) -> None:
             raise HTTPException(status_code=400, detail=str(error)) from error
 
     @api.get(base)
-    def clips_list(bible_id: str = ""):
+    def clips_list(bible_id: str = "", persona_id: str = ""):
         records = list_clips()
-        return {"clips": [r for r in records if not bible_id or r.get("bible_id") == bible_id]}
+        return {"clips": [r for r in records if (not bible_id or r.get("bible_id") == bible_id)
+                          and (not persona_id or (r.get("settings") or {}).get("persona_id") == persona_id)]}
 
     @api.post(base)
-    async def clip_create(request: Request, bible_id: str = Form(...), character_id: str = Form(...),
+    async def clip_create(request: Request, bible_id: str = Form(""), character_id: str = Form(""),
+                          persona_id: str = Form(""),
                           gesture: str = Form(...), location_id: str = Form(""), place: str = Form(""),
                           name: str = Form(""), orientation: str = Form("portrait"),
                           seconds: float = Form(DEFAULT_SECONDS), seed: int = Form(-1), audio: str = Form("silent"),
                           prompt: str = Form(""), start_prompt: str = Form(""),
                           model_type: str = Form(cover_video.VIDEO_MODEL), run: bool = Form(True),
                           start_image: UploadFile | None = File(None)):
-        raw = {"character_id": character_id, "location_id": location_id, "gesture": gesture, "place": place,
+        raw = {"character_id": character_id, "persona_id": persona_id, "location_id": location_id, "gesture": gesture,
+               "place": place,
                "orientation": orientation, "seconds": seconds, "seed": seed, "audio": audio, "prompt": prompt,
                "start_prompt": start_prompt, "model_type": model_type}
         uploaded = ""

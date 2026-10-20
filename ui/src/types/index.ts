@@ -598,7 +598,7 @@ export interface OutputFile {
   metadata_updated_at?: number | null
 }
 
-export type AppMode = 'director' | 'studio' | 'editor' | 'bibles'
+export type AppMode = 'director' | 'studio' | 'editor' | 'bibles' | 'personas'
 export type EditorMediaType = 'video' | 'image' | 'audio'
 export type EditorTrackType = 'video' | 'audio' | 'text'
 export type EditorTransitionType = 'none' | 'dissolve' | 'fade_black'

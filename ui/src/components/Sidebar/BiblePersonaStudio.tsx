@@ -20,7 +20,7 @@ const STATUS_CLASS: Record<string, string> = {
 const DEFAULT_LYRICS = '[Verse]\nCity lights are falling on the window pane\nI keep your picture in the pouring rain\n[Chorus]\nStay with me tonight, don\'t let the morning in\nHold the silence close, let the song begin'
 const DEFAULT_STYLE = 'Melancholic Korean indie pop ballad, clear lead vocals, piano and soft drums, 90 bpm.'
 
-type Ask = (request: { title: string; message: ReactNode; confirmLabel?: string; danger?: boolean; run: () => void | Promise<void> }) => void
+export type Ask = (request: { title: string; message: ReactNode; confirmLabel?: string; danger?: boolean; run: () => void | Promise<void> }) => void
 
 function Status({ status, progress, error }: { status: string; progress?: string; error?: string }) {
   return (
@@ -421,20 +421,22 @@ function ClipForm({ bible, onCreated }: { bible: DirectorBible; onCreated: (clip
   )
 }
 
-function ClipCard({ bible, clip, ask, onChange, onDeleted }: {
-  bible: DirectorBible; clip: PersonaClip; ask: Ask; onChange: (clip: PersonaClip) => void; onDeleted: (clips: PersonaClip[]) => void
+export function ClipCard({ bible, clip, ask, onChange, onDeleted, title }: {
+  bible?: DirectorBible; clip: PersonaClip; ask: Ask; onChange: (clip: PersonaClip) => void; onDeleted: (clips: PersonaClip[]) => void
+  title?: string
 }) {
   const { busy, error, act } = useAct()
   const live = isLive(clip.status)
-  const character = bible.characters.find(c => c.id === clip.settings.character_id)
-  const location = bible.locations.find(l => l.id === clip.settings.location_id)
+  const character = bible?.characters.find(c => c.id === clip.settings.character_id)
+  const location = bible?.locations.find(l => l.id === clip.settings.location_id)
+  const evaluation = clip.evaluation
   const stamp = encodeURIComponent(clip.updated_at)
   return (
     <div className="rounded-lg border border-border bg-bg-tertiary/30 p-2.5 space-y-1.5">
       <div className="flex items-center gap-2">
         <Clapperboard size={12} className="shrink-0 text-text-muted" />
         <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-text-primary" title={clip.settings.gesture}>
-          {character?.name ?? clip.settings.character_id} · {location?.name ?? clip.settings.place ?? 'no place'}
+          {title ?? `${character?.name ?? clip.settings.character_id} · ${location?.name ?? clip.settings.place ?? 'no place'}`}
         </span>
         <span className="text-[10px] text-text-muted">{clip.settings.seconds} s · {clip.settings.audio}{clip.seconds ? ` · ${Math.round(clip.seconds / 60)} min` : ''}</span>
         <Status status={clip.status} progress={clip.progress} error={clip.error} />
@@ -447,6 +449,13 @@ function ClipCard({ bible, clip, ask, onChange, onDeleted }: {
         </button>
       </div>
       <p className="text-[10px] text-text-muted">{clip.settings.gesture}</p>
+      {evaluation && !evaluation.error && (
+        <p className="text-[10px] text-text-secondary" title={evaluation.fix ? `Fix: ${evaluation.fix}` : undefined}>
+          Judge {evaluation.overall ?? '?'}/5 · identity {evaluation.identity ?? '?'} · move {evaluation.move ?? '?'} · place {evaluation.place ?? '?'}
+          · artefacts {evaluation.artefacts ?? '?'} · hook {evaluation.hook ?? '?'}{evaluation.verdict ? ` · ${evaluation.verdict}` : ''}
+        </p>
+      )}
+      {evaluation?.error && <p className="text-[10px] text-chip-red">Judge: {evaluation.error}</p>}
       {live && <p className="text-[10px] text-text-secondary">{clip.progress || clip.status}</p>}
       {clip.error && <p role="alert" className="text-[10px] text-chip-red">{clip.error}</p>}
       {error && <p role="alert" className="text-[10px] text-chip-red">{error}</p>}

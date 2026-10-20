@@ -8,6 +8,7 @@ const APP_MODES: Array<{ mode: AppMode; label: string }> = [
   { mode: 'studio', label: 'Studio' },
   { mode: 'editor', label: 'Editor' },
   { mode: 'bibles', label: 'Bibles' },
+  { mode: 'personas', label: 'Personas' },
 ]
 
 export function MaestroBrand({

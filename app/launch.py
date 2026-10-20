@@ -880,6 +880,9 @@ def _init_pipeline():
             _director_pipeline_module.style_analyst_backend = analyst
             import services.director.room_pano as _room_pano_module
             _room_pano_module.style_analyst_backend = analyst
+            import services.director.personas as _personas_module
+            # The analyst also judges persona clips (identity, move, place, artefacts, hook).
+            _personas_module.style_analyst_backend = analyst
         _pipeline_initialized = True
 
 
@@ -11464,6 +11467,8 @@ from services.director.cover_video import register_routes as _register_cover_vid
 _register_cover_videos(api)
 from services.director.persona_clips import register_routes as _register_persona_clips  # noqa: E402
 _register_persona_clips(api, settings_dir=lambda: _maestro_settings_dir)
+from services.director.personas import register_routes as _register_personas  # noqa: E402
+_register_personas(api, settings_dir=lambda: _maestro_settings_dir)
 
 
 @api.post("/api/v1/director/pipeline/{pid}/bible")

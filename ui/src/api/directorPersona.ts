@@ -212,7 +212,21 @@ export const coverVideoUrl = (id: string, which: 'video' | 'start' | 'clip_mix' 
 
 // ── persona clips ─────────────────────────────────────────────────────────
 
+export interface ClipEvaluation {
+  identity?: number | null
+  move?: number | null
+  place?: number | null
+  artefacts?: number | null
+  hook?: number | null
+  overall?: number | null
+  verdict?: string
+  fix?: string
+  model?: string
+  evaluated_at?: string
+  error?: string
+}
 export interface PersonaClipSettings {
+  persona_id?: string
   character_id: string
   location_id: string
   gesture: string
@@ -236,6 +250,7 @@ export interface PersonaClip {
   job_id: string
   prompt: string
   seconds: number | null
+  evaluation?: ClipEvaluation | null
   created_at: string
   updated_at: string
 }
@@ -247,9 +262,101 @@ export async function fetchPersonaClips(bibleId: string): Promise<PersonaClip[]>
     'Could not load the clips')).clips
 }
 
-export interface PersonaClipRequest {
+// ── personas ──────────────────────────────────────────────────────────────
+
+export type PersonaFormat = 'silent_move' | 'diary'
+export interface Persona {
+  id: string
+  name: string
+  handle: string
+  look: string
+  move: string
+  format: PersonaFormat
+  world: string
+  music: string
+  places: string[]
+  orientation: 'portrait' | 'landscape'
+  seconds: number
+  audio: 'silent' | 'model'
   bible_id: string
   character_id: string
+  status: RecordStatus
+  progress: string
+  error: string
+  portrait: string
+  clips: number
+  created_at: string
+  updated_at: string
+}
+
+const personasUrl = (id?: string) => `${BASE}/api/v1/director/personas${id ? `/${encodeURIComponent(id)}` : ''}`
+
+export async function fetchPersonas(): Promise<{ personas: Persona[]; formats: Record<string, string> }> {
+  return json(await fetch(personasUrl()), 'Could not load the personas')
+}
+
+export async function fetchPersona(id: string): Promise<{ persona: Persona; clips: PersonaClip[] }> {
+  return json(await fetch(personasUrl(id)), 'Could not load the persona')
+}
+
+export interface PersonaRequest {
+  name: string
+  handle?: string
+  look?: string
+  move: string
+  format?: PersonaFormat
+  world?: string
+  music?: string
+  places?: string
+  orientation?: 'portrait' | 'landscape'
+  seconds?: number
+  audio?: 'silent' | 'model'
+  bible_id?: string
+  character_id?: string
+  portrait?: File | null
+}
+
+export async function createPersona(request: PersonaRequest): Promise<Persona> {
+  const { portrait, ...fields } = request
+  return (await json<{ persona: Persona }>(await fetch(personasUrl(), { method: 'POST', body: form(fields, [['portrait', portrait]]) }),
+    'Could not create the persona')).persona
+}
+
+export async function updatePersona(id: string, fields: Partial<Omit<PersonaRequest, 'portrait'>>): Promise<Persona> {
+  return (await json<{ persona: Persona }>(await fetch(personasUrl(id),
+    { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(fields) }), 'Could not update the persona')).persona
+}
+
+export async function repaintPersona(id: string): Promise<Persona> {
+  return (await json<{ persona: Persona }>(await fetch(`${personasUrl(id)}/portrait`, { method: 'POST' }), 'Could not repaint the portrait')).persona
+}
+
+/** Queue one clip per place: the given ones, or the persona's own list (``count`` of them). */
+export async function startPersonaSeries(id: string, request: { places?: string[]; count?: number; seconds?: number }): Promise<PersonaClip[]> {
+  return (await json<{ clips: PersonaClip[] }>(await fetch(`${personasUrl(id)}/series`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request) }), 'Could not start the series')).clips
+}
+
+/** The analyst scores every finished, unjudged clip (identity, move, place, artefacts, hook). */
+export async function evaluatePersona(id: string): Promise<PersonaClip[]> {
+  return (await json<{ clips: PersonaClip[] }>(await fetch(`${personasUrl(id)}/evaluate`, { method: 'POST' }), 'Could not evaluate the clips')).clips
+}
+
+export async function addPersonaToBible(id: string, bibleId: string): Promise<Persona> {
+  return (await json<{ persona: Persona }>(await fetch(`${personasUrl(id)}/bible`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ bible_id: bibleId }) }), 'Could not add the persona to the bible')).persona
+}
+
+export async function deletePersona(id: string): Promise<Persona[]> {
+  return (await json<{ personas: Persona[] }>(await fetch(personasUrl(id), { method: 'DELETE' }), 'Could not delete the persona')).personas
+}
+
+export const personaPortraitUrl = (id: string) => `${personasUrl(id)}/portrait`
+
+export interface PersonaClipRequest {
+  bible_id?: string
+  character_id?: string
+  persona_id?: string
   gesture: string
   location_id?: string
   place?: string

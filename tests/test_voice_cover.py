@@ -22,6 +22,7 @@ from services import voice_train as trainer  # noqa: E402
 from services.director import bibles  # noqa: E402
 from services.director import cover_video as cvid  # noqa: E402
 from services.director import persona_clips as pc  # noqa: E402
+from services.director import personas as ps  # noqa: E402
 from services.director import voice_cover as vc  # noqa: E402
 from services.director import voices  # noqa: E402
 
@@ -476,6 +477,86 @@ class RvcTests(unittest.TestCase):
         self.assertNotIn("cover_profile", jobs[0])
         # The RVC cover's vocals are not training material (they would feed the model its own output).
         self.assertEqual(len(voices.training_dataset(voices.get_voice(voice["id"]))), 2)
+
+
+class PersonaTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        for module in (pc, ps):
+            module._settings_dir = lambda: os.path.join(self.tmp, "settings")
+            self.addCleanup(setattr, module, "_settings_dir", None)
+        patcher = patch.object(bibles, "BIBLES_DIR", Path(self.tmp, "settings", "director_bibles"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.bible_id = bibles.save_bible({"name": "K Love"})["id"]
+
+    def _submit(self, submitted):
+        def submit(params, timeout_s, out_dir, job_id=None, **_):
+            submitted.append(params)
+            if params["generation_mode"] == "image":
+                from PIL import Image
+                Image.new("RGB", (8, 16), (120, 40, 40)).save(os.path.join(out_dir, "frame.png"))
+                return ["frame.png"]
+            Path(out_dir, "clip.mp4").write_bytes(b"mp4")
+            return ["clip.mp4"]
+        return submit
+
+    def test_persona_from_a_look_then_series_then_bible(self):
+        class Pipeline:
+            @staticmethod
+            def _director_image_prompt_type(model, refs):
+                return "KI"
+
+        submitted = []
+        with patch.object(vc, "_director", lambda: Pipeline):
+            persona = ps.create_persona("Marcel Ventôse", {
+                "handle": "@marcel", "look": "a retired lifeguard in a bathrobe", "move": "blows a whistle",
+                "places": "a boulangerie\na metro platform\n\na boulangerie", "seconds": 6},
+                submit=self._submit(submitted), jobs={}, wait=True)
+        self.assertEqual(persona["status"], "done", persona.get("error"))
+        self.assertEqual(persona["handle"], "marcel")
+        self.assertEqual(persona["places"], ["a boulangerie", "a metro platform"])
+        self.assertTrue(os.path.isfile(persona["portrait"]))
+        self.assertIn("retired lifeguard", submitted[0]["prompt"])
+        self.assertNotIn("image_refs", submitted[0])
+        submitted.clear()
+        with patch.object(vc, "_director", lambda: Pipeline):
+            clips = ps.series(persona["id"], count=2, submit=self._submit(submitted), jobs={}, wait=True)
+        self.assertEqual([c["status"] for c in clips], ["done", "done"], [c.get("error") for c in clips])
+        self.assertEqual(clips[0]["settings"]["persona_id"], persona["id"])
+        self.assertEqual(clips[1]["settings"]["place"], "a metro platform")
+        # The start image takes the portrait as its only reference; the clip performs the move.
+        self.assertEqual(submitted[0]["image_refs"], [persona["portrait"]])
+        self.assertIn("blows a whistle", submitted[1]["prompt"])
+        self.assertEqual(ps.get_persona(persona["id"])["clips"], 2)
+        # Joining a bible makes a character with the portrait approved.
+        bible = ps.add_to_bible(persona["id"], self.bible_id)
+        character = next(c for c in bible["characters"] if c["name"] == "Marcel Ventôse")
+        self.assertTrue(character["image"])
+        self.assertEqual(ps.get_persona(persona["id"])["character_id"], character["id"])
+        with self.assertRaises(bibles.BibleError):
+            ps.add_to_bible(persona["id"], self.bible_id)
+        # The judge: a fake analyst answers the rubric.
+        def ask(http, fal_key, model, system, prompt, media, sleep, **kw):
+            self.assertIn("blows a whistle", prompt)
+            self.assertEqual(len(media), 2)
+            return ('{"identity": 4, "move": 3, "place": 5, "artefacts": "4", "hook": 2, "verdict": "ok", "fix": "closer"}', 0)
+
+        with patch.object(ps, "frame_sheet", lambda video, output, **kw: Path(output).write_bytes(b"jpg") or output), \
+             patch("services.director.room_spec._resolve_backend", lambda backend, key, model, ask_fn: (ask_fn, None, "analyst", True)):
+            evaluation = ps.evaluate_clip(clips[0]["id"], ask=ask)
+        self.assertEqual(evaluation["overall"], 3.6)
+        self.assertEqual(evaluation["artefacts"], 4)
+        self.assertEqual(pc.get_clip(clips[0]["id"])["evaluation"]["verdict"], "ok")
+
+    def test_persona_needs_a_look_or_a_character(self):
+        with self.assertRaises(bibles.BibleError):
+            ps.create_persona("Nobody", {"move": "waves"})
+        with self.assertRaises(bibles.BibleError):
+            ps.create_persona("Nobody", {"look": "a man", "move": ""})
+        with self.assertRaises(bibles.BibleError):
+            ps.persona_fields({"format": "podcast"})
 
 
 if __name__ == "__main__":

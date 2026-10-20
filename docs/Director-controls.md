@@ -456,6 +456,33 @@ LTX-2.5 image-to-video performs it in one take. `GET …/persona-clips`
 (`?bible_id=`), `GET …/{id}`, `POST …/{id}/run|cancel`, `GET
 …/{id}/file/{clip|start}`, `DELETE …/{id}`.
 
+## Personas
+
+The AI-persona format of late 2026 (Jean Phil and his copies: a look that
+never changes, no speech, one signature move, public places that get more
+absurd clip after clip, a song laid over the silent video) has its own page
+(app mode `personas`, `ui/src/components/Personas/PersonasWorkspace.tsx`)
+over `services/director/personas.py` (records
+`settings/director_personas.json`, portrait under
+`settings/personas/<id>/portrait.png`). `POST /api/v1/director/personas`
+(multipart `name`, `handle`, `look`, `move`, `format` `silent_move`
+(`diary` is listed, not built), `world`, `music`, `places` one per line,
+`orientation`, `seconds`, `audio`, or `bible_id` + `character_id` to take a
+bible character's approved image, or a `portrait` upload): with a look in
+words the Director's image editor paints the identity portrait (full body,
+deadpan, empty sidewalk; `portrait_prompt`). `POST …/{id}/series` (JSON
+`places` or `count` of the persona's own list, `seconds`) queues one
+persona clip per place (`persona_clips` with `persona_id`: the portrait is
+the start image's only reference, the move is the clip prompt).
+`POST …/{id}/evaluate` has the analyst (the room-sheet vision model) score
+every finished clip from the portrait and a frame sheet: `identity`,
+`move`, `place`, `artefacts`, `hook` (1 to 5, `overall` their mean, a
+`verdict` and a `fix`), kept under the clip's `evaluation`.
+`POST …/{id}/bible` `{bible_id}` adds the persona to a bible as a character
+whose approved image is the portrait, so episodes and covers can use it;
+`GET …/{id}` returns the persona and its clips, `PATCH`, `POST
+…/{id}/portrait` (repaint), `GET …/{id}/portrait`, `DELETE`.
+
 ## Insights registry
 
 Every judge finding of every run lands in one SQLite file,

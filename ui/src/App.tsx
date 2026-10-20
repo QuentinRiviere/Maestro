@@ -17,6 +17,7 @@ import { NotificationCoordinator } from './components/NotificationCoordinator'
 import { NotificationToastHost } from './components/NotificationToastHost'
 import { EditorWorkspace } from './editor/EditorWorkspace'
 import { BiblesWorkspace } from './components/Sidebar/BibleManagerDialog'
+import { PersonasWorkspace } from './components/Personas/PersonasWorkspace'
 import { DirectorRunsButton, MaestroBrand } from './components/AppModeNavigation'
 import { useDirectorHashRoute } from './components/DirectorDashboard/useDirectorHashRoute'
 import { EditorRoundTripBanner } from './editor/EditorRoundTripBanner'
@@ -40,7 +41,8 @@ function App() {
   const isMobile = useIsMobileSidecar()
   const isEditor = sidebarMode === 'editor'
   const isBibles = sidebarMode === 'bibles'
-  const isFullPage = isEditor || isBibles
+  const isPersonas = sidebarMode === 'personas'
+  const isFullPage = isEditor || isBibles || isPersonas
   useDirectorHashRoute()
 
   useEffect(() => {
@@ -93,6 +95,8 @@ function App() {
         <EditorWorkspace />
       ) : isBibles ? (
         <BiblesWorkspace />
+      ) : isPersonas ? (
+        <PersonasWorkspace />
       ) : (
         <>
           <Sidebar />

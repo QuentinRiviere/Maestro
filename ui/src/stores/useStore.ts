@@ -10715,9 +10715,9 @@ export const useStore = create<AppState>((set, get) => ({
       void get().loadDirectorQueue()
     } else if (mode === 'studio') {
       set({ sidebarMode: 'studio' })
-    } else if (mode === 'bibles') {
-      // Bibles own the full canvas, like the Editor.
-      set({ sidebarMode: 'bibles', sidebarOpen: false, settingsOpen: false })
+    } else if (mode === 'bibles' || mode === 'personas') {
+      // Bibles and Personas own the full canvas, like the Editor.
+      set({ sidebarMode: mode, sidebarOpen: false, settingsOpen: false })
     } else {
       // Editor owns the full canvas rather than living inside the Studio
       // sidebar. Close the mobile drawer as we hand the app shell over.
