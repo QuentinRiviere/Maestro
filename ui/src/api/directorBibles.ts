@@ -590,6 +590,13 @@ export async function cancelStyleLora(bibleId: string, loraId: string): Promise<
     'Could not cancel the training')).lora
 }
 
+/** Render a place's 360° panorama in the background, then its angles as crops of it (candidates). */
+export async function renderBiblePanorama(bibleId: string, elementId: string, variantId: string): Promise<DirectorBible> {
+  return (await json<{ bible: DirectorBible }>(await fetch(
+    `${BASE}/api/v1/director/bibles/${encodeURIComponent(bibleId)}/elements/${encodeURIComponent(elementId)}/variants/${encodeURIComponent(variantId)}/panorama`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }), 'Could not render the panorama')).bible
+}
+
 export type StyleLoraRenderMode = 'off' | 'places' | 'all'
 
 /** Whether the enabled LoRA renders the bible's own images (plates, reverse views, people). */

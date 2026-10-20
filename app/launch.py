@@ -878,6 +878,8 @@ def _init_pipeline():
             import services.director_pipeline as _director_pipeline_module
             # The analyst writes a place's room sheet before its angles are rendered.
             _director_pipeline_module.style_analyst_backend = analyst
+            import services.director.room_pano as _room_pano_module
+            _room_pano_module.style_analyst_backend = analyst
         _pipeline_initialized = True
 
 
@@ -8359,6 +8361,7 @@ def get_services_config():
         # Shots per reference whose first and last frames get a reverse prompt (0 = off).
         "director_style_frames": services.get("director_style_frames", 150),
         "director_video_fetch_url": services.get("director_video_fetch_url") or "",
+        "director_panorama_lora": services.get("director_panorama_lora") or "",
         "director_video_fetch_api_key": _mask_key(services.get("director_video_fetch_api_key", "")),
         "director_video_fetch_api_key_set": bool(services.get("director_video_fetch_api_key")),
         "r2_configured": _lora_r2_store() is not None,
@@ -8449,6 +8452,7 @@ async def update_services_config(request: Request):
         "director_episode_review_model",
         "director_judge_provider", "director_judge_url", "director_judge_api_key", "director_judge_model",
         "director_style_reference_model", "director_video_fetch_url", "director_video_fetch_api_key",
+        "director_panorama_lora",
         "director_style_frames",
         "use_director_v2", "nsfw_mode", "nsfw_accepted_at", "director_prompt_polish",
         "civitai_api_key", "voice_reference_enabled", "ltx_progressive_pipeline",
@@ -8480,6 +8484,8 @@ async def update_services_config(request: Request):
             raise HTTPException(status_code=400, detail="director_style_frames must be a whole number from 0 to 2000.")
         if key == "director_video_fetch_url" and (not isinstance(value, str) or len(value) > 500):
             raise HTTPException(status_code=400, detail="director_video_fetch_url must be a URL.")
+        if key == "director_panorama_lora" and (not isinstance(value, str) or len(value) > 200 or "/" in value):
+            raise HTTPException(status_code=400, detail="director_panorama_lora must be a file name of loras/qwen21.")
         if key == "director_judge_url":
             if not isinstance(value, str) or len(value) > 500:
                 raise HTTPException(status_code=400, detail="director_judge_url must be a URL.")
@@ -11436,6 +11442,17 @@ _register_style_references(api, get_fal_key=_style_reference_fal_key, get_model=
 
 from services.director.style_lora import register_routes as _register_style_loras  # noqa: E402
 _register_style_loras(api, ensure_pipeline=_init_pipeline)
+
+from services.director.lora_training import register_routes as _register_lora_trainings  # noqa: E402
+_register_lora_trainings(api, settings_dir=lambda: _maestro_settings_dir, ensure_pipeline=_init_pipeline)
+
+
+def _panorama_lora_name() -> str:
+    return str(wgp.server_config.get("services", {}).get("director_panorama_lora") or "").strip()
+
+
+from services.director.room_pano import register_routes as _register_room_pano  # noqa: E402
+_register_room_pano(api, ensure_pipeline=_init_pipeline, lora_name=_panorama_lora_name)
 
 
 @api.post("/api/v1/director/pipeline/{pid}/bible")

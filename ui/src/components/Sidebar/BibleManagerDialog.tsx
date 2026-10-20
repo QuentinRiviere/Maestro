@@ -6,6 +6,7 @@ import { AppModeToggle, MaestroBrand } from '../AppModeNavigation'
 import { BibleChat } from './BibleChat'
 import { BibleStyleReferences } from './BibleStyleReferences'
 import { BibleStyleLora } from './BibleStyleLora'
+import { renderBiblePanorama } from '../../api/directorBibles'
 import { useConfirm } from './ConfirmDialog'
 import { fetchRemoteWorkerSettings, updateRemoteWorkerSettings } from '../../api/client'
 import type { RemoteWorkerSettings } from '../../types'
@@ -382,6 +383,13 @@ function Angles({ bible, element, variant, readsImages, imageModel, onBible }: {
     catch (e) { setError(e instanceof Error ? e.message : 'Could not render the angles') }
     finally { setBusy(false) }
   }
+  const panorama = async () => {
+    setBusy(true)
+    setError(null)
+    try { onBible(await renderBiblePanorama(bible.id, element.id, variant.id)) }
+    catch (e) { setError(e instanceof Error ? e.message : 'Could not render the panorama') }
+    finally { setBusy(false) }
+  }
   return (
     <div className="space-y-1 rounded border border-border/60 p-1.5">
       <div className="flex items-center gap-2">
@@ -397,6 +405,13 @@ function Angles({ bible, element, variant, readsImages, imageModel, onBible }: {
           className="ml-auto flex items-center gap-1 rounded border border-border px-2 py-0.5 text-[10px] text-text-secondary hover:text-text-primary disabled:opacity-40">
           {busy || running ? <Loader2 size={10} className="animate-spin" /> : <Sparkles size={10} />} {angles.length ? 'Re-render angles' : 'Render angles'}
         </button>
+        {place && (
+          <button disabled={busy || running || !hasMain} onClick={() => void panorama()}
+            title="One 360° panorama of the place (panorama LoRA), then every angle cut from it: the geometry holds between angles"
+            className="flex items-center gap-1 rounded border border-border px-2 py-0.5 text-[10px] text-text-secondary hover:text-text-primary disabled:opacity-40">
+            <Sparkles size={10} /> Panorama
+          </button>
+        )}
       </div>
       {Object.entries(labels).map(([view, name]) => angles.some(i => i.view === view) && (
         <div key={view} className="flex items-start gap-1.5">

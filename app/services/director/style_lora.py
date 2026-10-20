@@ -587,8 +587,9 @@ def _director():
     return director_pipeline
 
 
-def _follow(job_id: str, jobs: Mapping[str, Any], bible_id: str, lora_id: str, done: threading.Event) -> None:
-    """Mirror the training job's progress onto the record until ``done``."""
+def _follow_generic(job_id: str, jobs: Mapping[str, Any], done: threading.Event,
+                    update: Callable[..., Any]) -> None:
+    """Mirror a training job's progress through ``update(progress=, step=, total_steps=)`` until ``done``."""
     last = None
     while not done.wait(3.0):
         job = jobs.get(job_id) or {}
@@ -597,10 +598,15 @@ def _follow(job_id: str, jobs: Mapping[str, Any], bible_id: str, lora_id: str, d
             continue
         last = state
         try:
-            _set(bible_id, lora_id, progress=_short(job.get("message"), 200), step=int(job.get("step") or 0),
-                 total_steps=int(job.get("total_steps") or 0) or None)
+            update(progress=_short(job.get("message"), 200), step=int(job.get("step") or 0),
+                   total_steps=int(job.get("total_steps") or 0) or None)
         except Exception:  # noqa: BLE001
             pass
+
+
+def _follow(job_id: str, jobs: Mapping[str, Any], bible_id: str, lora_id: str, done: threading.Event) -> None:
+    """Mirror the training job's progress onto the record until ``done``."""
+    _follow_generic(job_id, jobs, done, lambda **fields: _set(bible_id, lora_id, **fields))
 
 
 def _run_training(bible_id: str, lora_id: str, submit, jobs) -> None:
