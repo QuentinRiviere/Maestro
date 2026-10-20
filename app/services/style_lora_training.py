@@ -236,11 +236,9 @@ def _load_image(path: str, resolution: int):
     return resized.crop((left, top, left + width, top + height))
 
 
-def _image_tensor(image, device, dtype) -> torch.Tensor:
-    import numpy as np
-
-    array = torch.from_numpy(np.asarray(image, dtype=np.float32) / 127.5 - 1.0)
-    return array.permute(2, 0, 1)[None, :, None].to(device=device, dtype=dtype)  # (1, 3, 1, H, W)
+def _image_tensor(image, processor, device, dtype) -> torch.Tensor:
+    """(1, 4, 1, H, W) in [-1, 1]: the Qwen 2.1 VAE reads RGBA, the pipeline's processor normalises it."""
+    return processor.preprocess(image.convert("RGBA")).unsqueeze(2).to(device=device, dtype=dtype)
 
 
 def _encode_dataset(items: Sequence[Mapping[str, Any]], config: Mapping[str, Any], *,
@@ -262,7 +260,7 @@ def _encode_dataset(items: Sequence[Mapping[str, Any]], config: Mapping[str, Any
                 image = _load_image(item["image"], int(config["resolution"]))
                 prompt_embeds, prompt_mask, image_pad_mask = pipeline._get_qwen_prompt_embeds(
                     item["caption"] or " ", None, device)
-                pixels = _image_tensor(image, device, pipeline.vae.dtype)
+                pixels = _image_tensor(image, pipeline.image_processor, device, pipeline.vae.dtype)
                 latents = pipeline._encode_vae_image(pixels, None)  # (1, 64, 1, h, w), normalised
                 _, channels, _, h, w = latents.shape
                 packed = latents.view(1, channels, h * w).transpose(1, 2)
