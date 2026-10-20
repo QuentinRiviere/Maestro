@@ -1,16 +1,15 @@
 """Song covers sung by a character's voice (controller side).
 
 A cover takes a song (a file with vocals, rights cleared by the user) and a
-short reference of the voice to sing it with, and runs the worker job in
-``services.voice_cover`` (RoFormer separation, Seed-VC singing conversion,
-remix). The reference is an uploaded sample, 5 to 30 seconds, sung rather
-than spoken when possible; it can be tagged with the bible character whose
-voice it is so clips can find it later.
+voice (``services.director.voices``: one to four references blended by
+weight into a profile), and runs the worker job in ``services.voice_cover``
+(RoFormer separation, Seed-VC singing or rap conversion, remix). A cover
+can also carry its own single reference instead of a voice.
 
 Records live in ``settings/director_covers.json``; every cover's files
-under ``settings/covers/<id>/`` (``song.<ext>``, ``reference.<ext>`` and
-the job's outputs: ``cover.wav``, ``vocals.wav``, ``source_vocals.wav``,
-``instrumental.wav``).
+under ``settings/covers/<id>/`` (``song.<ext>``, an optional
+``reference.<ext>`` and the job's outputs: ``cover.wav``, ``vocals.wav``,
+``source_vocals.wav``, ``instrumental.wav``, ``voice_profile.npz``).
 """
 from __future__ import annotations
 
@@ -28,14 +27,14 @@ from typing import Any, Callable, Mapping
 from fastapi import File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 
-from . import style_lora
+from . import style_lora, voices
 from .bibles import BibleError
 
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 AUDIO_EXTENSIONS = (".wav", ".mp3", ".flac", ".m4a", ".ogg", ".aac", ".opus")
 STATES = ("queued", "running", "done", "failed")
 OUTPUTS = {"cover": "cover.wav", "vocals": "vocals.wav", "source_vocals": "source_vocals.wav",
-           "instrumental": "instrumental.wav"}
+           "instrumental": "instrumental.wav", "profile": "voice_profile.npz"}
 TIMEOUT_SEC = 3600
 _LOCK = threading.RLock()
 _LIVE: set[str] = set()
@@ -114,20 +113,31 @@ def cover_settings(raw: Mapping[str, Any] | None) -> dict:
     return cover_config(raw)
 
 
-def create_cover(name: str, song: str, reference: str, raw: Mapping[str, Any] | None = None, *,
-                 bible_id: str = "", character_id: str = "") -> dict:
-    """Register a cover over files already under ``cover_dir``; ``song`` and ``reference`` are their paths."""
+def create_cover(name: str, song: str, reference: str = "", raw: Mapping[str, Any] | None = None, *,
+                 voice_id: str = "", bible_id: str = "", character_id: str = "") -> dict:
+    """Register a cover over files already under ``cover_dir``: the song, and a voice id or a reference path."""
+    if voice_id:
+        voice = voices.get_voice(voice_id)
+        bible_id, character_id = bible_id or voice.get("bible_id", ""), character_id or voice.get("character_id", "")
+    elif not reference:
+        raise BibleError("The cover needs a voice or a reference file")
     for label, path in (("song", song), ("reference", reference)):
-        if not path or not os.path.isfile(path):
+        if not path:
+            continue
+        if not os.path.isfile(path):
             raise BibleError(f"The {label} file is missing")
         if not path.lower().endswith(AUDIO_EXTENSIONS):
             raise BibleError(f"The {label} must be an audio file ({', '.join(AUDIO_EXTENSIONS)})")
-    settings = cover_settings({**dict(raw or {}), "name": name})
+    raw = dict(raw or {})
+    if voice_id and not raw.get("mode"):
+        raw["mode"] = voice.get("mode")
+    settings = cover_settings({**raw, "name": name})
     record = {
         "id": "cover_" + secrets.token_hex(4), "name": style_lora._short(name, 60) or "cover",
         "status": "queued", "progress": "Waiting", "error": "", "config": settings,
-        "song": song, "reference": reference, "bible_id": bible_id, "character_id": character_id,
-        "outputs": {}, "job_id": "", "seconds": None, "created_at": _now(), "updated_at": _now(),
+        "song": song, "reference": reference, "voice_id": voice_id, "bible_id": bible_id,
+        "character_id": character_id, "outputs": {}, "job_id": "", "seconds": None,
+        "created_at": _now(), "updated_at": _now(),
     }
     with _LOCK:
         records = list_covers()
@@ -173,10 +183,12 @@ def _run(cover_id: str, submit, jobs) -> None:
             jobs = jobs if jobs is not None else _director()._jobs
             job_id = uuid.uuid4().hex[:8]
             folder = cover_dir(cover_id)
+            voice = voices.get_voice(record["voice_id"]) if record.get("voice_id") else None
             params = {
                 "model_type": style_lora.IMAGE_MODEL, "prompt": "", "image_mode": 1, "generation_mode": "image",
                 "voice_cover": {**record["config"], "name": cover_id}, "cover_song": record["song"],
-                "cover_reference": record["reference"], "_director_cost_stage": "voice_cover",
+                "_director_cost_stage": "voice_cover",
+                **(voices.job_voice_params(voice) if voice else {"cover_reference": record["reference"]}),
             }
             _set(cover_id, status="running", job_id=job_id, progress="Submitting to the worker")
             done = threading.Event()
@@ -193,6 +205,11 @@ def _run(cover_id: str, submit, jobs) -> None:
             if "cover" not in made:
                 job = jobs.get(job_id) or {}
                 raise BibleError("Cancelled" if job.get("status") == "cancelled" else "The worker returned no cover")
+            if voice and "profile" in made:
+                try:
+                    voices.keep_profile(voice["id"], str(folder / made["profile"]))
+                except Exception as error:  # noqa: BLE001 - the cover is done either way
+                    print(f"[Voice cover] {cover_id}: could not keep the voice profile: {error}")
             _set(cover_id, status="done", progress="", outputs=made, seconds=round(time.time() - started))
             print(f"[Voice cover] {cover_id}: {made['cover']} in {round(time.time() - started)} s")
     except BibleError as error:
@@ -227,6 +244,8 @@ def audio_path(cover_id: str, which: str) -> Path:
     if which == "song":
         path = Path(record["song"])
     elif which == "reference":
+        if not record.get("reference"):
+            raise BibleError("This cover sings with a voice, not a reference file")
         path = Path(record["reference"])
     elif which in OUTPUTS:
         path = cover_dir(cover_id) / OUTPUTS[which]
@@ -263,12 +282,13 @@ def register_routes(api: Any, *, settings_dir: Callable[[], str], ensure_pipelin
         return {"covers": list_covers()}
 
     @api.post(base)
-    async def covers_create(request: Request, song: UploadFile = File(...), reference: UploadFile = File(...),
-                            name: str = Form(""), steps: int = Form(30), cfg_rate: float = Form(0.7),
-                            semitone_shift: int = Form(0), auto_f0: bool = Form(False),
+    async def covers_create(request: Request, song: UploadFile = File(...),
+                            reference: UploadFile | None = File(None), voice_id: str = Form(""),
+                            name: str = Form(""), mode: str = Form(""), steps: int = Form(30),
+                            cfg_rate: float = Form(0.7), semitone_shift: int = Form(0), auto_f0: bool = Form(False),
                             vocal_gain_db: float = Form(0.0), bible_id: str = Form(""),
                             character_id: str = Form(""), run: bool = Form(True)):
-        """Upload a song and a voice reference, then sing the song with that voice."""
+        """Upload a song and name a voice (or upload one reference), then sing the song with that voice."""
         length = request.headers.get("content-length")
         if length and length.isdigit() and int(length) > MAX_UPLOAD_BYTES:
             raise HTTPException(status_code=413, detail="Files too large")
@@ -276,11 +296,12 @@ def register_routes(api: Any, *, settings_dir: Callable[[], str], ensure_pipelin
         folder = cover_dir(cover_id)
         try:
             song_path = save_upload(folder, song, "song")
-            reference_path = save_upload(folder, reference, "reference")
+            reference_path = save_upload(folder, reference, "reference") if reference and reference.filename else ""
             record = create_cover(name or Path(song.filename or "cover").stem, song_path, reference_path,
-                                  {"steps": steps, "cfg_rate": cfg_rate, "semitone_shift": semitone_shift,
-                                   "auto_f0": auto_f0, "vocal_gain_db": vocal_gain_db},
-                                  bible_id=bible_id, character_id=character_id)
+                                  {"mode": mode, "steps": steps, "cfg_rate": cfg_rate,
+                                   "semitone_shift": semitone_shift, "auto_f0": auto_f0,
+                                   "vocal_gain_db": vocal_gain_db},
+                                  voice_id=voice_id, bible_id=bible_id, character_id=character_id)
         except BibleError as error:
             shutil.rmtree(folder, ignore_errors=True)
             raise HTTPException(status_code=400, detail=str(error))
@@ -291,6 +312,8 @@ def register_routes(api: Any, *, settings_dir: Callable[[], str], ensure_pipelin
         if record["id"] != cover_id:
             target = cover_dir(record["id"])
             for key in ("song", "reference"):
+                if not record[key]:
+                    continue
                 moved = target / Path(record[key]).name
                 shutil.move(record[key], moved)
                 record[key] = str(moved)

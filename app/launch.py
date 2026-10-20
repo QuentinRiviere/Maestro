@@ -11454,6 +11454,9 @@ def _panorama_lora_name() -> str:
 from services.director.room_pano import register_routes as _register_room_pano  # noqa: E402
 _register_room_pano(api, ensure_pipeline=_init_pipeline, lora_name=_panorama_lora_name)
 
+from services.director.voices import register_routes as _register_voices  # noqa: E402
+_register_voices(api, settings_dir=lambda: _maestro_settings_dir)
+
 from services.director.voice_cover import register_routes as _register_voice_covers  # noqa: E402
 _register_voice_covers(api, settings_dir=lambda: _maestro_settings_dir, ensure_pipeline=_init_pipeline)
 

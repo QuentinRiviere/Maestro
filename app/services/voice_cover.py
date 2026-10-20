@@ -1,20 +1,27 @@
 """Worker job: a song cover sung by a character's voice.
 
 The job (``raw_params["voice_cover"]``, see ``services.director.voice_cover``
-on the controller) takes a song and a short reference of the target voice:
+on the controller) takes a song and the target voice, either a ready
+profile (``cover_profile``, an ``.npz``) or one or more references with
+weights (``cover_references`` / ``cover_weights``):
 
 1. BS-RoFormer splits the song into a vocal stem and an instrumental
    (``preprocessing.extract_vocals.get_stems``, the separator wgp already
    ships for audio-driven models).
-2. Seed-VC converts the vocal stem to the reference's timbre, zero-shot,
-   with its singing checkpoint (44.1 kHz, F0-conditioned). Seed-VC runs
-   as a subprocess in its own venv under ``$MAESTRO_DATA/tools/seed-vc``
+2. Seed-VC converts the vocal stem to the voice, zero-shot, with its
+   singing checkpoint (44.1 kHz, F0-conditioned; rap goes through the
+   same model, the F0 track carries the flow). The voice is a *profile*
+   (``services.seedvc_runner``): the references' CAMPPlus timbre vectors
+   blended by weight plus a prompt made of a slice of each, so a
+   character's voice is one fixed file reused by every cover. Seed-VC
+   runs as a subprocess in its own venv under ``$MAESTRO_DATA/tools/seed-vc``
    (cloned at a pinned commit, the venv layered on the worker's packages
    through a ``.pth`` link), so its pins never touch the worker.
 3. The converted vocals are mixed back over the instrumental.
 
 Outputs in the job's ``out_dir``: ``cover.wav`` (the mix), ``vocals.wav``
-(the converted stem), ``source_vocals.wav`` and ``instrumental.wav``.
+(the converted stem), ``source_vocals.wav``, ``instrumental.wav`` and
+``voice_profile.npz`` (the profile used, for the controller to keep).
 """
 from __future__ import annotations
 
@@ -32,7 +39,10 @@ SEED_VC_EXTRA_PACKAGES = ("descript-audio-codec", "jiwer", "pydub", "soundfile",
 DEFAULT_STEPS = 30
 DEFAULT_CFG_RATE = 0.7
 MAX_STEPS = 100
-_PROGRESS = re.compile(r"(\d+)/(\d+) \[")
+MODES = ("sing", "rap")
+PROFILE_NAME = "voice_profile.npz"
+_PROGRESS = re.compile(r"chunk (\d+)/(\d+)")
+_RUNNER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "seedvc_runner.py")
 
 
 class CoverError(RuntimeError):
@@ -50,15 +60,33 @@ def cover_config(raw: Mapping[str, Any] | None) -> dict:
             value = default
         return max(low, min(high, value))
 
+    mode = str(raw.get("mode") or "sing")
     return {
         "name": re.sub(r"[^A-Za-z0-9_-]+", "_", str(raw.get("name") or "cover")).strip("_")[:60] or "cover",
+        "mode": mode if mode in MODES else "sing",
         "steps": number("steps", DEFAULT_STEPS, 4, MAX_STEPS, int),
         "cfg_rate": number("cfg_rate", DEFAULT_CFG_RATE, 0.0, 1.0),
         "semitone_shift": number("semitone_shift", 0, -12, 12, int),
-        "auto_f0": bool(raw.get("auto_f0", False)),
+        # Rap keeps the rapper's own pitch level: the flow is the performance, not a key to transpose.
+        "auto_f0": bool(raw.get("auto_f0", False)) and mode != "rap",
         "length_adjust": number("length_adjust", 1.0, 0.5, 2.0),
         "vocal_gain_db": number("vocal_gain_db", 0.0, -12.0, 12.0),
     }
+
+
+def voice_weights(references: list[str], weights: Any) -> list[float]:
+    """One positive weight per reference (missing ones 1.0), normalised to sum 1."""
+    values = []
+    for index in range(len(references)):
+        try:
+            value = float(weights[index]) if isinstance(weights, (list, tuple)) and index < len(weights) else 1.0
+        except (TypeError, ValueError):
+            value = 1.0
+        values.append(max(0.0, value))
+    total = sum(values)
+    if total <= 0:
+        values, total = [1.0] * len(references), float(len(references) or 1)
+    return [round(v / total, 4) for v in values]
 
 
 def data_root() -> str:
@@ -99,23 +127,14 @@ def ensure_seed_vc(report: Callable[[str], Any] | None = None) -> str:
     return folder
 
 
-def convert_vocals(source: str, reference: str, out_dir: str, config: Mapping[str, Any], *,
-                   report: Callable[[str, float], Any] | None = None,
-                   is_cancelled: Callable[[], bool] | None = None) -> str:
-    """Run Seed-VC's singing conversion of ``source`` to ``reference``'s voice; returns the converted wav."""
+def _run_runner(arguments: list[str], *, report: Callable[[str, float], Any] | None = None,
+                is_cancelled: Callable[[], bool] | None = None, label: str = "Converting the voice") -> None:
+    """Run ``seedvc_runner.py`` in Seed-VC's venv, mirroring its chunk progress; raises on failure."""
     folder = ensure_seed_vc(lambda message: report and report(message, 0.0))
-    os.makedirs(out_dir, exist_ok=True)
-    command = [
-        _venv_python(folder), "inference.py", "--source", source, "--target", reference, "--output", out_dir,
-        "--diffusion-steps", str(config["steps"]), "--length-adjust", str(config["length_adjust"]),
-        "--inference-cfg-rate", str(config["cfg_rate"]), "--f0-condition", "True",
-        "--auto-f0-adjust", "True" if config["auto_f0"] else "False", "--semi-tone-shift", str(config["semitone_shift"]),
-    ]
     env = {**os.environ, "HF_HOME": os.environ.get("HF_HOME") or os.path.join(data_root(), "hf"),
            "PYTHONUNBUFFERED": "1"}
-    before = set(os.listdir(out_dir))
-    process = subprocess.Popen(command, cwd=folder, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                               text=True, errors="replace")
+    process = subprocess.Popen([_venv_python(folder), _RUNNER, *arguments], cwd=folder, env=env,
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
     tail: list[str] = []
     assert process.stdout is not None
     for chunk in iter(lambda: process.stdout.read(256), ""):
@@ -128,15 +147,39 @@ def convert_vocals(source: str, reference: str, out_dir: str, config: Mapping[st
         if found and report:
             step, total = found[-1]
             if int(total):
-                report(f"Converting the voice, step {step} of {total}", 100.0 * int(step) / int(total))
+                report(f"{label}, part {step} of {total}", 100.0 * int(step) / int(total))
     process.wait()
     if process.returncode != 0:
-        text = "".join(tail).strip().splitlines()
-        raise CoverError("Seed-VC failed: " + (text[-1] if text else f"exit {process.returncode}")[:300])
-    made = [n for n in os.listdir(out_dir) if n not in before and n.lower().endswith(".wav")]
-    if not made:
+        lines = [line for line in "".join(tail).strip().splitlines() if line.strip()]
+        raise CoverError("Seed-VC failed: " + (lines[-1] if lines else f"exit {process.returncode}")[:300])
+
+
+def build_profile(references: list[str], weights: list[float], output: str, *,
+                  report: Callable[[str, float], Any] | None = None,
+                  is_cancelled: Callable[[], bool] | None = None) -> str:
+    """Blend the references into one voice profile (``.npz``); returns its path."""
+    arguments = ["profile", "--output", output]
+    for path, weight in zip(references, weights):
+        arguments += ["--reference", path, "--weight", str(weight)]
+    _run_runner(arguments, report=report, is_cancelled=is_cancelled, label="Building the voice")
+    if not os.path.isfile(output):
+        raise CoverError("Seed-VC produced no voice profile")
+    return output
+
+
+def convert_vocals(source: str, profile: str, output: str, config: Mapping[str, Any], *,
+                   report: Callable[[str, float], Any] | None = None,
+                   is_cancelled: Callable[[], bool] | None = None) -> str:
+    """Seed-VC's singing conversion of ``source`` to the profile's voice; returns the converted wav."""
+    arguments = ["convert", "--profile", profile, "--source", source, "--output", output,
+                 "--steps", str(config["steps"]), "--cfg-rate", str(config["cfg_rate"]),
+                 "--length-adjust", str(config["length_adjust"]), "--semitone-shift", str(config["semitone_shift"])]
+    if config["auto_f0"]:
+        arguments.append("--auto-f0")
+    _run_runner(arguments, report=report, is_cancelled=is_cancelled)
+    if not os.path.isfile(output):
         raise CoverError("Seed-VC produced no file")
-    return os.path.join(out_dir, sorted(made, key=lambda n: os.path.getmtime(os.path.join(out_dir, n)))[-1])
+    return output
 
 
 def mix(vocals: str, instrumental: str, output: str, *, vocal_gain_db: float = 0.0) -> str:
@@ -166,7 +209,11 @@ def run_cover_job(job: dict, raw_params: Mapping[str, Any]) -> bool:
 
     config = cover_config(raw_params.get("voice_cover"))
     song = str(raw_params.get("cover_song") or "")
-    reference = str(raw_params.get("cover_reference") or "")
+    profile = str(raw_params.get("cover_profile") or "")
+    references = [str(p) for p in (raw_params.get("cover_references") or []) if p]
+    if not references and raw_params.get("cover_reference"):
+        references = [str(raw_params["cover_reference"])]
+    weights = voice_weights(references, raw_params.get("cover_weights"))
     out_dir = job.get("out_dir") or wgp.save_path
     os.makedirs(out_dir, exist_ok=True)
 
@@ -175,21 +222,36 @@ def run_cover_job(job: dict, raw_params: Mapping[str, Any]) -> bool:
 
     work_dir = tempfile.mkdtemp(prefix="voice_cover_", dir=out_dir)
     try:
-        for label, path in (("song", song), ("voice reference", reference)):
-            if not path or not os.path.isfile(path):
-                raise CoverError(f"The {label} file is missing")
-        report("Separating the vocals from the music", 2.0)
+        if not song or not os.path.isfile(song):
+            raise CoverError("The song file is missing")
+        if profile and not os.path.isfile(profile):
+            raise CoverError("The voice profile file is missing")
+        if not profile and not references:
+            raise CoverError("The cover needs a voice: a profile or at least one reference")
+        for path in references:
+            if not os.path.isfile(path):
+                raise CoverError(f"The voice reference {os.path.basename(path)} is missing")
+        names = {"cover": "cover.wav", "vocals": "vocals.wav", "source_vocals": "source_vocals.wav",
+                 "instrumental": "instrumental.wav", "profile": PROFILE_NAME}
+        cancelled = lambda: is_cancel_requested(job)  # noqa: E731
+        if profile:
+            shutil.copyfile(profile, os.path.join(out_dir, names["profile"]))
+        else:
+            report("Building the voice", 1.0)
+            build_profile(references, weights, os.path.join(out_dir, names["profile"]),
+                          report=lambda m, p: report(m, 1.0), is_cancelled=cancelled)
+        if cancelled():
+            return False
+        report("Separating the vocals from the music", 5.0)
         from preprocessing.extract_vocals import get_stems
         source_vocals, instrumental = get_stems(song, os.path.join(work_dir, "stems"))
-        if is_cancel_requested(job):
+        if cancelled():
             return False
-        report("Converting the voice", 10.0)
-        converted = convert_vocals(source_vocals, reference, os.path.join(work_dir, "vc"), config,
-                                   report=lambda m, p: report(m, 10.0 + 0.85 * p),
-                                   is_cancelled=lambda: is_cancel_requested(job))
+        report("Converting the voice", 12.0)
+        converted = convert_vocals(source_vocals, os.path.join(out_dir, names["profile"]),
+                                   os.path.join(work_dir, "converted.wav"), config,
+                                   report=lambda m, p: report(m, 12.0 + 0.83 * p), is_cancelled=cancelled)
         report("Mixing the cover", 96.0)
-        names = {"cover": "cover.wav", "vocals": "vocals.wav", "source_vocals": "source_vocals.wav",
-                 "instrumental": "instrumental.wav"}
         mix(converted, instrumental, os.path.join(out_dir, names["cover"]), vocal_gain_db=config["vocal_gain_db"])
         shutil.copyfile(converted, os.path.join(out_dir, names["vocals"]))
         shutil.copyfile(source_vocals, os.path.join(out_dir, names["source_vocals"]))

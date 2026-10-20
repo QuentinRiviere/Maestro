@@ -19,6 +19,7 @@ import soundfile as sf  # noqa: E402
 from services import voice_cover as worker  # noqa: E402
 from services.director import bibles  # noqa: E402
 from services.director import voice_cover as vc  # noqa: E402
+from services.director import voices  # noqa: E402
 
 
 def _tone(path: str, seconds: float, hz: float, rate: int = 22050, channels: int = 1) -> str:
@@ -29,6 +30,13 @@ def _tone(path: str, seconds: float, hz: float, rate: int = 22050, channels: int
     return path
 
 
+def _output(out_dir: str, name: str) -> None:
+    if name.endswith(".wav"):
+        _tone(os.path.join(out_dir, name), 0.2, 200)
+    else:
+        Path(out_dir, name).write_bytes(b"npz")
+
+
 class WorkerTests(unittest.TestCase):
     def test_config_bounds(self):
         config = worker.cover_config({"steps": 500, "cfg_rate": 2, "semitone_shift": -40, "name": "My Song!"})
@@ -37,6 +45,12 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(config["semitone_shift"], -12)
         self.assertEqual(config["name"], "My_Song")
         self.assertEqual(worker.cover_config(None)["steps"], worker.DEFAULT_STEPS)
+        rap = worker.cover_config({"mode": "rap", "auto_f0": True})
+        self.assertEqual(rap["mode"], "rap")
+        self.assertFalse(rap["auto_f0"])
+        self.assertEqual(worker.voice_weights(["a", "b"], [3, 1]), [0.75, 0.25])
+        self.assertEqual(worker.voice_weights(["a", "b"], None), [0.5, 0.5])
+        self.assertEqual(worker.voice_weights(["a", "b"], [0, -1]), [0.5, 0.5])
 
     def test_mix_resamples_and_limits(self):
         tmp = tempfile.mkdtemp()
@@ -58,6 +72,8 @@ class ControllerTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         vc._settings_dir = lambda: os.path.join(self.tmp, "settings")
         self.addCleanup(setattr, vc, "_settings_dir", None)
+        voices._settings_dir = vc._settings_dir
+        self.addCleanup(setattr, voices, "_settings_dir", None)
         self.song = _tone(os.path.join(self.tmp, "song.wav"), 1.0, 220)
         self.reference = _tone(os.path.join(self.tmp, "ref.wav"), 1.0, 330)
 
@@ -72,7 +88,7 @@ class ControllerTests(unittest.TestCase):
             submitted.append(params)
             os.makedirs(out_dir, exist_ok=True)
             for name in vc.OUTPUTS.values():
-                _tone(os.path.join(out_dir, name), 0.2, 200)
+                _output(out_dir, name)
             return list(vc.OUTPUTS.values())
 
         done = vc.start_cover(record["id"], submit=submit, jobs={}, wait=True)
@@ -81,6 +97,7 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(submitted[0]["voice_cover"]["steps"], 12)
         self.assertEqual(submitted[0]["cover_song"], self.song)
         self.assertEqual(submitted[0]["cover_reference"], self.reference)
+        self.assertEqual(submitted[0]["voice_cover"]["mode"], "sing")
         self.assertTrue(vc.audio_path(record["id"], "cover").is_file())
         self.assertTrue(vc.audio_path(record["id"], "song").is_file())
         with self.assertRaises(bibles.BibleError):
@@ -88,9 +105,53 @@ class ControllerTests(unittest.TestCase):
         vc.delete_cover(record["id"])
         self.assertEqual(vc.list_covers(), [])
 
+    def test_voice_profile_is_kept_and_reused(self):
+        second = _tone(os.path.join(self.tmp, "ref2.wav"), 1.0, 440)
+        voice = voices.create_voice("Mina", [self.reference, second], [3, 1], mode="rap", bible_id="k_love",
+                                    character_id="mina")
+        self.assertEqual([r["weight"] for r in voice["references"]], [0.75, 0.25])
+        self.assertEqual(voices.job_voice_params(voice)["cover_weights"], [0.75, 0.25])
+        record = vc.create_cover("Flow", self.song, voice_id=voice["id"])
+        self.assertEqual(record["config"]["mode"], "rap")
+        self.assertEqual(record["bible_id"], "k_love")
+        submitted = []
+
+        def submit(params, timeout_s, out_dir, job_id=None, **_):
+            submitted.append(params)
+            os.makedirs(out_dir, exist_ok=True)
+            for name in vc.OUTPUTS.values():
+                _output(out_dir, name)
+            return list(vc.OUTPUTS.values())
+
+        done = vc.start_cover(record["id"], submit=submit, jobs={}, wait=True)
+        self.assertEqual(done["status"], "done", done.get("error"))
+        self.assertEqual(submitted[0]["cover_references"], [self.reference, second])
+        self.assertNotIn("cover_profile", submitted[0])
+        voice = voices.get_voice(voice["id"])
+        self.assertTrue(voice["profile"].endswith("profile.npz"))
+        self.assertEqual(voice["covers"], 1)
+        # The next cover sends the stored profile, not the references.
+        again = vc.create_cover("Flow 2", self.song, voice_id=voice["id"])
+        vc.start_cover(again["id"], submit=submit, jobs={}, wait=True)
+        self.assertEqual(submitted[1]["cover_profile"], voice["profile"])
+        self.assertNotIn("cover_references", submitted[1])
+        with self.assertRaises(bibles.BibleError):
+            vc.audio_path(record["id"], "reference")
+        # New weights drop the profile; a rename keeps it.
+        voices.update_voice(voice["id"], {"name": "Mina v2"})
+        self.assertTrue(voices.get_voice(voice["id"])["profile"])
+        voices.update_voice(voice["id"], {"weights": [1, 1]})
+        self.assertEqual(voices.get_voice(voice["id"])["profile"], "")
+        voices.delete_voice(voice["id"])
+        self.assertEqual(voices.list_voices(), [])
+
     def test_failures(self):
         with self.assertRaises(bibles.BibleError):
             vc.create_cover("x", os.path.join(self.tmp, "missing.wav"), self.reference)
+        with self.assertRaises(bibles.BibleError):
+            vc.create_cover("x", self.song)
+        with self.assertRaises(bibles.BibleError):
+            voices.create_voice("x", [])
         Path(self.tmp, "notes.txt").write_text("x")
         with self.assertRaises(bibles.BibleError):
             vc.create_cover("x", str(Path(self.tmp, "notes.txt")), self.reference)
