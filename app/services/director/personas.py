@@ -146,10 +146,13 @@ def persona_fields(raw: Mapping[str, Any] | None) -> dict:
         speed = 1.5
     speed = max(1.0, min(3.0, speed))
     seconds = max(1.0, min(cover_video.seconds_for(cover_video.MAX_FRAMES) / speed, seconds))
-    from .persona_clips import TEMPLATES
+    from .persona_clips import ENGINES, TEMPLATES
     template = str(raw.get("template") or "trend").strip()
     if template not in TEMPLATES:
         raise BibleError(f"Unknown template (one of {', '.join(TEMPLATES)})")
+    engine = str(raw.get("engine") or "ltx").strip().lower()
+    if engine not in ENGINES:
+        raise BibleError(f"Unknown engine (one of {', '.join(ENGINES)})")
     handle = str(raw.get("handle") or "").strip().lstrip("@")[:40]
     return {
         "handle": handle,
@@ -163,6 +166,7 @@ def persona_fields(raw: Mapping[str, Any] | None) -> dict:
         "seconds": round(seconds, 2),
         "speed": speed,
         "template": template,
+        "engine": engine,
         "audio": audio if audio in ("silent", "model") else "silent",
     }
 
@@ -282,7 +286,7 @@ def update_persona(persona_id: str, fields: Mapping[str, Any]) -> dict:
 
 
 def series(persona_id: str, places: list[str] | None = None, *, count: int = 0, seconds: float | None = None,
-           template: str = "", submit: Callable[..., list[str]] | None = None,
+           template: str = "", engine: str = "", submit: Callable[..., list[str]] | None = None,
            jobs: Mapping[str, Any] | None = None, wait: bool = False) -> list[dict]:
     """Queue one clip per place (the persona's own list when none is given, ``count`` of them at most)."""
     from . import persona_clips
@@ -301,6 +305,7 @@ def series(persona_id: str, places: list[str] | None = None, *, count: int = 0, 
             "persona_id": persona_id, "gesture": record["move"], "place": place,
             "orientation": record["orientation"], "seconds": seconds or record["seconds"], "audio": record["audio"],
             "speed": record.get("speed", 1.5), "template": template or record.get("template", "trend"),
+            "engine": engine or record.get("engine", "ltx"),
         }, bible_id=record.get("bible_id") or "")
         made.append(persona_clips.start_clip(clip["id"], submit=submit, jobs=jobs, wait=wait))
     _set(persona_id, clips=int(record.get("clips") or 0) + len(made))
@@ -448,11 +453,11 @@ def register_routes(api: Any, *, settings_dir: Callable[[], str]) -> None:
                              move: str = Form(...), format: str = Form("silent_move"), world: str = Form(""),
                              music: str = Form(""), places: str = Form(""), orientation: str = Form("portrait"),
                              seconds: float = Form(6.0), speed: float = Form(1.5), audio: str = Form("silent"),
-                             template: str = Form("trend"), bible_id: str = Form(""),
+                             template: str = Form("trend"), engine: str = Form("ltx"), bible_id: str = Form(""),
                              character_id: str = Form(""), portrait: UploadFile | None = File(None)):
         raw = {"handle": handle, "look": look, "move": move, "format": format, "world": world, "music": music,
                "places": places, "orientation": orientation, "seconds": seconds, "speed": speed, "audio": audio,
-               "template": template}
+               "template": template, "engine": engine}
         uploaded = ""
         if portrait is not None and portrait.filename:
             if os.path.splitext(portrait.filename)[1].lower() not in cover_video.IMAGE_SUFFIXES:
@@ -510,7 +515,8 @@ def register_routes(api: Any, *, settings_dir: Callable[[], str]) -> None:
             count = 0
         seconds = body.get("seconds")
         return {"clips": call(series, persona_id, _places(body.get("places")), count=count,
-                              seconds=float(seconds) if seconds else None, template=str(body.get("template") or ""))}
+                              seconds=float(seconds) if seconds else None, template=str(body.get("template") or ""),
+                              engine=str(body.get("engine") or ""))}
 
     @api.post(base + "/{persona_id}/evaluate")
     def persona_evaluate(persona_id: str):

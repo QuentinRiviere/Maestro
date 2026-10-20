@@ -356,6 +356,15 @@ class PersonaClipTests(unittest.TestCase):
         self.assertEqual((faster["speed"], faster["frames"], faster["seconds"]), (1.5, 217, 6.0))
         trend = pc.clip_settings({"gesture": "wave", "template": "trend"})
         self.assertEqual([s["frames"] for s in trend["shots"]], [145, 145, 113])
+        h3 = pc.clip_settings({"gesture": "wave", "engine": "h3", "seconds": 6})
+        self.assertEqual((h3["model_type"], h3["shots"][0]["frames"]), ("minimax_h3", 226))
+        self.assertEqual(pc.h3_frames(1), 124)
+        job = pc.h3_job(pc.h3_prompt({"name": "Mina"}, h3), "/tmp/s.png", h3, frames=226)
+        self.assertEqual((job["resolution"], job["minimax_h3_turbo_preset"], job["video_length"]), ("480x864", pc.H3_TURBO_PRESET, 226))
+        self.assertTrue(job["prompt"].startswith("For the target video, at 0.00 seconds"))
+        self.assertIn("[Shot 1] Live-action, vertical 9:16", job["prompt"])
+        with self.assertRaises(bibles.BibleError):
+            pc.clip_settings({"gesture": "wave", "engine": "wan"})
         with self.assertRaises(bibles.BibleError):
             pc.clip_settings({"gesture": "wave", "template": "epic"})
         with self.assertRaises(bibles.BibleError):

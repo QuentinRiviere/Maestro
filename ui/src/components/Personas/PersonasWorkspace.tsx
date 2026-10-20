@@ -5,7 +5,7 @@ import { useConfirm } from '../Sidebar/ConfirmDialog'
 import { ClipCard, type Ask } from '../Sidebar/BiblePersonaStudio'
 import {
   addPersonaToBible, createPersona, deletePersona, evaluatePersona, fetchPersona, fetchPersonas, isLive, personaPortraitUrl,
-  repaintPersona, startPersonaSeries, type ClipTemplate, type Persona, type PersonaClip, type PersonaFormat, type PersonaRequest,
+  repaintPersona, startPersonaSeries, type ClipEngine, type ClipTemplate, type Persona, type PersonaClip, type PersonaFormat, type PersonaRequest,
 } from '../../api/directorPersona'
 import { fetchDirectorBible, fetchDirectorBibles, type DirectorBible, type DirectorBibleSummary } from '../../api/directorBibles'
 
@@ -32,7 +32,7 @@ function useAct() {
 function PersonaForm({ bibles, formats, onCreated, onCancel }: {
   bibles: DirectorBibleSummary[]; formats: Record<string, string>; onCreated: (persona: Persona) => void; onCancel: () => void
 }) {
-  const [draft, setDraft] = useState<PersonaRequest>({ name: '', handle: '', look: '', move: '', format: 'silent_move', world: '', music: '', places: '', orientation: 'portrait', seconds: 6, speed: 1.5, template: 'trend', audio: 'silent' })
+  const [draft, setDraft] = useState<PersonaRequest>({ name: '', handle: '', look: '', move: '', format: 'silent_move', world: '', music: '', places: '', orientation: 'portrait', seconds: 6, speed: 1.5, template: 'trend', engine: 'ltx', audio: 'silent' })
   const [source, setSource] = useState<'look' | 'character'>('look')
   const [bibleId, setBibleId] = useState('')
   const [bible, setBible] = useState<DirectorBible | null>(null)
@@ -115,6 +115,10 @@ function PersonaForm({ bibles, formats, onCreated, onCancel }: {
           <option value="reveal">Reveal · close 3 s, wide 5 s, side 3 s</option>
           <option value="single">Single · one full-body take of the clip length</option>
         </select></label>
+      <label className="block" title="LTX-2.5 (576x1024, the default) or MiniMax H3 image-to-video (480x864 on the Spark, its own motion style)"><span className={label}>Engine</span>
+        <select className={input} value={draft.engine} onChange={e => set('engine', e.target.value as ClipEngine)} aria-label="Clip engine">
+          <option value="ltx">LTX-2.5</option><option value="h3">MiniMax H3 (480p)</option>
+        </select></label>
       {error && <p role="alert" className="text-[10px] text-chip-red">{error}</p>}
       <div className="flex gap-2">
         <button className={primary} disabled={busy || !ready}
@@ -135,6 +139,7 @@ function PersonaDetail({ persona, clips, bibles, ask, onChange, onClips, onDelet
   const [count, setCount] = useState(3)
   const [extra, setExtra] = useState('')
   const [template, setTemplate] = useState<ClipTemplate | ''>('')
+  const [engine, setEngine] = useState<ClipEngine | ''>('')
   const [bibleId, setBibleId] = useState(bibles[0]?.id ?? '')
   const live = isLive(persona.status)
   const judged = clips.filter(c => c.evaluation && !c.evaluation.error)
@@ -166,7 +171,7 @@ function PersonaDetail({ persona, clips, bibles, ask, onChange, onClips, onDelet
           <p className="text-[10px] text-text-secondary"><span className={label}>Signature move</span>{persona.move}</p>
           {persona.world && <p className="text-[10px] text-text-secondary"><span className={label}>World</span>{persona.world}</p>}
           {persona.music && <p className="text-[10px] text-text-secondary"><span className={label}>Music</span>{persona.music}</p>}
-          <p className="text-[10px] text-text-muted">{persona.orientation} · {persona.template ?? 'single'} · {persona.seconds} s · pace ×{persona.speed ?? 1} · {persona.audio} · {persona.places.length} places · {clips.length} clip{clips.length === 1 ? '' : 's'}</p>
+          <p className="text-[10px] text-text-muted">{persona.orientation} · {persona.template ?? 'single'} · {persona.engine ?? 'ltx'} · {persona.seconds} s · pace ×{persona.speed ?? 1} · {persona.audio} · {persona.places.length} places · {clips.length} clip{clips.length === 1 ? '' : 's'}</p>
           {judged.length > 0 && (
             <p className="text-[10px] text-text-secondary">
               Judge on {judged.length} clip{judged.length === 1 ? '' : 's'}: overall {mean('overall')} · identity {mean('identity')} · move {mean('move')} · place {mean('place')} · artefacts {mean('artefacts')} · hook {mean('hook')}
@@ -201,7 +206,7 @@ function PersonaDetail({ persona, clips, bibles, ask, onChange, onClips, onDelet
 
       <div className="rounded-lg border border-border bg-bg-tertiary/30 p-2.5 space-y-2">
         <span className={label}>New clips (one per place, the move never changes)</span>
-        <div className="grid grid-cols-1 sm:grid-cols-[1fr_90px_120px_auto] gap-2 items-end">
+        <div className="grid grid-cols-1 sm:grid-cols-[1fr_80px_110px_110px_auto] gap-2 items-end">
           <label className="block"><span className={label}>Places (one per line; empty = the next {count} of the persona's list)</span>
             <textarea className={input} rows={2} value={extra} onChange={e => setExtra(e.target.value)} /></label>
           <label className="block"><span className={label}>How many</span>
@@ -211,10 +216,14 @@ function PersonaDetail({ persona, clips, bibles, ask, onChange, onClips, onDelet
               <option value="">Persona's ({persona.template ?? 'single'})</option>
               <option value="trend">Trend</option><option value="street">Street</option><option value="reveal">Reveal</option><option value="single">Single</option>
             </select></label>
+          <label className="block"><span className={label}>Engine</span>
+            <select className={input} value={engine} onChange={e => setEngine(e.target.value as ClipEngine | '')} aria-label="Engine for these clips">
+              <option value="">Persona's ({persona.engine ?? 'ltx'})</option><option value="ltx">LTX-2.5</option><option value="h3">H3 480p</option>
+            </select></label>
           <button className={primary} disabled={busy || persona.status !== 'done'}
             onClick={() => void act(async () => {
               const places = extra.split('\n').map(s => s.trim()).filter(Boolean)
-              const made = await startPersonaSeries(persona.id, { places: places.length ? places : undefined, count: places.length ? 0 : count, template: template || undefined })
+              const made = await startPersonaSeries(persona.id, { places: places.length ? places : undefined, count: places.length ? 0 : count, template: template || undefined, engine: engine || undefined })
               onClips([...made, ...clips]); setExtra('')
             })}>
             {busy ? <Loader2 size={10} className="animate-spin" /> : <Clapperboard size={10} />} Render

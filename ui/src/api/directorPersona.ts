@@ -240,11 +240,14 @@ export interface PersonaClipSettings {
   /** Shots cut together: single (one full-body take), trend (wide, side, close), street, reveal. */
   template?: ClipTemplate
   shots?: Array<{ framing: string; seconds: number; frames: number }>
+  /** ltx (LTX-2.5, default) or h3 (MiniMax H3 image-to-video, 480p on the Spark). */
+  engine?: ClipEngine
   seed: number
   model_type: string
   audio: 'silent' | 'model'
 }
 export type ClipTemplate = 'single' | 'trend' | 'street' | 'reveal'
+export type ClipEngine = 'ltx' | 'h3'
 export interface PersonaClip {
   id: string
   name: string
@@ -286,6 +289,7 @@ export interface Persona {
   seconds: number
   speed: number
   template: ClipTemplate
+  engine?: ClipEngine
   audio: 'silent' | 'model'
   bible_id: string
   character_id: string
@@ -321,6 +325,7 @@ export interface PersonaRequest {
   seconds?: number
   speed?: number
   template?: ClipTemplate
+  engine?: ClipEngine
   audio?: 'silent' | 'model'
   bible_id?: string
   character_id?: string
@@ -343,7 +348,7 @@ export async function repaintPersona(id: string): Promise<Persona> {
 }
 
 /** Queue one clip per place: the given ones, or the persona's own list (``count`` of them). */
-export async function startPersonaSeries(id: string, request: { places?: string[]; count?: number; seconds?: number; template?: ClipTemplate }): Promise<PersonaClip[]> {
+export async function startPersonaSeries(id: string, request: { places?: string[]; count?: number; seconds?: number; template?: ClipTemplate; engine?: ClipEngine }): Promise<PersonaClip[]> {
   return (await json<{ clips: PersonaClip[] }>(await fetch(`${personasUrl(id)}/series`,
     { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request) }), 'Could not start the series')).clips
 }
@@ -376,6 +381,7 @@ export interface PersonaClipRequest {
   seconds?: number
   speed?: number
   template?: ClipTemplate
+  engine?: ClipEngine
   seed?: number
   audio?: 'silent' | 'model'
   prompt?: string

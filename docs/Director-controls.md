@@ -458,7 +458,12 @@ multi-shot clip paints one start image per shot (the portrait as
 reference 1, the first shot's start image as reference 2 so later shots
 keep the place, framed as candid phone stills), renders each shot with
 its own camera motion and part of the move, speeds them up and joins them
-(`concat_shots`); `shot_<n>.mp4` and `start_<n>.png` stay in the folder. The two worker jobs
+(`concat_shots`); `shot_<n>.mp4` and `start_<n>.png` stay in the folder.
+`engine` picks LTX-2.5 (`ltx`, the default) or MiniMax H3 image-to-video
+(`h3`: `minimax_h3` with the official 8-step turbo preset, 480×864 on
+the Spark, 17n+5 frames, the H3 prompt grammar with the start image
+referenced at 0 s and one `[Shot 1]` in `integrated_multimodal_description`;
+its own soundtrack is dropped when the clip is silent). The two worker jobs
 are the cover video's (`cover_video.start_job`, `run_stage`): the editor
 paints the character at the first beat of the gesture in the place, then
 LTX-2.5 image-to-video performs it in one take. `GET …/persona-clips`

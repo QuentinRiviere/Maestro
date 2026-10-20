@@ -65,6 +65,13 @@ TEMPLATES = {
     "reveal": [("close", 3.0), ("wide", 5.0), ("side", 3.0)],
 }
 DEFAULT_TEMPLATE = "single"
+# Engines: LTX-2.5 (default, 576x1024, 8k+1 frames) or MiniMax H3 image-to-video (480x864 on the Spark, 17n+5 frames,
+# the 8-step turbo preset, its own prompt grammar: a shot list in integrated_multimodal_description).
+ENGINES = ("ltx", "h3")
+H3_MODEL = "minimax_h3"
+H3_TURBO_PRESET = "alibaba-pai-fl2va-pdd-8step"
+H3_RESOLUTIONS = {"portrait": "480x864", "landscape": "864x480"}
+H3_MIN_FRAMES, H3_MAX_FRAMES, H3_STEP = 124, 345, 17
 # The start images read as candid phone stills, not studio portraits.
 REALISM = ("candid vertical smartphone video still, natural light, imperfect framing, slight motion blur on passers-by, "
            "nobody looks at him, true-to-life colours, no text, no watermark")
@@ -151,14 +158,19 @@ def clip_settings(raw: Mapping[str, Any] | None) -> dict:
     template = str(raw.get("template") or DEFAULT_TEMPLATE).strip()
     if template not in TEMPLATES:
         raise BibleError(f"Unknown template (one of {', '.join(TEMPLATES)})")
-    base = cover_video.video_settings({**raw, "seconds": wanted * speed, "start_sec": 0})
-    limit = cover_video.seconds_for(cover_video.MAX_FRAMES) / speed
+    engine = str(raw.get("engine") or "ltx").strip().lower()
+    if engine not in ENGINES:
+        raise BibleError(f"Unknown engine (one of {', '.join(ENGINES)})")
+    base = cover_video.video_settings({**raw, "seconds": wanted * speed, "start_sec": 0,
+                                       **({"model_type": cover_video.VIDEO_MODEL} if engine == "h3" else {})})
+    maximum = H3_MAX_FRAMES if engine == "h3" else cover_video.MAX_FRAMES
+    limit = cover_video.seconds_for(maximum) / speed
     shots = []
     for framing, seconds in TEMPLATES[template]:
         shown = float(seconds if seconds is not None else wanted)
         if shown > limit + 1e-6:
             raise BibleError(f"A shot fits one window: at most {limit:.0f} s at speed {speed:g}")
-        frames = cover_video.frames_for(shown * speed)
+        frames = h3_frames(shown * speed) if engine == "h3" else cover_video.frames_for(shown * speed)
         shots.append({"framing": framing, "seconds": round(shown, 3), "frames": frames,
                       "rendered_seconds": round(cover_video.seconds_for(frames), 3)})
     total = round(sum(shot["seconds"] for shot in shots), 3)
@@ -167,11 +179,19 @@ def clip_settings(raw: Mapping[str, Any] | None) -> dict:
         "character_id": base["character_id"], "location_id": base["location_id"], "gesture": gesture,
         "orientation": base["orientation"], "frames": shots[0]["frames"], "seconds": total,
         "speed": speed, "rendered_seconds": round(sum(s["rendered_seconds"] for s in shots), 3),
-        "template": template, "shots": shots,
-        "seed": base["seed"], "model_type": base["model_type"], "audio": audio,
+        "template": template, "shots": shots, "engine": engine,
+        "seed": base["seed"], "model_type": H3_MODEL if engine == "h3" else base["model_type"], "audio": audio,
         "prompt": base["prompt"], "start_prompt": base["start_prompt"],
         "place": str(raw.get("place") or "").strip()[:300],
     }
+
+
+def h3_frames(seconds: float) -> int:
+    """H3's video VAE takes 17n+5 frames at 24 fps, 124 to 345."""
+    import math
+    wanted = int(math.ceil(max(0.0, seconds) * 24))
+    frames = int(math.ceil(max(wanted - 5, 0) / H3_STEP)) * H3_STEP + 5
+    return max(H3_MIN_FRAMES, min(H3_MAX_FRAMES, frames))
 
 
 def start_prompt(character: Mapping[str, Any], location: Mapping[str, Any] | None, settings: Mapping[str, Any],
@@ -211,6 +231,33 @@ def clip_prompt(character: Mapping[str, Any], settings: Mapping[str, Any], *, fr
         f"passers-by ignore him, the place unchanged, no camera cut, no text. {PACE}")
     silence = " Silent clip: nobody speaks, the mouth stays closed." if settings.get("audio") == "silent" else ""
     return f"{body}{silence}"
+
+
+def h3_prompt(character: Mapping[str, Any], settings: Mapping[str, Any], *, framing: str = "full") -> str:
+    """H3's grammar: the start image referenced at 0 s, one shot in integrated_multimodal_description, no sound."""
+    name = character.get("name") or "The character"
+    shot = SHOTS.get(framing) or SHOTS["full"]
+    aspect = "vertical 9:16" if settings["orientation"] == "portrait" else "16:9"
+    seconds = next((s["seconds"] for s in settings.get("shots") or [] if s.get("framing") == framing), settings["seconds"])
+    description = (f"[Shot 1] Live-action, {aspect}, handheld smartphone footage, {seconds:g}-second single take. {name} "
+                   f"performs {shot[2]}: {settings['gesture']}. {shot[1]}. Passers-by ignore him, the place unchanged, "
+                   "real-time pace, no slow motion, nobody speaks.")
+    return ("For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced."
+            f"\n\nintegrated_multimodal_description: {description}\n\noverall_soundscape: N/A.\n\nnon_diegetic_music: N/A")
+
+
+def h3_job(prompt: str, start_image: str, settings: Mapping[str, Any], *, frames: int | None = None) -> dict:
+    """MiniMax H3 image-to-video with the official 8-step turbo preset."""
+    frames = int(frames or settings["frames"])
+    return {
+        "model_type": H3_MODEL, "prompt": prompt, "image_mode": 0, "image_prompt_type": "S",
+        "image_start": start_image, "generation_mode": "video", "num_inference_steps": 8, "guidance_scale": 1.0,
+        "input_video_strength": 1.0, "resolution": H3_RESOLUTIONS[settings["orientation"]],
+        "video_length": frames, "sliding_window_size": frames, "minimax_h3_turbo_mode": True,
+        "minimax_h3_turbo_preset": H3_TURBO_PRESET, "seed": int(settings.get("seed", -1)), "settings_version": 2.52,
+        "repeat_generation": 1, "negative_prompt": "", "activated_loras": [], "loras_multipliers": "",
+        "_director_cost_stage": "persona_clip",
+    }
 
 
 def clip_job(prompt: str, start_image: str, settings: Mapping[str, Any], *, frames: int | None = None) -> dict:
@@ -373,16 +420,19 @@ def _run(clip_id: str, submit, jobs) -> None:
                     if index == 1:
                         made["start"] = start_name
                         _set(clip_id, outputs=made, progress="Start image ready")
-                prompt = clip_prompt(character, settings, framing=framing)
+                if settings.get("engine") == "h3":
+                    prompt = h3_prompt(character, settings, framing=framing)
+                    job = h3_job(prompt, str(folder / start_name), settings, frames=shot.get("frames"))
+                else:
+                    prompt = clip_prompt(character, settings, framing=framing)
+                    job = clip_job(prompt, str(folder / start_name), settings, frames=shot.get("frames"))
                 prompts.append(prompt)
-                outputs = cover_video.run_stage(
-                    submit, jobs, clip_job(prompt, str(folder / start_name), settings, frames=shot.get("frames")),
-                    folder, f"Shot {index}/{len(shots)}", update)
+                outputs = cover_video.run_stage(submit, jobs, job, folder, f"Shot {index}/{len(shots)}", update)
                 raw_name = OUTPUTS["raw"] if len(shots) == 1 else f"shot_{index}_raw.mp4"
                 shot_name = f"shot_{index}.mp4"
-                if speed > 1.0:
+                if speed > 1.0 or (silent and settings.get("engine") == "h3"):
                     cover_video.keep_last_video(folder, outputs, raw_name)
-                    speed_up(str(folder / raw_name), str(folder / shot_name), speed, silent=silent)
+                    speed_up(str(folder / raw_name), str(folder / shot_name), max(speed, 1.0), silent=silent)
                     if len(shots) == 1:
                         made["raw"] = raw_name
                 else:
@@ -471,14 +521,14 @@ def register_routes(api: Any, *, settings_dir: Callable[[], str]) -> None:
                           gesture: str = Form(...), location_id: str = Form(""), place: str = Form(""),
                           name: str = Form(""), orientation: str = Form("portrait"),
                           seconds: float = Form(DEFAULT_SECONDS), speed: float = Form(DEFAULT_SPEED), seed: int = Form(-1),
-                          audio: str = Form("silent"), template: str = Form(DEFAULT_TEMPLATE),
+                          audio: str = Form("silent"), template: str = Form(DEFAULT_TEMPLATE), engine: str = Form("ltx"),
                           prompt: str = Form(""), start_prompt: str = Form(""),
                           model_type: str = Form(cover_video.VIDEO_MODEL), run: bool = Form(True),
                           start_image: UploadFile | None = File(None)):
         raw = {"character_id": character_id, "persona_id": persona_id, "location_id": location_id, "gesture": gesture,
                "place": place,
                "orientation": orientation, "seconds": seconds, "speed": speed, "seed": seed, "audio": audio, "prompt": prompt,
-               "template": template,
+               "template": template, "engine": engine,
                "start_prompt": start_prompt, "model_type": model_type}
         uploaded = ""
         if start_image is not None and start_image.filename:
