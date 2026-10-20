@@ -541,6 +541,10 @@ class PersonaTests(unittest.TestCase):
                 submit=self._submit(submitted), jobs={}, wait=True)
         self.assertEqual(persona["status"], "done", persona.get("error"))
         self.assertEqual(persona["handle"], "marcel")
+        # The portrait, then the three-quarter view painted from it.
+        self.assertEqual(len(submitted), 2)
+        self.assertEqual(submitted[1]["image_refs"], [persona["portrait"]])
+        self.assertTrue(ps.view_path(persona, "three_quarter").endswith("view_three_quarter.png"))
         self.assertEqual(persona["places"], ["a boulangerie", "a metro platform"])
         self.assertTrue(os.path.isfile(persona["portrait"]))
         self.assertIn("retired lifeguard", submitted[0]["prompt"])
@@ -562,6 +566,8 @@ class PersonaTests(unittest.TestCase):
         self.assertEqual(clips[0]["settings"]["seconds"], 11.0)
         self.assertEqual(len(submitted), 12)
         self.assertEqual(submitted[0]["image_refs"], [persona["portrait"]])
+        # The side shot takes the three-quarter view as its identity reference.
+        self.assertTrue(submitted[2]["image_refs"][0].endswith("view_three_quarter.png"))
         self.assertIn("wide shot", submitted[0]["prompt"])
         self.assertTrue(submitted[0]["prompt"].startswith("CAMERA: a wide shot"))
         self.assertIn("smartphone", submitted[0]["prompt"])

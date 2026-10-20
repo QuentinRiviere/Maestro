@@ -412,6 +412,7 @@ def _run(clip_id: str, submit, jobs) -> None:
                 persona = personas.get_persona(settings["persona_id"])
                 character = {"name": persona["name"]}
                 identity = personas.portrait_path(persona)
+                side_view = personas.view_path(persona, "three_quarter")
             else:
                 character = bibles.find_element(bible, settings["character_id"])[1]
                 identity = style_lora.element_view(record["bible_id"], character, "")
@@ -422,13 +423,14 @@ def _run(clip_id: str, submit, jobs) -> None:
             speed = float(settings.get("speed") or 1.0)
             silent = settings.get("audio") == "silent"
             parts, prompts = [], []
+            side_view = locals().get("side_view", "")
             for index, shot in enumerate(shots, start=1):
                 framing = shot.get("framing") or "full"
                 start_name = OUTPUTS["start"] if index == 1 else f"start_{index}.png"
                 if index == 1 and "start" in made and (folder / made["start"]).is_file():
                     pass
                 else:
-                    refs = [identity]
+                    refs = [side_view if framing in ("side", "over_shoulder") and side_view else identity]
                     same_place = False
                     if location:
                         refs.append(style_lora.element_view(record["bible_id"], location, ""))

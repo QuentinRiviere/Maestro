@@ -39,6 +39,10 @@ FORMATS = {
     "diary": "Talks to the camera about their day (needs a voice; not built yet).",
 }
 PORTRAIT = "portrait.png"
+# Extra identity views painted from the portrait: side shots take the three-quarter view as their reference,
+# otherwise the editor copies the portrait's frontal framing.
+VIEWS = {"three_quarter": "CAMERA: a three-quarter view from the side, the person turned about 45 degrees away from the "
+                          "camera, full body, same empty sidewalk. Do not copy the framing or pose of reference 1, only the person."}
 MAX_PLACES = 40
 _LOCK = threading.RLock()
 _LIVE: set[str] = set()
@@ -184,6 +188,34 @@ def portrait_path(record: Mapping[str, Any]) -> str:
     return str(path) if path.is_file() else ""
 
 
+def view_path(record: Mapping[str, Any], view: str) -> str:
+    """The painted extra view of the persona (``three_quarter``), or "" when not painted yet."""
+    path = personas_dir() / record["id"] / f"view_{view}.png"
+    return str(path) if path.is_file() else ""
+
+
+def paint_views(persona_id: str, submit=None, jobs=None) -> dict:
+    """Paint the extra identity views from the portrait (one editor job each); failures leave the view missing."""
+    record = get_persona(persona_id)
+    pipeline = voice_cover._director()
+    submit = submit or pipeline._submit_and_wait
+    jobs = jobs if jobs is not None else pipeline._jobs
+    folder = persona_dir(persona_id)
+    made = dict(record.get("views") or {})
+    for view, camera in VIEWS.items():
+        prompt = (f"{camera} {record['name']} (the person of reference 1: same face, hair and clothes): {record['look']}. "
+                  f"Candid vertical smartphone video still, natural light, no text.")
+        params = cover_video.start_job(prompt, [str(folder / PORTRAIT)], record["orientation"], pipeline, -1)
+        params["_director_cost_stage"] = "persona_view"
+        try:
+            outputs = cover_video.run_stage(submit, jobs, params, folder, f"View {view}", lambda **f: _set(persona_id, **f))
+            shutil.move(str(folder / outputs[0]), str(folder / f"view_{view}.png"))
+            made[view] = f"view_{view}.png"
+        except Exception as error:  # noqa: BLE001 - a missing view falls back to the portrait
+            print(f"[Persona] {persona_id}: view {view} not painted: {error}")
+    return _set(persona_id, views=made)
+
+
 def create_persona(name: str, raw: Mapping[str, Any] | None, *, bible_id: str = "", character_id: str = "",
                    portrait: str = "", submit: Callable[..., list[str]] | None = None,
                    jobs: Mapping[str, Any] | None = None, wait: bool = False) -> dict:
@@ -262,7 +294,9 @@ def _paint(persona_id: str, submit, jobs) -> None:
         params["_director_cost_stage"] = "persona_portrait"
         outputs = cover_video.run_stage(submit, jobs, params, folder, "Portrait", lambda **f: _set(persona_id, **f))
         shutil.move(str(folder / outputs[0]), str(folder / PORTRAIT))
-        _set(persona_id, status="done", progress="", portrait=str(folder / PORTRAIT))
+        _set(persona_id, portrait=str(folder / PORTRAIT), progress="Painting the side view")
+        paint_views(persona_id, submit, jobs)
+        _set(persona_id, status="done", progress="")
     except BibleError as error:
         _set(persona_id, status="failed", error=str(error)[:400], progress="")
     except Exception as error:  # noqa: BLE001
@@ -494,6 +528,15 @@ def register_routes(api: Any, *, settings_dir: Callable[[], str]) -> None:
     @api.post(base + "/{persona_id}/portrait")
     def persona_portrait(persona_id: str):
         return {"persona": call(start_portrait, persona_id)}
+
+    @api.post(base + "/{persona_id}/views")
+    def persona_views(persona_id: str):
+        """Paint the extra identity views (three-quarter) from the portrait, in the background."""
+        record = call(get_persona, persona_id)
+        if not portrait_path(record):
+            raise HTTPException(status_code=400, detail="The persona has no portrait yet")
+        threading.Thread(target=paint_views, args=(persona_id, None, None), daemon=True).start()
+        return {"persona": record}
 
     @api.get(base + "/{persona_id}/portrait")
     def persona_portrait_file(persona_id: str):
