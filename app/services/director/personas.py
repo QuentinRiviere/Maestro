@@ -54,8 +54,9 @@ EVALUATION_SYSTEM = (
     "and a sheet of frames from one clip in time order (second image), plus the move and place the clip was meant "
     "to show. Answer with one JSON object only: {\"identity\": 1-5 (same face, hair and outfit as the portrait in "
     "every frame), \"move\": 1-5 (the described move is clearly performed), \"place\": 1-5 (the place reads as "
-    "described), \"artefacts\": 1-5 (5 = no AI artefacts: extra fingers, melting, flicker, text; a frame cut into several "
-    "panels, a storyboard or a collage is 1), \"hook\": 1-5 "
+    "described), \"artefacts\": 1-5 (5 = no AI artefacts: extra fingers, melting, flicker, text; the sheet is one strip of "
+    "frames taken from the clip, which is normal, but a single frame that is itself cut into several panels, a "
+    "storyboard or a collage, is 1), \"hook\": 1-5 "
     "(would a viewer stop scrolling: absurdity, contrast, deadpan), \"verdict\": one sentence, \"fix\": one short "
     "suggestion}. Be strict: 5 is rare."
 )
