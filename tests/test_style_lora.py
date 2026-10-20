@@ -113,6 +113,27 @@ class CaptionTests(unittest.TestCase):
                          "k_love_style, A rainy street at night, cool grade, 35 mm.")
         self.assertEqual(sl.caption_for(frame, None, "t", "content"), "t, wide shot, A rainy street at night, cool grade, 35 mm.")
 
+    def test_classify_text_and_sub_triggers(self):
+        self.assertEqual(sl.classify_text("Wide shot of a rainy street at night, neon signs"), "night_ext")
+        self.assertEqual(sl.classify_text("A kitchen in the morning, window light"), "day_int")
+        self.assertIsNone(sl.classify_text("A woman smiles"))
+        self.assertEqual(sl.sub_trigger_name("k_love_style", "night_int"), "k_love_night_int")
+        subs = {"night_ext": "k_love_night_ext"}
+        self.assertEqual(sl.sub_trigger_for("Two men on a rooftop at dusk", subs), "k_love_night_ext")
+        self.assertEqual(sl.sub_trigger_for("A kitchen in the morning", subs), "")
+        self.assertEqual(sl.caption_for({"shot_size": "wide"}, {"subject": "a man"}, "t", "content", "t_day_ext"),
+                         "t, t_day_ext, wide shot, a man")
+
+    def test_images_similar(self):
+        from PIL import Image
+
+        a, b, c = (os.path.join(tempfile.gettempdir(), f"sim_{n}.png") for n in "abc")
+        Image.new("RGB", (64, 64), (100, 100, 100)).save(a)
+        Image.new("RGB", (64, 64), (104, 100, 100)).save(b)
+        Image.new("RGB", (64, 64), (250, 250, 250)).save(c)
+        self.assertTrue(sl.images_similar(a, b))
+        self.assertFalse(sl.images_similar(a, c))
+
     def test_default_trigger_from_the_name(self):
         self.assertEqual(sl.default_trigger({"name": "K Love!"}), "k_love_style")
         self.assertEqual(sl.normalize_trigger("My Look", "x"), "my_look")
@@ -162,7 +183,7 @@ class BibleLoraTests(unittest.TestCase):
         sr.save_shots(self.bible_id, reference, shots)
         sr.save_frames(self.bible_id, reference, [
             {"index": i, "position": "first", "t": i * 0.2 + 0.05, "prompt": f"frame {i} prompt",
-             "shot_size": shots[i]["shot_size"]} for i in range(frames)])
+             "lighting": "night street, neon", "shot_size": shots[i]["shot_size"]} for i in range(frames)])
         return reference
 
     def test_candidates_leave_out_close_ups_and_credits(self):
@@ -173,7 +194,10 @@ class BibleLoraTests(unittest.TestCase):
         self.assertEqual(found["available"], 15)
         self.assertEqual(found["excluded_close_ups"], 4)
         self.assertEqual(found["excluded_credits"], 1)
-        self.assertTrue(found["items"][0]["caption"].startswith("k_love_style, wide shot, person 4, walks"))
+        self.assertEqual(found["sub_triggers"], {"night_ext": "k_love_night_ext"})
+        self.assertTrue(found["items"][0]["caption"].startswith("k_love_style, k_love_night_ext, wide shot, person 4, walks"))
+        settings["sub_triggers"] = False
+        self.assertEqual(sl.candidate_frames(self.bible_id, bible, settings)["sub_triggers"], {})
         settings["exclude_close_ups"] = False
         self.assertEqual(sl.candidate_frames(self.bible_id, bible, settings)["available"], 19)
 
@@ -210,7 +234,17 @@ class BibleLoraTests(unittest.TestCase):
         bible = bibles.get_bible(self.bible_id)
         settings = sl.training_settings({"resolution": 512}, bible)
         archive, facts = sl.build_dataset(self.bible_id, bible, "lora_x", settings)
+        # testsrc frames 0.2 s apart differ (the moving pattern), so nothing is deduplicated here...
         self.assertEqual(facts["images"], 15)
+        self.assertEqual(facts["duplicates"], 0)
+        # ...but two frames of one static shot would be: the same frame listed twice keeps one.
+        sr.save_frames(self.bible_id, sr.get_reference(self.bible_id, "ref_t"), [
+            {"index": 1, "position": p, "t": 0.3, "prompt": "p", "shot_size": "wide"} for p in ("first", "last")
+        ] + [{"index": i, "position": "first", "t": i * 0.2 + 0.05, "prompt": "p", "shot_size": "wide"}
+             for i in range(2, 14)])
+        settings["max_images"] = 50
+        _, facts = sl.build_dataset(self.bible_id, bibles.get_bible(self.bible_id), "lora_y", settings)
+        self.assertEqual(facts["duplicates"], 1)
         with zipfile.ZipFile(archive) as zipped:
             names = zipped.namelist()
             manifest = json.loads(zipped.read("manifest.json"))
@@ -260,7 +294,7 @@ class BibleLoraTests(unittest.TestCase):
         sample = submitted[1]
         self.assertEqual(sample["activated_loras"], [record["file"]])
         self.assertEqual(sample["loras_multipliers"], "0.40")
-        self.assertTrue(sample["prompt"].endswith("k_love_style"))
+        self.assertIn(" k_love_style", sample["prompt"])
         self.assertIsNotNone(sl.sample_path(self.bible_id, lora["id"], 1))
         # Delete removes the registry files too.
         sl.delete_lora(self.bible_id, lora["id"])

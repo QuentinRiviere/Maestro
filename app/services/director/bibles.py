@@ -351,6 +351,9 @@ def _style_loras(raw: Any) -> list[dict]:
             "dataset": copy.deepcopy(item["dataset"]) if isinstance(item.get("dataset"), dict) else None,
             "samples": [os.path.basename(str(s)) for s in item.get("samples") or [] if s][:6],
             "samples_note": _text(item.get("samples_note"), 80),
+            # Sub-triggers of the adapter (class -> token), from the dataset's classes.
+            "sub_triggers": {str(k): _text(v, 48) for k, v in (item.get("sub_triggers") or {}).items()
+                             if isinstance(item.get("sub_triggers"), dict) and _text(v, 48)},
             "job_id": _text(item.get("job_id"), 40),
             "model": _text(item.get("model"), 120),
             "training": copy.deepcopy(item["training"]) if isinstance(item.get("training"), dict) else None,

@@ -8015,7 +8015,8 @@ def _apply_bible(pid: str, params: dict) -> str:
     choice = str(params.get("director_style_lora") or "auto").strip()
     lora = enabled_lora(bible, "" if choice in ("auto", "") else choice) if choice != "off" else None
     params["_director_style_lora"] = ({"id": lora["id"], "file": lora["file"], "trigger": lora.get("trigger", ""),
-                                       "scale": float(lora.get("scale") or 0.4)} if lora else None)
+                                       "scale": float(lora.get("scale") or 0.4),
+                                       "sub_triggers": dict(lora.get("sub_triggers") or {})} if lora else None)
     if lora:
         print(f"[Pipeline {pid}] Style LoRA {lora['file']} at {params['_director_style_lora']['scale']}")
     _update_pipeline(pid, bible={"id": bible["id"], "name": bible["name"],
@@ -9790,7 +9791,11 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
             _mults.append(f"{float(_style_lora.get('scale') or 0.4):.2f}")
             image_loras = {"activated_loras": _names, "loras_multipliers": " ".join(m or "1.00" for m in _mults)}
         _style_trigger = str(_style_lora.get("trigger") or "").strip()
-        print(f"[Pipeline {pid}] Style LoRA {_style_lora['file']} added to the image LoRAs")
+        _style_sub_triggers = dict(_style_lora.get("sub_triggers") or {})
+        print(f"[Pipeline {pid}] Style LoRA {_style_lora['file']} added to the image LoRAs"
+              f"{f' with sub-triggers {sorted(_style_sub_triggers.values())}' if _style_sub_triggers else ''}")
+    else:
+        _style_sub_triggers = {}
 
     resolution = image_params.get("resolution", "1280x720")
     steps = image_params.get("num_inference_steps", 8)
@@ -9900,7 +9905,11 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
             if look:
                 prompt = f"{prompt.rstrip()} {look}"
         if _style_trigger and _style_trigger not in prompt:
-            prompt = f"{prompt.rstrip()} {_style_trigger}"
+            # The sub-trigger (time of day x setting) read from the prompt's own words.
+            from services.director.style_lora import sub_trigger_for
+
+            sub = sub_trigger_for(prompt, _style_sub_triggers)
+            prompt = f"{prompt.rstrip()} {_style_trigger}{' ' + sub if sub else ''}"
         selected_extra_refs = (
             extra_refs if supplemental_refs is None else supplemental_refs
         )

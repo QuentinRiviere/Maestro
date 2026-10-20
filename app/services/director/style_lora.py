@@ -47,7 +47,7 @@ MAX_IMAGES = 2000
 DEFAULT_STEPS = 1500
 DEFAULT_RANK = 16
 DEFAULT_LR = 1e-4
-DEFAULT_RESOLUTION = 768
+DEFAULT_RESOLUTION = 512  # the proxies are 480p: no upscaling into the training set
 DEFAULT_SCALE = 0.4
 SAMPLE_COUNT = 3
 SAMPLE_RESOLUTION = "1280x720"
@@ -65,6 +65,70 @@ SHOT_SIZE_WORDS = {
     "medium_close_up": "medium close-up", "close_up": "close-up", "extreme_close_up": "extreme close-up",
     "insert": "insert shot", "ots": "over-the-shoulder shot", "pov": "point-of-view shot", "two_shot": "two-shot",
 }
+# Sub-triggers: one adapter, four modes the captions separate (time of day x
+# setting), each an abstract token so the look stays under the trigger.
+SUB_CLASSES = ("day_int", "day_ext", "night_int", "night_ext")
+MIN_SUB_FRAMES = 10
+_NIGHT_WORDS = ("night", "dusk", "evening", "midnight", "neon", "moonlight", "lamplight", "streetlight",
+                "after dark", "nighttime", "practicals", "practical lamp", "dark room", "dim ", "candle")
+_DAY_WORDS = ("daylight", "morning", "afternoon", "noon", "sunlight", "sunny", "overcast", "daytime", "sunrise",
+              "bright day", "window light", "sun ")
+_INT_WORDS = ("interior", "indoor", "inside", "room", "kitchen", "office", "apartment", "hallway", "corridor",
+              "cafe", "café", "restaurant", "bedroom", "studio", "classroom", "hospital", "bar ", "ceiling",
+              "sofa", "desk", "stairwell", "elevator", "car interior", "lobby", "gallery", "shop", "store")
+_EXT_WORDS = ("exterior", "outdoor", "outside", "street", "rooftop", "park", "sidewalk", "alley", "road",
+              "beach", "sky", "bridge", "courtyard", "garden", "parking", "river", "field", "forest", "harbour",
+              "harbor", "crosswalk", "bus stop", "pavement")
+# What a dedupe compares: the first and last frame of one shot are often the same picture.
+DUPLICATE_LEVEL = 10.0
+
+
+def _score(text: str, words: Sequence[str]) -> int:
+    return sum(text.count(word) for word in words)
+
+
+def classify_text(text: str) -> str | None:
+    """``day_int`` / ``day_ext`` / ``night_int`` / ``night_ext`` from the words of a description, None when unclear."""
+    text = f" {str(text or '').lower()} "
+    night, day = _score(text, _NIGHT_WORDS), _score(text, _DAY_WORDS)
+    inside, outside = _score(text, _INT_WORDS), _score(text, _EXT_WORDS)
+    if night == day or inside == outside:
+        return None
+    return f"{'night' if night > day else 'day'}_{'int' if inside > outside else 'ext'}"
+
+
+def classify_frame(frame: Mapping[str, Any], shot: Mapping[str, Any] | None) -> str | None:
+    """The class of a frame from its reverse prompt and lighting fields plus the shot's description."""
+    shot = shot or {}
+    text = " ".join(str(frame.get(k) or "") for k in ("prompt", "lighting", "lighting_setup", "mood"))
+    text += " " + " ".join(str(shot.get(k) or "") for k in ("subject", "action", "lighting"))
+    return classify_text(text)
+
+
+def sub_trigger_name(trigger: str, sub_class: str) -> str:
+    base = trigger[:-len("_style")] if trigger.endswith("_style") else trigger
+    return f"{base}_{sub_class}"
+
+
+def sub_trigger_for(text: str, sub_triggers: Mapping[str, str] | None) -> str:
+    """The sub-trigger of a LoRA that fits an image prompt ("" when none or unclear)."""
+    if not sub_triggers:
+        return ""
+    sub_class = classify_text(text)
+    return str(sub_triggers.get(sub_class) or "") if sub_class else ""
+
+
+def images_similar(path_a: str, path_b: str, level: float = DUPLICATE_LEVEL) -> bool:
+    """Whether two frames are the same picture (mean absolute difference of 32x32 grey thumbnails)."""
+    from PIL import Image
+
+    thumbs = []
+    for path in (path_a, path_b):
+        with Image.open(path) as source:
+            thumbs.append(list(source.convert("L").resize((32, 32), Image.BILINEAR).getdata()))
+    return sum(abs(a - b) for a, b in zip(*thumbs)) / 1024 < level
+
+
 TRAIN_TIMEOUT_SEC = 3 * 3600  # no-progress timeout: a step reports every few seconds
 # Trainings owned by this process (bibles reads it to mark the ones a restart cut).
 _LIVE_TRAININGS = bibles._LIVE_TRAININGS
@@ -118,6 +182,8 @@ def training_settings(raw: Mapping[str, Any] | None, bible: Mapping[str, Any]) -
         "caption_mode": caption_mode if caption_mode in CAPTION_MODES else "content",
         "targets": targets if targets in TARGETS else "attention",
         "max_images": number("max_images", MAX_IMAGES, MIN_IMAGES, MAX_IMAGES, int),
+        "sub_triggers": raw.get("sub_triggers") is not False,
+        "dedupe": raw.get("dedupe") is not False,
         "trigger": normalize_trigger(raw.get("trigger"), default_trigger(bible)),
         "references": [str(r) for r in raw.get("references") or [] if isinstance(r, str)][:bibles.MAX_STYLE_REFERENCES],
     }
@@ -126,10 +192,12 @@ def training_settings(raw: Mapping[str, Any] | None, bible: Mapping[str, Any]) -
 # ── dataset ────────────────────────────────────────────────────────────────
 
 
-def caption_for(frame: Mapping[str, Any], shot: Mapping[str, Any] | None, trigger: str, mode: str) -> str:
-    """The caption of a frame: the trigger word, then the content (or the whole reverse prompt with ``full``)."""
+def caption_for(frame: Mapping[str, Any], shot: Mapping[str, Any] | None, trigger: str, mode: str,
+                sub_trigger: str = "") -> str:
+    """The caption of a frame: the trigger word(s), then the content (or the whole reverse prompt with ``full``)."""
+    head = f"{trigger}, {sub_trigger}" if sub_trigger else trigger
     if mode == "full" and frame.get("prompt"):
-        return f"{trigger}, {_short(frame['prompt'], 600)}"
+        return f"{head}, {_short(frame['prompt'], 600)}"
     parts = []
     size = str((frame.get("shot_size") or (shot or {}).get("shot_size") or "")).strip()
     if size:
@@ -147,7 +215,7 @@ def caption_for(frame: Mapping[str, Any], shot: Mapping[str, Any] | None, trigge
     angle = str(shot.get("angle") or "").strip()
     if angle and angle not in ("eye_level", "eye level"):
         parts.append(angle.replace("_", " ") + " angle")
-    return ", ".join([trigger] + parts) if parts else trigger
+    return ", ".join([head] + parts) if parts else head
 
 
 def candidate_frames(bible_id: str, bible: Mapping[str, Any], settings: Mapping[str, Any]) -> dict:
@@ -186,7 +254,7 @@ def candidate_frames(bible_id: str, bible: Mapping[str, Any], settings: Mapping[
                 continue
             items.append({"ref_id": reference["id"], "t": t, "index": frame.get("index"),
                           "position": frame.get("position"), "shot_size": size,
-                          "caption": caption_for(frame, shot, settings["trigger"], settings["caption_mode"])})
+                          "sub_class": classify_frame(frame, shot), "frame": frame, "shot": shot})
             kept += 1
         references.append({"id": reference["id"], "label": reference.get("label"), "frames": len(frames),
                            "used": kept})
@@ -194,8 +262,15 @@ def candidate_frames(bible_id: str, bible: Mapping[str, Any], settings: Mapping[
     if len(items) > limit:
         step = len(items) / limit
         items = [items[int(i * step)] for i in range(limit)]
+    counts = _count(item["sub_class"] for item in items if item["sub_class"])
+    sub_triggers = ({c: sub_trigger_name(settings["trigger"], c) for c in SUB_CLASSES if counts.get(c, 0) >= MIN_SUB_FRAMES}
+                    if settings.get("sub_triggers", True) else {})
+    for item in items:
+        item["caption"] = caption_for(item.pop("frame"), item.pop("shot"), settings["trigger"], settings["caption_mode"],
+                                      sub_triggers.get(item["sub_class"] or "", ""))
     return {"items": items, "references": references, "available": len(items),
-            "excluded_close_ups": close_ups, "excluded_credits": credits}
+            "excluded_close_ups": close_ups, "excluded_credits": credits, "sub_triggers": sub_triggers,
+            "by_class": counts}
 
 
 LETTERBOX_LEVEL = 16  # a row or column darker than this (0-255 mean) is a bar
@@ -252,6 +327,8 @@ def build_dataset(bible_id: str, bible: Mapping[str, Any], lora_id: str, setting
     images.mkdir(parents=True, exist_ok=True)
     references = {r["id"]: r for r in bible.get("style_references") or []}
     manifest = []
+    first_of_shot: dict[tuple[str, Any], str] = {}
+    duplicates = 0
     for number, item in enumerate(found["items"], start=1):
         if progress and number % 25 == 1:
             progress(f"Extracting frame {number} of {found['available']}")
@@ -264,10 +341,17 @@ def build_dataset(bible_id: str, bible: Mapping[str, Any], lora_id: str, setting
             sr._extract_still(str(video), item["t"], str(dest), long_side=int(settings["resolution"]))
             # The proxies keep the broadcast frame: the letterbox bars must not be learnt as the look.
             trim_letterbox(str(dest))
+            # The first and last frame of a static shot are one picture: keep one.
+            key = (item["ref_id"], item.get("index"))
+            if settings.get("dedupe", True) and key in first_of_shot and images_similar(first_of_shot[key], str(dest)):
+                dest.unlink(missing_ok=True)
+                duplicates += 1
+                continue
+            first_of_shot.setdefault(key, str(dest))
         except Exception:  # noqa: BLE001 - one bad frame does not stop the set
             continue
         manifest.append({"image": f"images/{dest.name}", "caption": item["caption"], "reference": item["ref_id"],
-                         "t": item["t"], "shot_size": item["shot_size"]})
+                         "t": item["t"], "shot_size": item["shot_size"], "sub_class": item.get("sub_class")})
     if len(manifest) < MIN_IMAGES:
         raise StyleLoraError(f"Only {len(manifest)} frames could be extracted")
     (folder / "manifest.json").write_text(json.dumps({"trigger": settings["trigger"], "items": manifest}, indent=1),
@@ -279,7 +363,9 @@ def build_dataset(bible_id: str, bible: Mapping[str, Any], lora_id: str, setting
             zipped.write(folder / entry["image"], entry["image"])
     facts = {"images": len(manifest), "references": found["references"],
              "excluded_close_ups": found["excluded_close_ups"], "excluded_credits": found["excluded_credits"],
-             "by_shot_size": _count(entry["shot_size"] for entry in manifest)}
+             "duplicates": duplicates, "by_shot_size": _count(entry["shot_size"] for entry in manifest),
+             "by_class": _count(entry["sub_class"] for entry in manifest if entry.get("sub_class")),
+             "sub_triggers": found["sub_triggers"]}
     return str(archive), facts
 
 
@@ -335,6 +421,7 @@ def create_lora(bible_id: str, raw: Mapping[str, Any] | None) -> dict:
         "id": lora_id, "name": name, "file": "", "trigger": settings["trigger"],
         "status": "queued", "progress": "", "step": 0, "total_steps": settings["steps"], "error": "",
         "enabled": False, "scale": DEFAULT_SCALE, "config": settings, "dataset": None, "samples": [],
+        "sub_triggers": {},
         "job_id": "", "model": IMAGE_MODEL, "created_at": _now(), "updated_at": _now(), "training": None,
     }
 
@@ -497,7 +584,8 @@ def _run_training(bible_id: str, lora_id: str, submit, jobs) -> None:
             settings = lora.get("config") or training_settings({}, bible)
             archive, facts = build_dataset(bible_id, bible, lora_id, settings,
                                            progress=lambda m: _set(bible_id, lora_id, progress=m))
-            _set(bible_id, lora_id, dataset=facts, status="training", progress="Submitting to the worker")
+            _set(bible_id, lora_id, dataset=facts, sub_triggers=facts["sub_triggers"], status="training",
+                 progress="Submitting to the worker")
             submit = submit or _director()._submit_and_wait
             jobs = jobs if jobs is not None else _director()._jobs
             job_id = uuid.uuid4().hex[:8]
@@ -651,8 +739,9 @@ def _render_samples(bible_id: str, lora: Mapping[str, Any], submit, folder: Path
         raise StyleLoraError("The bible has no character with an image")
     for number, (text, refs) in enumerate(scenes[:SAMPLE_COUNT], start=1):
         prompt = f"{text} {look}".strip() if look else text
+        sub = sub_trigger_for(prompt, lora.get("sub_triggers"))
         params = {
-            "model_type": IMAGE_MODEL, "prompt": f"{prompt} {lora['trigger']}", "image_mode": 1,
+            "model_type": IMAGE_MODEL, "prompt": f"{prompt} {lora['trigger']}{' ' + sub if sub else ''}", "image_mode": 1,
             "image_prompt_type": "", "video_prompt_type": "I" if refs else "", "generation_mode": "image",
             **({"image_refs": refs, "remove_background_images_ref": 0} if refs else {}),
             "num_inference_steps": steps, "guidance_scale": guidance, "resolution": SAMPLE_RESOLUTION,
@@ -764,18 +853,18 @@ def register_routes(api: Any, *, ensure_pipeline: Callable[[], Any] | None = Non
 
     @api.get(base + "/dataset")
     def style_loras_dataset(bible_id: str, exclude_close_ups: bool = True, caption_mode: str = "content",
-                            trigger: str = ""):
+                            trigger: str = "", sub_triggers: bool = True):
         """What a training would use: counts per reference and a few captions, without extracting anything."""
         bible = bibles.get_bible(bible_id)
         if not bible:
             raise HTTPException(status_code=404, detail="Unknown bible")
         settings = training_settings({"exclude_close_ups": exclude_close_ups, "caption_mode": caption_mode,
-                                      "trigger": trigger}, bible)
+                                      "trigger": trigger, "sub_triggers": sub_triggers}, bible)
         found = candidate_frames(bible_id, bible, settings)
         return {"available": found["available"], "references": found["references"],
                 "excluded_close_ups": found["excluded_close_ups"], "excluded_credits": found["excluded_credits"],
-                "minimum": MIN_IMAGES, "trigger": settings["trigger"],
-                "captions": [item["caption"] for item in found["items"][:6]]}
+                "minimum": MIN_IMAGES, "trigger": settings["trigger"], "sub_triggers": found["sub_triggers"],
+                "by_class": found["by_class"], "captions": [item["caption"] for item in found["items"][:6]]}
 
     @api.post(base)
     async def style_loras_create(bible_id: str, request: Request):

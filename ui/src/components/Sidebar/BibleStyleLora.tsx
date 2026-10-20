@@ -103,8 +103,12 @@ function LoraCard({ bibleId, lora, ask, onChange, onDeleted }: {
       {error && <p role="alert" className="text-[10px] text-chip-red">{error}</p>}
       <p className="text-[10px] text-text-muted">
         Trigger <code className="text-text-secondary">{lora.trigger}</code>
+        {lora.sub_triggers && Object.keys(lora.sub_triggers).length > 0 && (
+          <> + {Object.entries(lora.sub_triggers).map(([cls, token]) => `${token} (${lora.dataset?.by_class?.[cls] ?? 0})`).join(', ')}</>
+        )}
         {dataset && <> · {dataset.images} frames from {dataset.references.length} reference{dataset.references.length === 1 ? '' : 's'}
-          {dataset.excluded_close_ups ? `, ${dataset.excluded_close_ups} close-ups left out` : ''}</>}
+          {dataset.excluded_close_ups ? `, ${dataset.excluded_close_ups} close-ups left out` : ''}
+          {dataset.duplicates ? `, ${dataset.duplicates} duplicates dropped` : ''}</>}
         {lora.config?.steps && <> · {lora.config.steps} steps, rank {lora.config.rank}, {lora.config.resolution}px</>}
         {lora.training?.final_loss !== undefined && lora.training?.final_loss !== null && <> · loss {lora.training.final_loss.toFixed(3)}</>}
         {lora.training?.seconds ? <> · {Math.round(lora.training.seconds / 60)} min</> : null}
@@ -145,7 +149,8 @@ export function BibleStyleLora({ bibleId, ask }: { bibleId: string; ask: Ask }) 
   const [showForm, setShowForm] = useState(false)
   const [starting, setStarting] = useState(false)
   const [form, setForm] = useState<StyleLoraRequest>({
-    steps: 1500, rank: 16, resolution: 768, exclude_close_ups: true, caption_mode: 'content', targets: 'attention',
+    steps: 1500, rank: 16, resolution: 512, exclude_close_ups: true, caption_mode: 'content', targets: 'attention',
+    sub_triggers: true,
   })
 
   const refresh = useCallback(() => fetchStyleLoras(bibleId).then(setLoras)
@@ -163,11 +168,11 @@ export function BibleStyleLora({ bibleId, ask }: { bibleId: string; ask: Ask }) 
   useEffect(() => {
     if (!showForm) return
     let alive = true
-    fetchStyleLoraDataset(bibleId, { exclude_close_ups: form.exclude_close_ups, caption_mode: form.caption_mode, trigger: form.trigger })
+    fetchStyleLoraDataset(bibleId, { exclude_close_ups: form.exclude_close_ups, caption_mode: form.caption_mode, trigger: form.trigger, sub_triggers: form.sub_triggers })
       .then(p => { if (alive) setPreview(p) })
       .catch(e => { if (alive) setError(e instanceof Error ? e.message : 'Could not read the frames') })
     return () => { alive = false }
-  }, [bibleId, showForm, form.exclude_close_ups, form.caption_mode, form.trigger])
+  }, [bibleId, showForm, form.exclude_close_ups, form.caption_mode, form.trigger, form.sub_triggers])
 
   const start = async () => {
     setStarting(true)
@@ -220,6 +225,10 @@ export function BibleStyleLora({ bibleId, ask }: { bibleId: string; ask: Ask }) 
               <input type="checkbox" className="h-3 w-3" checked={form.exclude_close_ups !== false}
                 onChange={e => setForm({ ...form, exclude_close_ups: e.target.checked })} /> Leave close-ups out
             </label>
+            <label className="flex items-center gap-1" title="One adapter, four modes: day/night x interior/exterior tokens in the captions (k_love_night_int...), the run adds the one its prompt matches">
+              <input type="checkbox" className="h-3 w-3" checked={form.sub_triggers !== false}
+                onChange={e => setForm({ ...form, sub_triggers: e.target.checked })} /> Sub-triggers
+            </label>
             <label className="flex items-center gap-1" title="Content: trigger + shot size, subject and action (the look is what the trigger learns). Full: the whole reverse prompt">
               Captions
               <select className="bg-bg-tertiary border border-border rounded px-1 py-0.5 text-[10px]" value={form.caption_mode}
@@ -244,6 +253,9 @@ export function BibleStyleLora({ bibleId, ask }: { bibleId: string; ask: Ask }) 
                 {' '}from {preview.references.map(r => `${r.label} (${r.used}/${r.frames})`).join(', ') || 'no analysed reference'}
                 {preview.excluded_close_ups ? ` · ${preview.excluded_close_ups} close-ups left out` : ''}
                 {preview.excluded_credits ? ` · ${preview.excluded_credits} credits frames left out` : ''}
+                {preview.sub_triggers && Object.keys(preview.sub_triggers).length > 0 && (
+                  <> · sub-triggers {Object.entries(preview.sub_triggers).map(([cls, token]) => `${token} (${preview.by_class?.[cls] ?? 0})`).join(', ')}</>
+                )}
                 {!enough && ` · at least ${preview.minimum} needed: analyse more references or run their frame prompts`}
               </p>
               {preview.captions.length > 0 && (

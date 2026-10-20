@@ -467,6 +467,8 @@ export interface StyleLoraConfig {
   max_images: number
   trigger: string
   references: string[]
+  sub_triggers: boolean
+  dedupe: boolean
 }
 
 export interface StyleLoraDataset {
@@ -474,7 +476,10 @@ export interface StyleLoraDataset {
   references: { id: string; label: string; frames: number; used: number }[]
   excluded_close_ups: number
   excluded_credits: number
+  duplicates?: number
   by_shot_size?: Record<string, number>
+  by_class?: Record<string, number>
+  sub_triggers?: Record<string, string>
 }
 
 export interface StyleLora {
@@ -494,6 +499,8 @@ export interface StyleLora {
   samples: string[]
   /** How the current samples were rendered (sampler, weight). */
   samples_note?: string
+  /** Sub-triggers of the adapter (day_int, night_ext...) the captions separated. */
+  sub_triggers?: Record<string, string>
   job_id: string
   model: string
   training: { final_loss?: number; seconds?: number; items?: number; losses?: number[] } | null
@@ -509,6 +516,8 @@ export interface StyleLoraDatasetPreview {
   references: { id: string; label: string; frames: number; used: number }[]
   excluded_close_ups: number
   excluded_credits: number
+  sub_triggers?: Record<string, string>
+  by_class?: Record<string, number>
   captions: string[]
 }
 
@@ -523,6 +532,8 @@ export interface StyleLoraRequest {
   caption_mode?: 'content' | 'full'
   targets?: 'attention' | 'all'
   references?: string[]
+  sub_triggers?: boolean
+  dedupe?: boolean
   train?: boolean
 }
 
@@ -535,12 +546,13 @@ export async function fetchStyleLoras(bibleId: string): Promise<StyleLora[]> {
     'Could not load the style LoRAs')).loras
 }
 
-export async function fetchStyleLoraDataset(bibleId: string, options: { exclude_close_ups?: boolean; caption_mode?: string; trigger?: string } = {}):
+export async function fetchStyleLoraDataset(bibleId: string, options: { exclude_close_ups?: boolean; caption_mode?: string; trigger?: string; sub_triggers?: boolean } = {}):
   Promise<StyleLoraDatasetPreview> {
   const query = new URLSearchParams()
   if (options.exclude_close_ups !== undefined) query.set('exclude_close_ups', String(options.exclude_close_ups))
   if (options.caption_mode) query.set('caption_mode', options.caption_mode)
   if (options.trigger) query.set('trigger', options.trigger)
+  if (options.sub_triggers !== undefined) query.set('sub_triggers', String(options.sub_triggers))
   return json<StyleLoraDatasetPreview>(await fetch(`${styleLoraUrl(bibleId)}/dataset?${query}`),
     'Could not read the frames')
 }
