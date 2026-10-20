@@ -116,21 +116,29 @@ def choose_mode(mode: str, *, has_plate: bool, modes: Mapping[str, bool] | None 
     return mode
 
 
-def outpaint_prompt(element: Mapping[str, Any], spec: Mapping[str, Any] | None, *, state: str = "") -> str:
-    """The outpaint's prompt: the LoRA's trigger, then a short word of what the rest of the room holds."""
-    parts = [OUTPAINT_PROMPT, f"The place is {element.get('name', 'a room')}, empty, nobody in it, no text."]
-    walls = (spec or {}).get("walls") or {}
-    if spec and spec.get("summary"):
-        parts.append(str(spec["summary"]))
-    elif element.get("description"):
-        parts.append(room_spec._clean(element.get("description"), 400))
-    for key, label in (("left", "To the left: "), ("right", "To the right: "), ("back", "Behind the camera: ")):
-        if walls.get(key):
-            parts.append(f"{label}{walls[key]}")
-    if spec and spec.get("materials"):
-        parts.append(f"Materials: {spec['materials']}")
-    if state:
-        parts.append(f"State: {room_spec._clean(state, 200)}")
+def outpaint_prompt(element: Mapping[str, Any], spec: Mapping[str, Any] | None, *, state: str = "",
+                    describe: bool = False) -> str:
+    """The outpaint's prompt: the LoRA's trigger alone by default.
+
+    Verified on Café Haru: with the room sheet appended, Klein paints the described café and drops the
+    plate; with the trigger alone the plate's window, counter and lamps come back at the centre. ``describe``
+    appends the sheet anyway for a place whose plate shows too little.
+    """
+    parts = [OUTPAINT_PROMPT]
+    if describe:
+        parts.append(f"The place is {element.get('name', 'a room')}, empty, nobody in it, no text.")
+        walls = (spec or {}).get("walls") or {}
+        if spec and spec.get("summary"):
+            parts.append(str(spec["summary"]))
+        elif element.get("description"):
+            parts.append(room_spec._clean(element.get("description"), 400))
+        for key, label in (("left", "To the left: "), ("right", "To the right: "), ("back", "Behind the camera: ")):
+            if walls.get(key):
+                parts.append(f"{label}{walls[key]}")
+        if spec and spec.get("materials"):
+            parts.append(f"Materials: {spec['materials']}")
+        if state:
+            parts.append(f"State: {room_spec._clean(state, 200)}")
     return " ".join(p.rstrip(".") + "." for p in parts if p)
 
 

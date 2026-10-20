@@ -107,8 +107,11 @@ class OutpaintTests(unittest.TestCase):
         self.assertEqual(job["image_refs"], ["/tmp/canvas.png"])
         self.assertEqual(job["activated_loras"], [rp.OUTPAINT_LORA])
         self.assertTrue(job["prompt"].startswith("Fill the green spaces according to the image."))
-        self.assertIn("Behind the camera: shelves.", job["prompt"])
-        self.assertIn("State: night.", job["prompt"])
+        # The trigger alone: a room description makes Klein drop the plate (verified on Café Haru).
+        self.assertNotIn("shelves", job["prompt"])
+        described = rp.outpaint_prompt({"name": "Café"}, spec, state="night", describe=True)
+        self.assertIn("Behind the camera: shelves.", described)
+        self.assertIn("State: night.", described)
         self.assertEqual(job["guidance_scale"], 5.0)
 
 
