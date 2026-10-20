@@ -571,43 +571,59 @@ SAMPLERS = ("turbo", "base")
 # The cast check: the bible's own people and places as reference images, as a run sends them.
 # The blocking is spelled out: with reference portraits the editor copies
 # their frontal pose unless the prompt turns the people away from the lens.
+# Each scene names the angle of every reference it sends ("a": the subject,
+# "b": the partner, "place"): the editor copies a reference's pose, so a back
+# shot sends the approved back view, a profile shot the profile view.
 CAST_SCENES = (
-    "Over-the-shoulder shot at {place} (reference 3): the camera is behind {b} (reference 2), whose back and "
-    "shoulder fill the left foreground out of focus, facing {a} (reference 1) across a table; {a} in profile, "
-    "eyes on {b}, never looking at the camera, late afternoon.",
-    "Wide shot of {a} (reference 1) alone at {place} (reference 2), seen from behind, standing at the window with "
-    "the back to the camera, looking out at the street, morning light on the shoulders, face not visible.",
-    "Medium shot of {a} (reference 1) at {place} (reference 2) in strict profile, facing screen left, sitting, "
-    "head bowed over the hands, the camera at the side, evening practicals.",
+    {"prompt": "Over-the-shoulder shot at {place} (reference 3): the camera is behind {b} (reference 2), whose back "
+               "and shoulder fill the left foreground out of focus, facing {a} (reference 1) across a table; {a} in "
+               "profile, eyes on {b}, never looking at the camera, late afternoon.",
+     "a": "face_profile", "b": "back", "place": ""},
+    {"prompt": "Wide shot of {a} (reference 1) alone at {place} (reference 2), seen from behind, standing at the "
+               "window with the back to the camera, looking out at the street, morning light on the shoulders, face "
+               "not visible.", "a": "back", "b": "", "place": ""},
+    {"prompt": "Medium shot of {a} (reference 1) at {place} (reference 2) in strict profile, facing screen left, "
+               "sitting, head bowed over the hands, the camera at the side, evening practicals.",
+     "a": "face_profile", "b": "", "place": "reverse"},
 )
+
+
+def element_view(bible_id: str, element: Mapping[str, Any], view: str) -> str | None:
+    """The approved image of ``view`` ("" for the main look) of the element's default look, as a path."""
+    folder = bibles._folder(bible_id)
+    for variant in element.get("variants") or []:
+        if variant.get("id") != bibles.DEFAULT_VARIANT:
+            continue
+        for image in variant.get("images") or []:
+            if image.get("status") == "approved" and (image.get("view") or "") == view \
+                    and (folder / image["file"]).is_file():
+                return str(folder / image["file"])
+    main = element.get("image")
+    return str(folder / main) if main and (folder / main).is_file() else None
 
 
 def cast_samples(bible_id: str, bible: Mapping[str, Any]) -> list[tuple[str, list[str]]]:
     """Up to three (prompt, reference images) scenes from the bible's characters and locations with images."""
-    folder = bibles._folder(bible_id)
-
-    def with_images(kind: str) -> list[tuple[str, str]]:
-        out = []
-        for element in bible.get(kind) or []:
-            image = element.get("image")
-            if image and (folder / image).is_file():
-                out.append((str(element.get("name") or element.get("tag") or ""), str(folder / image)))
-        return out
-
-    people, places = with_images("characters"), with_images("locations")
+    people = [e for e in bible.get("characters") or [] if element_view(bible_id, e, "")]
+    places = [e for e in bible.get("locations") or [] if element_view(bible_id, e, "")]
     if not people:
         return []
     scenes: list[tuple[str, list[str]]] = []
-    for index, template in enumerate(CAST_SCENES):
+    for index, scene in enumerate(CAST_SCENES):
         a = people[(2 * index) % len(people)]
         b = people[(2 * index + 1) % len(people)]
         place = places[index % len(places)] if places else None
-        if index == 0 and len(people) >= 2 and place:
-            scenes.append((template.format(a=a[0], b=b[0], place=place[0]), [a[1], b[1], place[1]]))
-        elif place:
-            scenes.append((template.format(a=a[0], place=place[0]), [a[1], place[1]]))
+        name = lambda element: str(element.get("name") or element.get("tag") or "")  # noqa: E731
+        refs = [element_view(bible_id, a, scene["a"])]
+        two = index == 0 and len(people) >= 2 and place is not None
+        if two:
+            refs.append(element_view(bible_id, b, scene["b"]))
+        if place is not None:
+            refs.append(element_view(bible_id, place, scene["place"]))
+            prompt = scene["prompt"].format(a=name(a), b=name(b), place=name(place))
         else:
-            scenes.append((template.replace(" at {place} (reference 2)", "").format(a=a[0], b=b[0]), [a[1]]))
+            prompt = scene["prompt"].replace(" at {place} (reference 2)", "").format(a=name(a), b=name(b))
+        scenes.append((prompt, [r for r in refs if r]))
     return scenes
 
 

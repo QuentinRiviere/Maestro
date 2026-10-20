@@ -300,17 +300,19 @@ class BibleLoraTests(unittest.TestCase):
 
     def test_cast_samples_use_the_bible_images(self):
         folder = bibles._folder(self.bible_id)
-        for name in ("a.png", "b.png", "l.png"):
+        for name in ("a.png", "b.png", "l.png", "a_profile.png", "b_back.png"):
             Path(folder, name).write_bytes(b"png")
 
         def change(bible: dict) -> None:
             bible["characters"] = [
                 {"id": "a", "kind": "character", "name": "Ana", "tag": "@ana", "image": "a.png",
                  "variants": [{"id": "default", "label": "Default", "images": [
-                     {"id": "i1", "file": "a.png", "status": "approved", "view": ""}]}]},
+                     {"id": "i1", "file": "a.png", "status": "approved", "view": ""},
+                     {"id": "i4", "file": "a_profile.png", "status": "approved", "view": "face_profile"}]}]},
                 {"id": "b", "kind": "character", "name": "Bo", "tag": "@bo", "image": "b.png",
                  "variants": [{"id": "default", "label": "Default", "images": [
-                     {"id": "i2", "file": "b.png", "status": "approved", "view": ""}]}]}]
+                     {"id": "i2", "file": "b.png", "status": "approved", "view": ""},
+                     {"id": "i5", "file": "b_back.png", "status": "candidate", "view": "back"}]}]}]
             bible["locations"] = [{"id": "l", "kind": "location", "name": "Loft", "tag": "@loft", "image": "l.png",
                                    "variants": [{"id": "default", "label": "Default", "images": [
                                        {"id": "i3", "file": "l.png", "status": "approved", "view": ""}]}]}]
@@ -320,8 +322,10 @@ class BibleLoraTests(unittest.TestCase):
         self.assertEqual(len(scenes), 3)
         self.assertIn("behind Bo (reference 2)", scenes[0][0])
         self.assertIn("facing Ana (reference 1)", scenes[0][0])
-        self.assertEqual([os.path.basename(r) for r in scenes[0][1]], ["a.png", "b.png", "l.png"])
+        # The profile view of Ana is approved and used; Bo's back view is only a candidate, so his main look goes.
+        self.assertEqual([os.path.basename(r) for r in scenes[0][1]], ["a_profile.png", "b.png", "l.png"])
         self.assertEqual(len(scenes[1][1]), 2)
+        self.assertEqual(os.path.basename(scenes[2][1][0]), "a_profile.png")
         lora = sl.create_lora(self.bible_id, {"name": "c"})
         sl._set(self.bible_id, lora["id"], status="done", file="c.safetensors")
         submitted = []
