@@ -387,7 +387,9 @@ def evaluate_clip(clip_id: str, *, backend: Any = None, ask: Callable[..., Any] 
         prompt = (f"Persona: {persona['name'] if persona else settings.get('character_id', '')}. "
                   f"Move meant: {settings.get('gesture', '')}. Place meant: {settings.get('place') or 'a bible place'}. "
                   f"Clip length {settings.get('seconds')} s"
-                  + (f", {len(framings)} shots cut together ({', '.join(framings)})" if len(framings) > 1 else "")
+                  + (f", {len(framings)} shots cut together ({', '.join(framings)}); each shot shows one part of "
+                     "the move (opening, middle, finish) from its own angle, so the move is spread over the shots, "
+                     "judge it as a whole" if len(framings) > 1 else "")
                   + ", the sheet reads left to right.")
         import httpx
         with httpx.Client(timeout=180) as http:
