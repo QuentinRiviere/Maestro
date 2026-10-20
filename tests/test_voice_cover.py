@@ -20,6 +20,7 @@ import soundfile as sf  # noqa: E402
 from services import voice_cover as worker  # noqa: E402
 from services.director import bibles  # noqa: E402
 from services.director import cover_video as cvid  # noqa: E402
+from services.director import persona_clips as pc  # noqa: E402
 from services.director import voice_cover as vc  # noqa: E402
 from services.director import voices  # noqa: E402
 
@@ -284,6 +285,95 @@ class VideoTests(unittest.TestCase):
             cvid.start_video(record["id"], {"character_id": "mina"})
         with self.assertRaises(bibles.BibleError):
             cvid.start_video(self.cover["id"], {"character_id": "nobody"})
+
+
+class PersonaClipTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        pc._settings_dir = lambda: os.path.join(self.tmp, "settings")
+        self.addCleanup(setattr, pc, "_settings_dir", None)
+        patcher = patch.object(bibles, "BIBLES_DIR", Path(self.tmp, "settings", "director_bibles"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.bible_id = bibles.save_bible({"name": "K Love"})["id"]
+        folder = bibles._folder(self.bible_id)
+        from PIL import Image
+        Image.new("RGB", (64, 64), (200, 100, 50)).save(folder / "mina.png")
+        Image.new("RGB", (64, 64), (50, 100, 200)).save(folder / "cafe.png")
+
+        def change(bible):
+            def element(key, name, file):
+                return {"id": key, "name": name, "variants": [
+                    {"id": "default", "label": "Default", "images": [{"file": file, "status": "approved"}]}]}
+
+            bible["characters"] = [element("mina", "Mina", "mina.png")]
+            bible["locations"] = [element("cafe", "Café Haru", "cafe.png")]
+            bible["world"] = {"look": "Film look."}
+
+        bibles._mutate(self.bible_id, change)
+
+    def _submit(self, submitted):
+        def submit(params, timeout_s, out_dir, job_id=None, **_):
+            submitted.append(params)
+            name = "frame.png" if params["generation_mode"] == "image" else "clip.mp4"
+            if name.endswith(".png"):
+                from PIL import Image
+                Image.new("RGB", (8, 8)).save(os.path.join(out_dir, name))
+            else:
+                Path(out_dir, name).write_bytes(b"mp4")
+            return [name]
+        return submit
+
+    def test_silent_clip_in_a_place(self):
+        class Pipeline:
+            @staticmethod
+            def _director_image_prompt_type(model, refs):
+                return "KI"
+
+        record = pc.create_clip("Mina cafe", {"character_id": "mina", "location_id": "cafe",
+                                              "gesture": "a slow finger-gun wink", "seconds": 6}, bible_id=self.bible_id)
+        self.assertEqual(record["status"], "queued")
+        self.assertEqual(record["settings"]["frames"], 145)
+        self.assertEqual(record["settings"]["audio"], "silent")
+        submitted = []
+        with patch.object(vc, "_director", lambda: Pipeline):
+            done = pc.start_clip(record["id"], submit=self._submit(submitted), jobs={}, wait=True)
+        self.assertEqual(done["status"], "done", done.get("error"))
+        start, clip = submitted
+        self.assertEqual(len(start["image_refs"]), 2)
+        self.assertIn("first beat of this move: a slow finger-gun wink", start["prompt"])
+        self.assertIn("Café Haru", start["prompt"])
+        self.assertEqual(start["resolution"], "720x1280")
+        self.assertEqual(clip["model_type"], "ltx2_25")
+        self.assertEqual(clip["audio_prompt_type"], "A")
+        self.assertNotIn("audio_guide", clip)
+        self.assertEqual(clip["video_length"], 145)
+        self.assertIn("signature move in one continuous take: a slow finger-gun wink", clip["prompt"])
+        self.assertIn("mouth stays closed", clip["prompt"])
+        self.assertEqual(pc.file_path(record["id"], "clip").name, "clip.mp4")
+        self.assertEqual(pc.file_path(record["id"], "start").name, "start.png")
+        pc.delete_clip(record["id"])
+        self.assertEqual(pc.list_clips(), [])
+
+    def test_uploaded_start_image_and_model_audio(self):
+        from PIL import Image
+        start = os.path.join(self.tmp, "pose.png")
+        Image.new("RGB", (8, 8)).save(start)
+        record = pc.create_clip("", {"character_id": "mina", "gesture": "thumbs up", "audio": "model",
+                                     "place": "a rooftop at dusk"}, bible_id=self.bible_id, start_image=start)
+        self.assertEqual(record["name"], "Mina")
+        self.assertEqual(record["outputs"], {"start": "start.png"})
+        submitted = []
+        done = pc.start_clip(record["id"], submit=self._submit(submitted), jobs={}, wait=True)
+        self.assertEqual(done["status"], "done", done.get("error"))
+        self.assertEqual(len(submitted), 1)
+        self.assertEqual(submitted[0]["audio_prompt_type"], "")
+        self.assertNotIn("mouth stays closed", submitted[0]["prompt"])
+        with self.assertRaises(bibles.BibleError):
+            pc.create_clip("x", {"character_id": "mina", "gesture": ""}, bible_id=self.bible_id)
+        with self.assertRaises(bibles.BibleError):
+            pc.create_clip("x", {"character_id": "cafe", "gesture": "wave"}, bible_id=self.bible_id)
 
 
 if __name__ == "__main__":

@@ -408,6 +408,27 @@ soundtrack) and the sliced converted vocals as `audio_conditioning_guide`
 …/{id}/video/{video|start|clip_mix|clip_vocals}` serves the files, `POST
 …/{id}/video/cancel` stops the running job.
 
+## Persona clips
+
+The short-form persona format (one recurring character, a signature
+gesture, a different place per clip, no speech) lives in
+`services/director/persona_clips.py` (records in
+`settings/director_persona_clips.json`, files under
+`settings/persona_clips/<id>/`). `POST /api/v1/director/persona-clips` is
+multipart: `bible_id`, `character_id`, `gesture` (the move, in words),
+optional `location_id` (a bible place) or `place` (a place in words),
+`name`, `orientation` (`portrait` by default), `seconds` (6, one LTX-2.5
+window), `seed`, `audio` (`silent` by default: the job asks for audio
+conditioning without a soundtrack, which WanGP fills with silence so the
+mouth stays shut; `model` lets LTX invent a soundtrack), `prompt` /
+`start_prompt` overrides, `model_type` (an `ltx2_25*` model), a
+`start_image` upload that skips the editor, and `run`. The two worker jobs
+are the cover video's (`cover_video.start_job`, `run_stage`): the editor
+paints the character at the first beat of the gesture in the place, then
+LTX-2.5 image-to-video performs it in one take. `GET …/persona-clips`
+(`?bible_id=`), `GET …/{id}`, `POST …/{id}/run|cancel`, `GET
+…/{id}/file/{clip|start}`, `DELETE …/{id}`.
+
 ## Insights registry
 
 Every judge finding of every run lands in one SQLite file,

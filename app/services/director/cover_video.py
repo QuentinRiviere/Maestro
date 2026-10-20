@@ -215,13 +215,12 @@ def start_video(cover_id: str, raw: Mapping[str, Any] | None, *, start_image: st
     return voice_cover.get_cover(cover_id)
 
 
-def _submit(cover_id: str, submit, jobs, params: dict, folder: Path, stage: str) -> list[str]:
+def run_stage(submit, jobs, params: dict, folder: Path, stage: str, update: Callable[..., Any]) -> list[str]:
+    """Submit one worker job, mirror its progress through ``update(**fields)``, return its output names."""
     job_id = uuid.uuid4().hex[:8]
-    _set_video(cover_id, status="running", job_id=job_id, progress=f"{stage}: submitting to the worker")
+    update(status="running", job_id=job_id, progress=f"{stage}: submitting to the worker")
     done = threading.Event()
-    follower = threading.Thread(
-        target=style_lora._follow_generic, args=(job_id, jobs, done, lambda **f: _set_video(cover_id, **f)),
-        daemon=True)
+    follower = threading.Thread(target=style_lora._follow_generic, args=(job_id, jobs, done, update), daemon=True)
     follower.start()
     try:
         outputs = submit(params, timeout_s=TIMEOUT_SEC, out_dir=str(folder), job_id=job_id)
@@ -232,6 +231,10 @@ def _submit(cover_id: str, submit, jobs, params: dict, folder: Path, stage: str)
         job = jobs.get(job_id) or {}
         raise BibleError("Cancelled" if job.get("status") == "cancelled" else f"{stage}: the worker returned nothing")
     return outputs
+
+
+def _submit(cover_id: str, submit, jobs, params: dict, folder: Path, stage: str) -> list[str]:
+    return run_stage(submit, jobs, params, folder, stage, lambda **f: _set_video(cover_id, **f))
 
 
 def _run(cover_id: str, submit, jobs) -> None:
