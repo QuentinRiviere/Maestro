@@ -451,3 +451,126 @@ export async function deleteStyleReference(bibleId: string, refId: string): Prom
 export function styleReferenceVideoUrl(bibleId: string, refId: string): string {
   return `${styleRefUrl(bibleId, refId)}/video`
 }
+
+// ── Style LoRAs: adapters trained on the worker from the references' frames ──
+
+export type StyleLoraStatus = 'queued' | 'preparing' | 'training' | 'sampling' | 'done' | 'failed'
+
+export interface StyleLoraConfig {
+  steps: number
+  rank: number
+  learning_rate: number
+  resolution: number
+  exclude_close_ups: boolean
+  caption_mode: 'content' | 'full'
+  targets: 'attention' | 'all'
+  max_images: number
+  trigger: string
+  references: string[]
+}
+
+export interface StyleLoraDataset {
+  images: number
+  references: { id: string; label: string; frames: number; used: number }[]
+  excluded_close_ups: number
+  excluded_credits: number
+  by_shot_size?: Record<string, number>
+}
+
+export interface StyleLora {
+  id: string
+  name: string
+  file: string
+  trigger: string
+  status: StyleLoraStatus
+  progress: string
+  step: number
+  total_steps: number
+  error: string
+  enabled: boolean
+  scale: number
+  config: Partial<StyleLoraConfig>
+  dataset: StyleLoraDataset | null
+  samples: string[]
+  job_id: string
+  model: string
+  training: { final_loss?: number; seconds?: number; items?: number; losses?: number[] } | null
+  created_at: string
+  updated_at: string
+}
+
+/** What a training would use, before anything is extracted. */
+export interface StyleLoraDatasetPreview {
+  available: number
+  minimum: number
+  trigger: string
+  references: { id: string; label: string; frames: number; used: number }[]
+  excluded_close_ups: number
+  excluded_credits: number
+  captions: string[]
+}
+
+export interface StyleLoraRequest {
+  name?: string
+  trigger?: string
+  steps?: number
+  rank?: number
+  learning_rate?: number
+  resolution?: number
+  exclude_close_ups?: boolean
+  caption_mode?: 'content' | 'full'
+  targets?: 'attention' | 'all'
+  references?: string[]
+  train?: boolean
+}
+
+const styleLoraUrl = (bibleId: string, loraId = '') =>
+  `${BASE}/api/v1/director/bibles/${encodeURIComponent(bibleId)}/style-loras`
+  + (loraId ? `/${encodeURIComponent(loraId)}` : '')
+
+export async function fetchStyleLoras(bibleId: string): Promise<StyleLora[]> {
+  return (await json<{ loras: StyleLora[] }>(await fetch(styleLoraUrl(bibleId)),
+    'Could not load the style LoRAs')).loras
+}
+
+export async function fetchStyleLoraDataset(bibleId: string, options: { exclude_close_ups?: boolean; caption_mode?: string; trigger?: string } = {}):
+  Promise<StyleLoraDatasetPreview> {
+  const query = new URLSearchParams()
+  if (options.exclude_close_ups !== undefined) query.set('exclude_close_ups', String(options.exclude_close_ups))
+  if (options.caption_mode) query.set('caption_mode', options.caption_mode)
+  if (options.trigger) query.set('trigger', options.trigger)
+  return json<StyleLoraDatasetPreview>(await fetch(`${styleLoraUrl(bibleId)}/dataset?${query}`),
+    'Could not read the frames')
+}
+
+/** Create a style LoRA record and start its training (``train: false`` only creates it). */
+export async function createStyleLora(bibleId: string, body: StyleLoraRequest): Promise<StyleLora> {
+  return (await json<{ lora: StyleLora }>(await fetch(styleLoraUrl(bibleId), {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  }), 'Could not start the training')).lora
+}
+
+export async function updateStyleLora(bibleId: string, loraId: string, body: { enabled?: boolean; scale?: number; name?: string }):
+  Promise<StyleLora> {
+  return (await json<{ lora: StyleLora }>(await fetch(styleLoraUrl(bibleId, loraId), {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  }), 'Could not update the LoRA')).lora
+}
+
+export async function deleteStyleLora(bibleId: string, loraId: string): Promise<StyleLora[]> {
+  return (await json<{ loras: StyleLora[] }>(await fetch(styleLoraUrl(bibleId, loraId), { method: 'DELETE' }),
+    'Could not delete the LoRA')).loras
+}
+
+export async function trainStyleLora(bibleId: string, loraId: string): Promise<StyleLora> {
+  return (await json<{ lora: StyleLora }>(await fetch(`${styleLoraUrl(bibleId, loraId)}/train`, { method: 'POST' }),
+    'Could not start the training')).lora
+}
+
+export async function cancelStyleLora(bibleId: string, loraId: string): Promise<StyleLora> {
+  return (await json<{ lora: StyleLora }>(await fetch(`${styleLoraUrl(bibleId, loraId)}/cancel`, { method: 'POST' }),
+    'Could not cancel the training')).lora
+}
+
+export const styleLoraSampleUrl = (bibleId: string, loraId: string, number: number) =>
+  `${styleLoraUrl(bibleId, loraId)}/samples/${number}`

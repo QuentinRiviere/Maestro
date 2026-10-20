@@ -74,6 +74,13 @@ STYLE_FRAMES_STATES = ("idle", "queued", "running", "done", "failed")
 # Analyses owned by this process. A reference still queued or analysing that
 # is not in it was cut by a restart.
 _LIVE_ANALYSES: set[str] = set()
+# Style LoRAs trained from the references' frames (see ``style_lora``).
+MAX_STYLE_LORAS = 5
+STYLE_LORA_STATES = ("queued", "preparing", "training", "sampling", "done", "failed")
+STYLE_LORA_LIVE = ("queued", "preparing", "training", "sampling")
+# Trainings owned by this process; a record still under way that is not in
+# it was cut by a restart (a training is hours of GPU: it is not re-queued).
+_LIVE_TRAININGS: set[str] = set()
 _LOCK = threading.RLock()
 _SLUG = re.compile(r"[^a-z0-9]+")
 _ID = re.compile(r"[a-z0-9_]{1,40}")
@@ -306,6 +313,48 @@ def _style_grammar(raw: Any) -> dict | None:
     }
 
 
+def _style_loras(raw: Any) -> list[dict]:
+    """The style LoRAs of the bible (style_lora.create_lora); a training cut by a restart reads as failed."""
+    loras, ids = [], set()
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict):
+            continue
+        lora_id = _key(item.get("id"), "lora_" + secrets.token_hex(4))
+        if lora_id in ids:
+            continue
+        ids.add(lora_id)
+        status = item.get("status") if item.get("status") in STYLE_LORA_STATES else "failed"
+        error = _text(item.get("error"), 400)
+        if status in STYLE_LORA_LIVE and lora_id not in _LIVE_TRAININGS:
+            status, error = "failed", "Interrupted"
+        scale = item.get("scale")
+        config = item.get("config") if isinstance(item.get("config"), dict) else {}
+        loras.append({
+            "id": lora_id,
+            "name": _text(item.get("name"), 60) or lora_id,
+            # The adapter's file name in the LoRA registry (loras/qwen21) once trained.
+            "file": os.path.basename(_text(item.get("file"), 160)),
+            "trigger": _text(item.get("trigger"), 40),
+            "status": status,
+            "progress": _text(item.get("progress"), 200),
+            "step": step if isinstance(step := item.get("step"), int) and not isinstance(step, bool) else 0,
+            "total_steps": total if isinstance(total := item.get("total_steps"), int)
+            and not isinstance(total, bool) else 0,
+            "error": error,
+            "enabled": item.get("enabled") is True and status == "done",
+            "scale": round(float(scale), 2) if isinstance(scale, (int, float)) and not isinstance(scale, bool) else 0.7,
+            "config": copy.deepcopy(config),
+            "dataset": copy.deepcopy(item["dataset"]) if isinstance(item.get("dataset"), dict) else None,
+            "samples": [os.path.basename(str(s)) for s in item.get("samples") or [] if s][:6],
+            "job_id": _text(item.get("job_id"), 40),
+            "model": _text(item.get("model"), 120),
+            "training": copy.deepcopy(item["training"]) if isinstance(item.get("training"), dict) else None,
+            "created_at": str(item.get("created_at") or _now()),
+            "updated_at": str(item.get("updated_at") or item.get("created_at") or _now()),
+        })
+    return loras[:MAX_STYLE_LORAS]
+
+
 def normalize_bible(raw: Any, folder: Path) -> dict:
     """The stored fields of a bible, bounded; ids and timestamps are kept as given."""
     raw = raw if isinstance(raw, dict) else {}
@@ -324,6 +373,7 @@ def normalize_bible(raw: Any, folder: Path) -> dict:
         bible[plural] = _elements(raw.get(plural), kind, folder)
     bible["style_references"] = _style_references(raw.get("style_references"), folder)
     bible["style_grammar"] = _style_grammar(raw.get("style_grammar"))
+    bible["style_loras"] = _style_loras(raw.get("style_loras"))
     return bible
 
 

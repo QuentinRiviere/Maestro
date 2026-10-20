@@ -11429,6 +11429,9 @@ _register_style_references(api, get_fal_key=_style_reference_fal_key, get_model=
                            get_backend=_style_reference_backend, get_fetcher=_style_reference_fetcher,
                            get_frames_limit=_style_reference_frames_limit)
 
+from services.director.style_lora import register_routes as _register_style_loras  # noqa: E402
+_register_style_loras(api)
+
 
 @api.post("/api/v1/director/pipeline/{pid}/bible")
 async def director_pipeline_save_to_bible(pid: str, request: Request):
@@ -27673,6 +27676,13 @@ def _run_generation(job_id: str, *, finalize: bool = True, _slot_owned: bool = F
             if raw_params.get("sfx_mode"):
                 _run_sfx_generation(job, raw_params, start_time)
                 return job.get("status") == "completed"
+
+            # ── Style LoRA training: no diffusion run, the job trains an
+            # adapter from the dataset it carries (services.style_lora_training).
+            if raw_params.get("lora_training"):
+                from services.style_lora_training import run_training_job
+
+                return run_training_job(job, raw_params)
 
             # Temporal-depth control has its own optional 458 MB / 1.54 GB
             # preprocessor checkpoint. Provision it before wgp loads the much

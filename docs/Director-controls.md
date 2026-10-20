@@ -270,6 +270,29 @@ and usual lenses, aperture, format, aspect ratio, look, grade, lighting), so
 the image prompts come out in the same register (the image model's own
 family wrote them).
 
+**Style LoRA.** The frames and their prompts are also a training set: the
+bible's style tab trains a LoRA for Qwen Image 2.1 on the GPU worker
+(`POST .../bibles/{bible}/style-loras {steps, rank, resolution, trigger,
+exclude_close_ups, caption_mode, targets}`; `GET .../style-loras/dataset`
+previews what it would use). The controller extracts the sampled frames of
+every enabled, analysed reference (credits left out; close-ups, inserts and
+medium close-ups left out by default so faces stay under-represented),
+captions them with the trigger word plus the shot's content (size, subject,
+action; `caption_mode: full` uses the whole reverse prompt) and sends the
+zip as a `lora_training` job (`services/style_lora_training.py` on the
+worker: bf16 transformer, LoRA on the attention projections, flow-matching
+loss, MMGP key format). The adapter lands in `loras/qwen21` with a registry
+sidecar (trigger word), three sample images with an invented cast are
+rendered as the identity check (nobody should look like the references),
+and the first trained LoRA is enabled. A run that uses the bible adds the
+enabled LoRA to its shot images at its weight (default 0.7) and closes every
+image prompt with the trigger word; `director_style_lora` is `auto`, `off`
+or a LoRA id; the params snapshot records `_director_style_lora`. A bible
+keeps up to 5 LoRAs, one enabled. A training cut by a restart reads as
+failed ("Interrupted"): retry it from the panel (hours of GPU are never
+re-queued on their own). The first training downloads the bf16 transformer
+(14 GB) on the worker.
+
 Each reference has a `graphics` mode (`ignore`, the default, or `include`;
 a toggle in the bible panel, `graphics` on the upload form and in the PATCH
 body): with `ignore` the analyst leaves burned-in subtitles, captions, logos,

@@ -8007,6 +8007,17 @@ def _apply_bible(pid: str, params: dict) -> str:
     params["director_casting"] = "on"
     # Its look is pasted word for word into every image prompt.
     params["_director_bible_look"] = (bible.get("world") or {}).get("look", "")
+    # Its style LoRA (trained from the reference frames, style_lora) rides on
+    # every shot image: ``director_style_lora`` is "auto" (the enabled one),
+    # "off", or a LoRA id.
+    from services.director.style_lora import enabled_lora
+
+    choice = str(params.get("director_style_lora") or "auto").strip()
+    lora = enabled_lora(bible, "" if choice in ("auto", "") else choice) if choice != "off" else None
+    params["_director_style_lora"] = ({"id": lora["id"], "file": lora["file"], "trigger": lora.get("trigger", ""),
+                                       "scale": float(lora.get("scale") or 0.7)} if lora else None)
+    if lora:
+        print(f"[Pipeline {pid}] Style LoRA {lora['file']} at {params['_director_style_lora']['scale']}")
     _update_pipeline(pid, bible={"id": bible["id"], "name": bible["name"],
                                  "revision": params.get("_director_bible_revision")})
     print(f"[Pipeline {pid}] Bible {bible['id']} r{params.get('_director_bible_revision')}")
@@ -9766,6 +9777,21 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
     except Exception as _e:
         print(f"[Pipeline {pid}] LoRA file-existence filter skipped: {_e}")
 
+    # The bible's style LoRA (see _apply_bible) joins the request's image
+    # LoRAs, once, at its own scale; its trigger word closes every prompt.
+    _style_lora = params.get("_director_style_lora") if isinstance(params.get("_director_style_lora"), dict) else None
+    _style_trigger = ""
+    if _style_lora and _style_lora.get("file") and image_model == DIRECTOR_DEFAULT_IMAGE_MODEL:
+        _names = list(image_loras.get("activated_loras", []) or [])
+        _mults = (image_loras.get("loras_multipliers", "") or "").split()
+        if _style_lora["file"] not in [os.path.basename(n) for n in _names]:
+            _mults = _mults + [""] * (len(_names) - len(_mults))
+            _names.append(_style_lora["file"])
+            _mults.append(f"{float(_style_lora.get('scale') or 0.7):.2f}")
+            image_loras = {"activated_loras": _names, "loras_multipliers": " ".join(m or "1.00" for m in _mults)}
+        _style_trigger = str(_style_lora.get("trigger") or "").strip()
+        print(f"[Pipeline {pid}] Style LoRA {_style_lora['file']} added to the image LoRAs")
+
     resolution = image_params.get("resolution", "1280x720")
     steps = image_params.get("num_inference_steps", 8)
     guidance = image_params.get("guidance_scale", 1)
@@ -9873,6 +9899,8 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
             look = without_portrait_text(_bible_look) if prompt.startswith(INSERT_LEAD) else _bible_look
             if look:
                 prompt = f"{prompt.rstrip()} {look}"
+        if _style_trigger and _style_trigger not in prompt:
+            prompt = f"{prompt.rstrip()} {_style_trigger}"
         selected_extra_refs = (
             extra_refs if supplemental_refs is None else supplemental_refs
         )

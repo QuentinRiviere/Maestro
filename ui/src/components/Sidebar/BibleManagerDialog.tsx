@@ -5,6 +5,7 @@ import { DIRECTOR_DEFAULT_IMAGE_MODEL } from '../../lib/directorImageDefaults'
 import { AppModeToggle, MaestroBrand } from '../AppModeNavigation'
 import { BibleChat } from './BibleChat'
 import { BibleStyleReferences } from './BibleStyleReferences'
+import { BibleStyleLora } from './BibleStyleLora'
 import { useConfirm } from './ConfirmDialog'
 import { fetchRemoteWorkerSettings, updateRemoteWorkerSettings } from '../../api/client'
 import type { RemoteWorkerSettings } from '../../types'
@@ -760,7 +761,10 @@ function BibleManagerPanel({ initialId, onClose }: { initialId?: string; onClose
               </nav>
               <div className="flex-1 overflow-y-auto p-2.5">
                 {tab === 'style' ? (
-                  <BibleStyleReferences key={draft.id} bibleId={draft.id} ask={ask} />
+                  <div className="space-y-4">
+                    <BibleStyleReferences key={draft.id} bibleId={draft.id} ask={ask} />
+                    <BibleStyleLora key={`lora-${draft.id}`} bibleId={draft.id} ask={ask} />
+                  </div>
                 ) : tab === 'world' ? (
                   <div className="space-y-2 max-w-2xl">
                     <label className="block"><span className={label}>Description</span>
