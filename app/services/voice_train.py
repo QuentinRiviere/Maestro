@@ -35,7 +35,8 @@ APPLIO_EXTRA_PACKAGES = ("faiss-cpu==1.14.3", "stftpitchshift==2.0", "soxr==1.1.
 SAMPLE_RATES = (32000, 40000, 48000)
 DEFAULT_EPOCHS = 300
 MAX_EPOCHS = 2000
-_EPOCH = re.compile(r"[Ee]poch[:\s]+(\d+)\s*/\s*(\d+)")
+# Applio's training lines read "<name> | epoch=12 | step=108 | batch=3/9".
+_EPOCH = re.compile(r"epoch=(\d+)")
 _NAME = re.compile(r"[^A-Za-z0-9_-]+")
 
 
@@ -151,8 +152,8 @@ def _patch_dataloader(folder: str) -> None:
 
 
 def _run_cli(arguments: list[str], *, report: Callable[[str, float], Any] | None = None,
-             is_cancelled: Callable[[], bool] | None = None, label: str = "Training") -> str:
-    """Run one ``core.py`` command in Applio's venv; mirrors epoch progress; returns the output tail."""
+             is_cancelled: Callable[[], bool] | None = None, label: str = "Training", total: int = 0) -> str:
+    """Run one ``core.py`` command in Applio's venv; mirrors epoch progress out of ``total``; returns the output tail."""
     folder = ensure_applio(lambda message: report and report(message, 0.0))
     env = {**os.environ, "PYTHONUNBUFFERED": "1", "APPLIO_NUM_WORKERS": os.environ.get("APPLIO_NUM_WORKERS", "0")}
     process = subprocess.Popen([_python(folder), "core.py", *arguments], cwd=folder, env=env,
@@ -166,10 +167,9 @@ def _run_cli(arguments: list[str], *, report: Callable[[str, float], Any] | None
         tail.append(chunk)
         tail = tail[-60:]
         found = _EPOCH.findall(chunk)
-        if found and report:
-            epoch, total = found[-1]
-            if int(total):
-                report(f"{label}, epoch {epoch} of {total}", 100.0 * int(epoch) / int(total))
+        if found and report and total:
+            epoch = int(found[-1])
+            report(f"{label}, epoch {epoch} of {total}", 100.0 * epoch / total)
     process.wait()
     text = "".join(tail)
     if process.returncode != 0:
@@ -211,8 +211,10 @@ def train_voice(dataset: list[str], config: Mapping[str, Any], out_dir: str, *,
                   str(min(config["save_every_epoch"], config["epochs"])), "--save-only-latest", "--batch-size",
                   str(config["batch_size"]), "--gpu", "0", "--sample-rate", rate, "--pretrained", "--vocoder",
                   config["vocoder"], "--cleanup"],
-                 report=lambda m, p: say(m, 8.0 + 0.88 * p), is_cancelled=is_cancelled, label="Training")
-        model = _newest(os.path.join(logs, "*.pth"))
+                 report=lambda m, p: say(m, 8.0 + 0.88 * p), is_cancelled=is_cancelled, label="Training",
+                 total=int(config["epochs"]))
+        # The final weights are "<name>_<epochs>e_<steps>s.pth"; G_/D_ files are the raw checkpoints.
+        model = _newest(os.path.join(logs, f"{name}_*e_*s.pth"))
         index = _newest(os.path.join(logs, "*.index"))
         if not index:
             say("Building the retrieval index", 97.0)
