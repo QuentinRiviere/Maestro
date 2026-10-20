@@ -11454,6 +11454,9 @@ def _panorama_lora_name() -> str:
 from services.director.room_pano import register_routes as _register_room_pano  # noqa: E402
 _register_room_pano(api, ensure_pipeline=_init_pipeline, lora_name=_panorama_lora_name)
 
+from services.director.voice_cover import register_routes as _register_voice_covers  # noqa: E402
+_register_voice_covers(api, settings_dir=lambda: _maestro_settings_dir, ensure_pipeline=_init_pipeline)
+
 
 @api.post("/api/v1/director/pipeline/{pid}/bible")
 async def director_pipeline_save_to_bible(pid: str, request: Request):
@@ -27705,6 +27708,13 @@ def _run_generation(job_id: str, *, finalize: bool = True, _slot_owned: bool = F
                 from services.style_lora_training import run_training_job
 
                 return run_training_job(job, raw_params)
+
+            # ── Voice cover: no diffusion run either, the job separates the
+            # song, converts the vocals and remixes (services.voice_cover).
+            if raw_params.get("voice_cover"):
+                from services.voice_cover import run_cover_job
+
+                return run_cover_job(job, raw_params)
 
             # Temporal-depth control has its own optional 458 MB / 1.54 GB
             # preprocessor checkpoint. Provision it before wgp loads the much
