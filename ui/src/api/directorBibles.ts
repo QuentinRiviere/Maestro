@@ -78,6 +78,10 @@ export interface DirectorBible {
   props: BibleElement[]
   /** Reference videos (staging, editing, rhythm); edited through their own endpoints, never by a bible save. */
   style_references?: StyleReference[]
+  /** Style LoRAs trained from the references' frames; edited through their own endpoints. */
+  style_loras?: StyleLora[]
+  /** Whether the enabled style LoRA renders the bible's own images: none, the places, or the people too. */
+  style_lora_renders?: 'off' | 'places' | 'all'
   created_at: string
   updated_at: string
 }
