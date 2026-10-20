@@ -8,6 +8,14 @@ import gc
 
 from audio_separator.separator import Separator
 
+
+def roformer_dir() -> str:
+    """Where the separator keeps its RoFormer checkpoint: under MAESTRO_DATA on a worker (its checkout is
+    recreated at every restart, which re-downloaded the 640 MB model each time), the working directory otherwise."""
+    import os
+
+    return os.path.join(os.environ.get("MAESTRO_DATA") or os.getcwd(), "ckpts", "roformer") + os.sep
+
 def get_vocals(src_path: str, dst_path: str, min_seconds: float = 8) -> str:
     """
     If the source audio is shorter than `min_seconds`, pad with trailing silence
@@ -48,7 +56,7 @@ def get_vocals(src_path: str, dst_path: str, min_seconds: float = 8) -> str:
             output_dir=str(dst.parent),
             output_format=(dst.suffix.lstrip(".") or "wav"),
             output_single_stem="Vocals",
-            model_file_dir="ckpts/roformer/" #model_bs_roformer_ep_317_sdr_12.9755.ckpt"
+            model_file_dir=roformer_dir(),  # model_bs_roformer_ep_317_sdr_12.9755.ckpt
         )
         sep.load_model()
         out_files = sep.separate(use_path, {"Vocals": dst.stem})
@@ -101,7 +109,7 @@ def get_stems(src_path: str, out_dir: str, min_seconds: float = 8) -> tuple[str,
         sep = Separator(
             output_dir=str(out_dir),
             output_format="wav",
-            model_file_dir="ckpts/roformer/",
+            model_file_dir=roformer_dir(),
         )
         sep.load_model()
         out_files = sep.separate(use_path)
