@@ -569,11 +569,16 @@ def _install(bible_id: str, lora_id: str, weights: str, folder: Path) -> str:
 
 SAMPLERS = ("turbo", "base")
 # The cast check: the bible's own people and places as reference images, as a run sends them.
+# The blocking is spelled out: with reference portraits the editor copies
+# their frontal pose unless the prompt turns the people away from the lens.
 CAST_SCENES = (
-    "Medium two-shot of {a} (reference 1) and {b} (reference 2) talking at {place} (reference 3), "
-    "{a} listening, {b} mid-sentence, late afternoon.",
-    "Wide shot of {a} (reference 1) alone at {place} (reference 2), standing by the window, looking out, morning.",
-    "Medium close-up of {a} (reference 1) at {place} (reference 2), turning to look over the shoulder, evening practicals.",
+    "Over-the-shoulder shot at {place} (reference 3): the camera is behind {b} (reference 2), whose back and "
+    "shoulder fill the left foreground out of focus, facing {a} (reference 1) across a table; {a} in profile, "
+    "eyes on {b}, never looking at the camera, late afternoon.",
+    "Wide shot of {a} (reference 1) alone at {place} (reference 2), seen from behind, standing at the window with "
+    "the back to the camera, looking out at the street, morning light on the shoulders, face not visible.",
+    "Medium shot of {a} (reference 1) at {place} (reference 2) in strict profile, facing screen left, sitting, "
+    "head bowed over the hands, the camera at the side, evening practicals.",
 )
 
 
@@ -602,7 +607,7 @@ def cast_samples(bible_id: str, bible: Mapping[str, Any]) -> list[tuple[str, lis
         elif place:
             scenes.append((template.format(a=a[0], place=place[0]), [a[1], place[1]]))
         else:
-            scenes.append((template.replace(" at {place} (reference 2)", "").format(a=a[0]), [a[1]]))
+            scenes.append((template.replace(" at {place} (reference 2)", "").format(a=a[0], b=b[0]), [a[1]]))
     return scenes
 
 
