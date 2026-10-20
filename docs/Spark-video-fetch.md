@@ -1,7 +1,8 @@
 # Spark video fetch (yt-dlp)
 
-A small service on the Spark that downloads a public video (YouTube and the
-sites yt-dlp reads; no DRM) at 480p so a link can become a style reference
+A small service on the Spark that downloads a public video (YouTube, TikTok
+and the sites yt-dlp reads; no DRM; TikTok needs yt-dlp's `curl-cffi` extra
+for browser impersonation, included) at 480p so a link can become a style reference
 of a bible without uploading a file. Files: `docker/spark-stack/video-fetch/`
 (`app.py`, `Dockerfile`, `requirements.txt`, `compose.yaml`).
 
