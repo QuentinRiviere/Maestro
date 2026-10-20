@@ -242,13 +242,14 @@ class VideoTests(unittest.TestCase):
 
         def submit(params, timeout_s, out_dir, job_id=None, **_):
             submitted.append(params)
-            name = "frame.png" if params["generation_mode"] == "image" else "clip.mp4"
-            if name.endswith(".png"):
+            if params["generation_mode"] == "image":
                 from PIL import Image
-                Image.new("RGB", (8, 8)).save(os.path.join(out_dir, name))
-            else:
-                Path(out_dir, name).write_bytes(b"mp4")
-            return [name]
+                Image.new("RGB", (8, 8)).save(os.path.join(out_dir, "frame.png"))
+                return ["frame.png"]
+            # The worker saves the growing video after each window: the last one is the whole clip.
+            Path(out_dir, "window1.mp4").write_bytes(b"one")
+            Path(out_dir, "window2.mp4").write_bytes(b"one and two")
+            return ["window1.mp4", "window2.mp4"]
 
         with patch.object(vc, "_director", lambda: Pipeline):
             done = cvid.start_video(self.cover["id"], {"location_id": "cafe", "seconds": 2, "start_sec": 0.5,
@@ -275,7 +276,8 @@ class VideoTests(unittest.TestCase):
         self.assertIn('Lyrics sung: "City lights / falling"', clip["prompt"])
         self.assertIn("LIP SYNC", clip["prompt"])
         folder = vc.cover_dir(self.cover["id"])
-        self.assertTrue((folder / "cover.mp4").is_file())
+        self.assertEqual((folder / "cover.mp4").read_bytes(), b"one and two")
+        self.assertFalse((folder / "window1.mp4").exists())
         data, rate = sf.read(folder / "clip_mix.wav", always_2d=True)
         self.assertEqual(len(data), rate * 2)
         self.assertEqual(cvid.video_path(self.cover["id"], "video").name, "cover.mp4")

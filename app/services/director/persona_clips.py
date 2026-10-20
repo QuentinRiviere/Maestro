@@ -248,7 +248,7 @@ def _run(clip_id: str, submit, jobs) -> None:
             prompt = clip_prompt(character, settings)
             outputs = cover_video.run_stage(submit, jobs, clip_job(prompt, str(folder / made["start"]), settings),
                                             folder, "Clip", update)
-            shutil.move(str(folder / outputs[0]), str(folder / OUTPUTS["clip"]))
+            cover_video.keep_last_video(folder, outputs, OUTPUTS["clip"])
             made["clip"] = OUTPUTS["clip"]
             _set(clip_id, status="done", progress="", outputs=made, prompt=prompt,
                  seconds=round(time.time() - started))

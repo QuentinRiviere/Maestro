@@ -181,6 +181,21 @@ def slice_audio(source: str, start_sec: float, seconds: float, output: str) -> s
     return output
 
 
+def keep_last_video(folder: Path, outputs: list[str], name: str) -> Path:
+    """WanGP saves the video again after every sliding window: the last output is the whole clip, the others go."""
+    videos = [n for n in outputs if n.lower().endswith((".mp4", ".webm", ".mov"))] or list(outputs)
+    target = folder / name
+    shutil.move(str(folder / videos[-1]), str(target))
+    for extra in videos[:-1]:
+        for path in (folder / extra, (folder / extra).with_suffix(".meta.json")):
+            if path.is_file():
+                path.unlink()
+    for path in (folder / videos[-1]).with_suffix(".meta.json"),:
+        if path.is_file():
+            path.unlink()
+    return target
+
+
 def _set_video(cover_id: str, **fields: Any) -> dict:
     record = voice_cover.get_cover(cover_id)
     video = dict(record.get("video") or {})
@@ -294,7 +309,7 @@ def _run(cover_id: str, submit, jobs) -> None:
             prompt = video_prompt(character, settings, mode)
             outputs = _submit(cover_id, submit, jobs,
                               video_job(prompt, str(folder / made["start"]), mix, vocals, settings), folder, "Video")
-            shutil.move(str(folder / outputs[0]), str(folder / OUTPUTS["video"]))
+            keep_last_video(folder, outputs, OUTPUTS["video"])
             made["video"] = OUTPUTS["video"]
             _set_video(cover_id, status="done", progress="", outputs=made, prompt=prompt,
                        seconds=round(time.time() - started))
