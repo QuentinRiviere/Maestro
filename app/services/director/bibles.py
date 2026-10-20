@@ -78,6 +78,9 @@ _LIVE_ANALYSES: set[str] = set()
 MAX_STYLE_LORAS = 5
 STYLE_LORA_STATES = ("queued", "preparing", "training", "sampling", "done", "failed")
 STYLE_LORA_LIVE = ("queued", "preparing", "training", "sampling")
+# Whether the enabled style LoRA also renders the bible's own images: none,
+# the places (plates and reverse views), or the people too.
+STYLE_LORA_RENDERS = ("off", "places", "all")
 # Trainings owned by this process; a record still under way that is not in
 # it was cut by a restart (a training is hours of GPU: it is not re-queued).
 _LIVE_TRAININGS: set[str] = set()
@@ -382,6 +385,8 @@ def normalize_bible(raw: Any, folder: Path) -> dict:
     bible["style_references"] = _style_references(raw.get("style_references"), folder)
     bible["style_grammar"] = _style_grammar(raw.get("style_grammar"))
     bible["style_loras"] = _style_loras(raw.get("style_loras"))
+    bible["style_lora_renders"] = (raw.get("style_lora_renders") if raw.get("style_lora_renders") in STYLE_LORA_RENDERS
+                                   else "places")
     return bible
 
 

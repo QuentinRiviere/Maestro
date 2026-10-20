@@ -8240,6 +8240,13 @@ def _render_bible_slot(bible_id: str, element_id: str, variant_id: str, slot: st
         look = (bible.get("world") or {}).get("look", "")
         if look and kind == "location":
             prompt = f"{prompt} {look}"
+        # The bible's style LoRA on its own images (style_lora_renders): the
+        # places by default, so the plates and reverse views carry the look.
+        from services.director.style_lora import bible_render_lora
+
+        render_lora = bible_render_lora(bible, kind, prompt) if image_model == DIRECTOR_DEFAULT_IMAGE_MODEL else None
+        if render_lora and render_lora["prompt_suffix"]:
+            prompt = f"{prompt} {render_lora['prompt_suffix']}"
         image_params = director_image_params(image_model, {**image_model_defaults(image_model), **(image_params or {})})
         prompt_type = _director_image_prompt_type(image_model, refs)
         if view and prompt_type == "KI":
@@ -8268,6 +8275,8 @@ def _render_bible_slot(bible_id: str, element_id: str, variant_id: str, slot: st
             "negative_prompt": "",
             "video_length": 1,
             **director_image_job_fields(image_params),
+            **({"activated_loras": render_lora["activated_loras"], "loras_multipliers": render_lora["loras_multipliers"]}
+               if render_lora else {}),
         }
         out_dir = os.path.join(_wgp.save_path, "_bible_renders")
         os.makedirs(out_dir, exist_ok=True)

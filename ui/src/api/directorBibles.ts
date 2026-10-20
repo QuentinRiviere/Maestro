@@ -586,6 +586,15 @@ export async function cancelStyleLora(bibleId: string, loraId: string): Promise<
     'Could not cancel the training')).lora
 }
 
+export type StyleLoraRenderMode = 'off' | 'places' | 'all'
+
+/** Whether the enabled LoRA renders the bible's own images (plates, reverse views, people). */
+export async function setStyleLoraRenderMode(bibleId: string, mode: StyleLoraRenderMode): Promise<StyleLoraRenderMode> {
+  return (await json<{ mode: StyleLoraRenderMode }>(await fetch(`${styleLoraUrl(bibleId)}/renders`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode }),
+  }), 'Could not save the render mode')).mode
+}
+
 /** Render the sample images again at the LoRA's current weight. */
 export async function resampleStyleLora(bibleId: string, loraId: string, options: { sampler?: 'turbo' | 'base'; scale?: number; cast?: boolean } = {}):
   Promise<StyleLora> {

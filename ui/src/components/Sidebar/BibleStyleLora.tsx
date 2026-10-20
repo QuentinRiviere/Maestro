@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import { Image as ImageIcon, Loader2, Sparkles, Trash2, XCircle } from 'lucide-react'
 import {
-  cancelStyleLora, createStyleLora, deleteStyleLora, fetchStyleLoraDataset, fetchStyleLoras, resampleStyleLora,
-  styleLoraSampleUrl, trainStyleLora, updateStyleLora, type StyleLora, type StyleLoraDatasetPreview, type StyleLoraRequest,
+  cancelStyleLora, createStyleLora, deleteStyleLora, fetchDirectorBible, fetchStyleLoraDataset, fetchStyleLoras,
+  resampleStyleLora, setStyleLoraRenderMode, styleLoraSampleUrl, trainStyleLora, type StyleLoraRenderMode, updateStyleLora, type StyleLora, type StyleLoraDatasetPreview, type StyleLoraRequest,
 } from '../../api/directorBibles'
 
 const input = 'w-full bg-bg-tertiary border border-border rounded px-2 py-1 text-[11px] text-text-primary focus:outline-none focus:border-accent-blue'
@@ -148,6 +148,10 @@ export function BibleStyleLora({ bibleId, ask }: { bibleId: string; ask: Ask }) 
   const [preview, setPreview] = useState<StyleLoraDatasetPreview | null>(null)
   const [showForm, setShowForm] = useState(false)
   const [starting, setStarting] = useState(false)
+  const [renderMode, setRenderMode] = useState<StyleLoraRenderMode>('places')
+  useEffect(() => {
+    fetchDirectorBible(bibleId).then(b => setRenderMode(b.style_lora_renders ?? 'places')).catch(() => {})
+  }, [bibleId])
   const [form, setForm] = useState<StyleLoraRequest>({
     steps: 1500, rank: 16, resolution: 512, exclude_close_ups: true, caption_mode: 'content', targets: 'attention',
     sub_triggers: true,
@@ -203,6 +207,22 @@ export function BibleStyleLora({ bibleId, ask }: { bibleId: string; ask: Ask }) 
           <Sparkles size={10} /> Train a style LoRA
         </button>
       </div>
+      {loras.some(l => l.status === 'done') && (
+        <label className="flex items-center gap-2 text-[10px] text-text-secondary"
+          title="The enabled LoRA on the bible's own renders: the places (plates and reverse views, so they carry the look), the people too, or none (neutral references)">
+          Bible renders use it for
+          <select className="bg-bg-tertiary border border-border rounded px-1 py-0.5 text-[10px]" value={renderMode}
+            onChange={e => {
+              const mode = e.target.value as StyleLoraRenderMode
+              setRenderMode(mode)
+              setStyleLoraRenderMode(bibleId, mode).catch(err => setError(err instanceof Error ? err.message : 'Could not save'))
+            }}>
+            <option value="places">places only</option>
+            <option value="all">places and people</option>
+            <option value="off">nothing</option>
+          </select>
+        </label>
+      )}
       {error && <p role="alert" className="text-[10px] text-chip-red">{error}</p>}
       {showForm && (
         <div className="rounded-lg border border-border bg-bg-tertiary/30 p-2.5 space-y-2">

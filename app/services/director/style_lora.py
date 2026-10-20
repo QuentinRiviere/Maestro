@@ -500,6 +500,35 @@ def enabled_lora(bible: Mapping[str, Any], lora_id: str = "") -> dict | None:
     return None
 
 
+def bible_render_lora(bible: Mapping[str, Any], kind: str, prompt: str) -> dict | None:
+    """The LoRA fields a bible render of ``kind`` adds (``style_lora_renders``), with the trigger for ``prompt``.
+
+    Returns ``{"activated_loras", "loras_multipliers", "prompt_suffix"}`` or None.
+    """
+    mode = bible.get("style_lora_renders") or "places"
+    if mode == "off" or (mode == "places" and kind != "location"):
+        return None
+    lora = enabled_lora(bible)
+    if not lora:
+        return None
+    sub = sub_trigger_for(prompt, lora.get("sub_triggers"))
+    suffix = f"{lora.get('trigger', '')}{' ' + sub if sub else ''}".strip()
+    return {"activated_loras": [lora["file"]], "loras_multipliers": f"{float(lora.get('scale') or DEFAULT_SCALE):.2f}",
+            "prompt_suffix": suffix}
+
+
+def set_render_mode(bible_id: str, mode: str) -> dict:
+    """Store ``style_lora_renders`` on the bible."""
+    if mode not in bibles.STYLE_LORA_RENDERS:
+        raise BibleError("style_lora_renders is off, places or all")
+
+    def change(bible: dict) -> None:
+        bible["style_lora_renders"] = mode
+
+    bible, _ = bibles._mutate(bible_id, change)
+    return bible
+
+
 def registry_sidecar(lora: Mapping[str, Any], bible: Mapping[str, Any]) -> dict:
     """The ``<stem>.civitai.json`` sidecar the LoRA registry reads (trigger words, base model, description)."""
     dataset = lora.get("dataset") or {}
@@ -865,6 +894,13 @@ def register_routes(api: Any, *, ensure_pipeline: Callable[[], Any] | None = Non
                 "excluded_close_ups": found["excluded_close_ups"], "excluded_credits": found["excluded_credits"],
                 "minimum": MIN_IMAGES, "trigger": settings["trigger"], "sub_triggers": found["sub_triggers"],
                 "by_class": found["by_class"], "captions": [item["caption"] for item in found["items"][:6]]}
+
+    @api.put(base + "/renders")
+    async def style_loras_render_mode(bible_id: str, request: Request):
+        """Whether the enabled LoRA renders the bible's own images: {"mode": "off" | "places" | "all"}."""
+        body = await body_of(request)
+        bible = call(set_render_mode, bible_id, str(body.get("mode") or ""))
+        return {"mode": bible["style_lora_renders"]}
 
     @api.post(base)
     async def style_loras_create(bible_id: str, request: Request):

@@ -287,7 +287,7 @@ rendered as the identity check (nobody should look like the references),
 and the first trained LoRA is enabled. A run that uses the bible adds the
 enabled LoRA to its shot images at its weight (default 0.4: on the 6-step turbo sampler 0.7 melts textures, the plain 40-step sampler takes 0.7) and closes every
 image prompt with the trigger word; `director_style_lora` is `auto`, `off`
-or a LoRA id; the params snapshot records `_director_style_lora`. A bible
+or a LoRA id; the params snapshot records `_director_style_lora`. The enabled LoRA also renders the bible's own images per `style_lora_renders` (`places` by default: plates and reverse views carry the look; `all` adds the people; `off` keeps neutral references; `PUT .../style-loras/renders {mode}`), with the sub-trigger (a day/night x interior/exterior token the captions separated, `sub_triggers` on the LoRA) its prompt matches. A bible
 keeps up to 5 LoRAs, one enabled. A training cut by a restart reads as
 failed ("Interrupted"): retry it from the panel (hours of GPU are never
 re-queued on their own). The first training downloads the bf16 transformer

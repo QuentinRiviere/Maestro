@@ -375,6 +375,24 @@ class BibleLoraTests(unittest.TestCase):
         self.assertEqual(submitted[0]["video_prompt_type"], "I")
         self.assertEqual(len(submitted[0]["image_refs"]), 3)
 
+    def test_bible_render_lora_follows_the_mode(self):
+        lora = sl.create_lora(self.bible_id, {"name": "r"})
+        sl._set(self.bible_id, lora["id"], status="done", file="r.safetensors", enabled=True, scale=0.5,
+                sub_triggers={"night_ext": "k_love_night_ext"})
+        bible = bibles.get_bible(self.bible_id)
+        self.assertEqual(bible["style_lora_renders"], "places")
+        fields = sl.bible_render_lora(bible, "location", "A street at night, neon")
+        self.assertEqual(fields["activated_loras"], ["r.safetensors"])
+        self.assertEqual(fields["loras_multipliers"], "0.50")
+        self.assertEqual(fields["prompt_suffix"], "k_love_style k_love_night_ext")
+        self.assertIsNone(sl.bible_render_lora(bible, "character", "A man"))
+        bible = sl.set_render_mode(self.bible_id, "all")
+        self.assertEqual(sl.bible_render_lora(bible, "character", "A man")["prompt_suffix"], "k_love_style")
+        bible = sl.set_render_mode(self.bible_id, "off")
+        self.assertIsNone(sl.bible_render_lora(bible, "location", "A street"))
+        with self.assertRaises(bibles.BibleError):
+            sl.set_render_mode(self.bible_id, "sometimes")
+
     def test_training_fails_cleanly_without_frames(self):
         lora = sl.create_lora(self.bible_id, {"name": "Empty"})
         record = sl.start_training(self.bible_id, lora["id"], submit=lambda *a, **k: [], jobs={}, wait=True)
