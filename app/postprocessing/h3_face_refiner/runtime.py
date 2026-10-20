@@ -11,7 +11,7 @@ from contextlib import contextmanager
 import numpy as np
 import torch
 
-ASSET_REVISION = "304d34f7751f8ba9ca0eb55d5d10044234cdbfe2"
+ASSET_REVISION = "630975da14fd3c84169d6cd5092da3ce1287d137"
 ASSET_REPO = "DeepBeepMeep/MiniMax-H3"
 ASSET_FOLDER = "buffalo_l"
 DETECTOR = "face_yolov8m.pt"
