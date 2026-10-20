@@ -408,6 +408,20 @@ soundtrack) and the sliced converted vocals as `audio_conditioning_guide`
 …/{id}/video/{video|start|clip_mix|clip_vocals}` serves the files, `POST
 …/{id}/video/cancel` stops the running job.
 
+A voice can also be trained into a permanent RVC model (`POST
+…/voices/{id}/train`, JSON `epochs` 300, `batch_size`, `sample_rate`
+40000; `POST …/{id}/train/cancel`; state under the record's `rvc`): the
+worker job `voice_train` (`services/voice_train.py`) runs Applio's CLI,
+cloned at a pinned commit under `$MAESTRO_DATA/tools/applio` with its venv
+layered on the worker's packages (its training DataLoader is patched to
+`APPLIO_NUM_WORKERS`, 0 here, because Docker's 64 MB `/dev/shm` deadlocks
+its workers), on the voice's references plus the vocals Seed-VC already
+sang for it: preprocess, extract (RMVPE + ContentVec), train from the
+HiFi-GAN pretrained pair, index. Covers then take `engine` (`auto`: the RVC
+model when trained, else Seed-VC; `seedvc`; `rvc`) and the job carries
+`cover_rvc_model` / `cover_rvc_index` instead of the profile
+(`index_rate` 0.75, `protect` 0.33).
+
 ## Persona clips
 
 The short-form persona format (one recurring character, a signature

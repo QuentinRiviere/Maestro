@@ -11455,7 +11455,7 @@ from services.director.room_pano import register_routes as _register_room_pano  
 _register_room_pano(api, ensure_pipeline=_init_pipeline, lora_name=_panorama_lora_name)
 
 from services.director.voices import register_routes as _register_voices  # noqa: E402
-_register_voices(api, settings_dir=lambda: _maestro_settings_dir)
+_register_voices(api, settings_dir=lambda: _maestro_settings_dir, ensure_pipeline=_init_pipeline)
 
 from services.director.voice_cover import register_routes as _register_voice_covers  # noqa: E402
 _register_voice_covers(api, settings_dir=lambda: _maestro_settings_dir, ensure_pipeline=_init_pipeline,
@@ -27716,6 +27716,13 @@ def _run_generation(job_id: str, *, finalize: bool = True, _slot_owned: bool = F
                 from services.style_lora_training import run_training_job
 
                 return run_training_job(job, raw_params)
+
+            # ── Voice training: Applio trains an RVC model on the voice's
+            # recordings (services.voice_train).
+            if raw_params.get("voice_train"):
+                from services.voice_train import run_train_job
+
+                return run_train_job(job, raw_params)
 
             # ── Voice cover: no diffusion run either, the job separates the
             # song, converts the vocals and remixes (services.voice_cover).

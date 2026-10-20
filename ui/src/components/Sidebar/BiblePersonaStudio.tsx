@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
-import { Clapperboard, Loader2, Mic, Music, Plus, Trash2, Video, XCircle } from 'lucide-react'
+import { Clapperboard, Dumbbell, Loader2, Mic, Music, Plus, Trash2, Video, XCircle } from 'lucide-react'
 import {
-  cancelCover, cancelCoverVideo, cancelPersonaClip, coverAudioUrl, coverVideoUrl, createCover, createPersonaClip, createVoice,
-  deleteCover, deletePersonaClip, deleteVoice, fetchCovers, fetchPersonaClips, fetchVoices, isLive, personaClipFileUrl,
-  startCoverVideo, voiceReferenceUrl,
-  type CharacterVoice, type PersonaClip, type SongCover, type VoiceMode,
+  cancelCover, cancelCoverVideo, cancelPersonaClip, cancelVoiceTraining, coverAudioUrl, coverVideoUrl, createCover, createPersonaClip,
+  createVoice, deleteCover, deletePersonaClip, deleteVoice, fetchCovers, fetchPersonaClips, fetchVoices, isLive, personaClipFileUrl,
+  startCoverVideo, trainVoice, voiceReferenceUrl,
+  type CharacterVoice, type CoverEngine, type PersonaClip, type SongCover, type VoiceMode,
 } from '../../api/directorPersona'
 import { generateMusic, getFileUrl } from '../../api/client'
 import type { DirectorBible } from '../../api/directorBibles'
@@ -110,16 +110,33 @@ function VoiceForm({ bible, onCreated }: { bible: DirectorBible; onCreated: (voi
   )
 }
 
-function VoiceCard({ bible, voice, ask, onDeleted }: { bible: DirectorBible; voice: CharacterVoice; ask: Ask; onDeleted: (voices: CharacterVoice[]) => void }) {
+function VoiceCard({ bible, voice, ask, onChange, onDeleted }: {
+  bible: DirectorBible; voice: CharacterVoice; ask: Ask; onChange: (voice: CharacterVoice) => void; onDeleted: (voices: CharacterVoice[]) => void
+}) {
   const { busy, error, act } = useAct()
   const character = bible.characters.find(c => c.id === voice.character_id)
+  const rvc = voice.rvc
+  const training = isLive(rvc?.status)
   return (
     <div className="rounded-lg border border-border bg-bg-tertiary/30 p-2.5 space-y-1.5">
       <div className="flex items-center gap-2">
         <Mic size={12} className="shrink-0 text-text-muted" />
         <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-text-primary">{voice.name}</span>
         <span className="text-[10px] text-text-muted">{voice.mode}{character ? ` · ${character.name}` : ''}{voice.covers ? ` · ${voice.covers} cover${voice.covers === 1 ? '' : 's'}` : ''}{voice.profile ? ' · profile ready' : ''}</span>
-        <button className={button} disabled={busy} title="Delete the voice and its references"
+        {rvc && <Status status={rvc.status} progress={rvc.progress} error={rvc.error} />}
+        {training ? (
+          <button className={button} disabled={busy} title="Stop the training"
+            onClick={() => void act(async () => onChange(await cancelVoiceTraining(voice.id)))}><XCircle size={10} /> Stop</button>
+        ) : (
+          <button className={button} disabled={busy}
+            title="Train a permanent RVC model of this voice on its references and the covers it already sang (Applio, a few hundred epochs). Covers then use it by default: steadier timbre from song to song."
+            onClick={() => ask({ title: `Train "${voice.name}" as an RVC model?`, confirmLabel: 'Train',
+              message: `The worker trains for 300 epochs on the references and every sung cover of this voice${rvc?.status === 'done' ? '; the current model is replaced' : ''}.`,
+              run: () => act(async () => onChange(await trainVoice(voice.id, { epochs: 300 }))) })}>
+            <Dumbbell size={10} /> {rvc?.status === 'done' ? 'Retrain' : 'Train RVC'}
+          </button>
+        )}
+        <button className={button} disabled={busy || training} title="Delete the voice and its references"
           onClick={() => ask({ title: `Delete "${voice.name}"?`, confirmLabel: 'Delete', danger: true,
             message: 'Covers already made keep their audio.', run: () => act(async () => onDeleted(await deleteVoice(voice.id))) })}>
           <Trash2 size={10} />
@@ -129,10 +146,17 @@ function VoiceCard({ bible, voice, ask, onDeleted }: { bible: DirectorBible; voi
         {voice.references.map((reference, index) => (
           <div key={reference.file} className="min-w-[200px] flex-1">
             <span className="text-[10px] text-text-muted">{reference.name} · {Math.round(reference.weight * 100)}%</span>
-            <audio controls preload="none" src={voiceReferenceUrl(voice.id, index)} className="w-full h-7" aria-label={`Reference ${index + 1} of ${voice.name}`} />
+            <audio controls preload="none" src={voiceReferenceUrl(voice.id, index + 1)} className="w-full h-7" aria-label={`Reference ${index + 1} of ${voice.name}`} />
           </div>
         ))}
       </div>
+      {rvc && (
+        <p className="text-[10px] text-text-muted">
+          RVC model: {rvc.status}{training && rvc.progress ? ` · ${rvc.progress}` : ''}{rvc.dataset ? ` · ${rvc.dataset} recording${rvc.dataset === 1 ? '' : 's'}` : ''}
+          {rvc.config?.epochs ? ` · ${rvc.config.epochs} epochs` : ''}{rvc.seconds ? ` · ${Math.round(rvc.seconds / 60)} min` : ''}
+          {rvc.error && <span className="text-chip-red"> · {rvc.error}</span>}
+        </p>
+      )}
       {error && <p role="alert" className="text-[10px] text-chip-red">{error}</p>}
     </div>
   )
@@ -145,6 +169,7 @@ function CoverForm({ bible, voices, onCreated }: { bible: DirectorBible; voices:
   const [song, setSong] = useState<File | null>(null)
   const [voiceId, setVoiceId] = useState(voices[0]?.id ?? '')
   const [mode, setMode] = useState<VoiceMode | ''>('')
+  const [engine, setEngine] = useState<CoverEngine>('auto')
   const [source, setSource] = useState<'upload' | 'generate'>('upload')
   const [lyrics, setLyrics] = useState(DEFAULT_LYRICS)
   const [style, setStyle] = useState(DEFAULT_STYLE)
@@ -169,7 +194,7 @@ function CoverForm({ bible, voices, onCreated }: { bible: DirectorBible; voices:
   const ready = !!voiceId && (source === 'upload' ? !!song : !!rendered)
   return (
     <div className="rounded-lg border border-border bg-bg-tertiary/30 p-2.5 space-y-2">
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+      <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
         <label className="block"><span className={label}>Cover name</span>
           <input className={input} value={name} onChange={e => setName(e.target.value)} placeholder="Night song" /></label>
         <label className="block"><span className={label}>Voice</span>
@@ -182,6 +207,12 @@ function CoverForm({ bible, voices, onCreated }: { bible: DirectorBible; voices:
             <option value="">The voice's own</option>
             <option value="sing">Sing</option>
             <option value="rap">Rap</option>
+          </select></label>
+        <label className="block"><span className={label}>Engine</span>
+          <select className={input} value={engine} onChange={e => setEngine(e.target.value as CoverEngine)} aria-label="Cover engine">
+            <option value="auto">Auto (RVC model when trained)</option>
+            <option value="seedvc">Seed-VC (zero-shot)</option>
+            <option value="rvc">RVC (trained model)</option>
           </select></label>
       </div>
       <div className="flex gap-1">
@@ -222,7 +253,7 @@ function CoverForm({ bible, voices, onCreated }: { bible: DirectorBible; voices:
         onClick={() => void act(async () => {
           onCreated(await createCover({ name: name || (song ? song.name.replace(/\.[^.]+$/, '') : 'Rendered song'), song: source === 'upload' ? song : null,
             song_output: source === 'generate' ? rendered?.filename : undefined, workspace: source === 'generate' ? rendered?.workspace : undefined,
-            voice_id: voiceId, mode, bible_id: bible.id }))
+            voice_id: voiceId, mode, engine, bible_id: bible.id }))
           setSong(null); setName(''); setRendered(null)
         })}>
         {busy ? <Loader2 size={10} className="animate-spin" /> : <Plus size={10} />} Sing it
@@ -276,7 +307,7 @@ function CoverCard({ bible, cover, ask, onChange, onDeleted }: {
       <div className="flex items-center gap-2">
         <Music size={12} className="shrink-0 text-text-muted" />
         <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-text-primary">{cover.name}</span>
-        <span className="text-[10px] text-text-muted">{cover.config.mode}{cover.seconds ? ` · ${cover.seconds} s` : ''}</span>
+        <span className="text-[10px] text-text-muted">{cover.config.mode}{cover.config.engine === 'rvc' ? ' · RVC' : ''}{cover.seconds ? ` · ${cover.seconds} s` : ''}</span>
         <Status status={cover.status} progress={cover.progress} error={cover.error} />
         {live && <button className={button} disabled={busy} title="Stop the conversion"
           onClick={() => void act(async () => onChange(await cancelCover(cover.id)))}><XCircle size={10} /> Stop</button>}
@@ -439,6 +470,7 @@ export function BiblePersonaStudio({ bible, ask }: { bible: DirectorBible; ask: 
   useEffect(() => { void refresh() }, [refresh])
 
   const running = covers.some(c => isLive(c.status) || isLive(c.video?.status)) || clips.some(c => isLive(c.status))
+    || voices.some(v => isLive(v.rvc?.status))
   useEffect(() => {
     if (!running) return
     const timer = window.setInterval(() => { void refresh() }, 4000)
@@ -462,7 +494,9 @@ export function BiblePersonaStudio({ bible, ask }: { bible: DirectorBible; ask: 
           <button className={button} onClick={() => toggle('voice')}><Plus size={10} /> Voice</button>
         </div>
         {forms.voice && <VoiceForm bible={bible} onCreated={voice => { setVoices(current => [...current, voice]); toggle('voice') }} />}
-        {voices.map(voice => <VoiceCard key={voice.id} bible={bible} voice={voice} ask={ask} onDeleted={next => setVoices(next.filter(v => !v.bible_id || v.bible_id === bibleId))} />)}
+        {voices.map(voice => <VoiceCard key={voice.id} bible={bible} voice={voice} ask={ask}
+          onChange={next => setVoices(current => current.map(v => (v.id === next.id ? next : v)))}
+          onDeleted={next => setVoices(next.filter(v => !v.bible_id || v.bible_id === bibleId))} />)}
         {voices.length === 0 && !forms.voice && <p className="text-[10px] text-text-muted">No voice yet.</p>}
       </section>
 

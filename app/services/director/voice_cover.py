@@ -131,6 +131,8 @@ def create_cover(name: str, song: str, reference: str = "", raw: Mapping[str, An
     raw = dict(raw or {})
     if voice_id and not raw.get("mode"):
         raw["mode"] = voice.get("mode")
+    # auto: the voice's trained RVC model when it has one, Seed-VC otherwise; a bare reference is Seed-VC.
+    raw["engine"] = voices.resolve_engine(voice if voice_id else None, str(raw.get("engine") or "auto"))
     settings = cover_settings({**raw, "name": name})
     record = {
         "id": "cover_" + secrets.token_hex(4), "name": style_lora._short(name, 60) or "cover",
@@ -188,7 +190,8 @@ def _run(cover_id: str, submit, jobs) -> None:
                 "model_type": style_lora.IMAGE_MODEL, "prompt": "", "image_mode": 1, "generation_mode": "image",
                 "voice_cover": {**record["config"], "name": cover_id}, "cover_song": record["song"],
                 "_director_cost_stage": "voice_cover",
-                **(voices.job_voice_params(voice) if voice else {"cover_reference": record["reference"]}),
+                **(voices.job_voice_params(voice, record["config"].get("engine", "seedvc")) if voice
+                   else {"cover_reference": record["reference"]}),
             }
             _set(cover_id, status="running", job_id=job_id, progress="Submitting to the worker")
             done = threading.Event()
@@ -208,7 +211,7 @@ def _run(cover_id: str, submit, jobs) -> None:
             if "cover" not in made:
                 job = jobs.get(job_id) or {}
                 raise BibleError("Cancelled" if job.get("status") == "cancelled" else "The worker returned no cover")
-            if voice and "profile" in made:
+            if voice and "profile" in made and record["config"].get("engine", "seedvc") == "seedvc":
                 try:
                     voices.keep_profile(voice["id"], str(folder / made["profile"]))
                 except Exception as error:  # noqa: BLE001 - the cover is done either way
@@ -302,7 +305,8 @@ def register_routes(api: Any, *, settings_dir: Callable[[], str], ensure_pipelin
     async def covers_create(request: Request, song: UploadFile | None = File(None), song_output: str = Form(""),
                             workspace: str = Form(""),
                             reference: UploadFile | None = File(None), voice_id: str = Form(""),
-                            name: str = Form(""), mode: str = Form(""), steps: int = Form(30),
+                            name: str = Form(""), mode: str = Form(""), engine: str = Form("auto"),
+                            steps: int = Form(30),
                             cfg_rate: float = Form(0.7), semitone_shift: int = Form(0), auto_f0: bool = Form(False),
                             vocal_gain_db: float = Form(0.0), bible_id: str = Form(""),
                             character_id: str = Form(""), run: bool = Form(True)):
@@ -323,7 +327,7 @@ def register_routes(api: Any, *, settings_dir: Callable[[], str], ensure_pipelin
                 raise HTTPException(status_code=400, detail="Upload a song or name a rendered one (song_output)")
             reference_path = save_upload(folder, reference, "reference") if reference and reference.filename else ""
             record = create_cover(name or stem or "cover", song_path, reference_path,
-                                  {"mode": mode, "steps": steps, "cfg_rate": cfg_rate,
+                                  {"mode": mode, "engine": engine, "steps": steps, "cfg_rate": cfg_rate,
                                    "semitone_shift": semitone_shift, "auto_f0": auto_f0,
                                    "vocal_gain_db": vocal_gain_db},
                                   voice_id=voice_id, bible_id=bible_id, character_id=character_id)

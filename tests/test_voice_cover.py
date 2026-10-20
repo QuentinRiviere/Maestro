@@ -18,6 +18,7 @@ import numpy as np  # noqa: E402
 import soundfile as sf  # noqa: E402
 
 from services import voice_cover as worker  # noqa: E402
+from services import voice_train as trainer  # noqa: E402
 from services.director import bibles  # noqa: E402
 from services.director import cover_video as cvid  # noqa: E402
 from services.director import persona_clips as pc  # noqa: E402
@@ -374,6 +375,85 @@ class PersonaClipTests(unittest.TestCase):
             pc.create_clip("x", {"character_id": "mina", "gesture": ""}, bible_id=self.bible_id)
         with self.assertRaises(bibles.BibleError):
             pc.create_clip("x", {"character_id": "cafe", "gesture": "wave"}, bible_id=self.bible_id)
+
+
+class RvcTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        vc._settings_dir = lambda: os.path.join(self.tmp, "settings")
+        self.addCleanup(setattr, vc, "_settings_dir", None)
+        voices._settings_dir = vc._settings_dir
+        self.addCleanup(setattr, voices, "_settings_dir", None)
+        self.song = _tone(os.path.join(self.tmp, "song.wav"), 1.0, 220)
+        self.reference = _tone(os.path.join(self.tmp, "ref.wav"), 1.0, 330)
+
+    def test_train_config_and_engine_config(self):
+        config = trainer.train_config({"epochs": 5000, "sample_rate": 44100, "batch_size": 0, "name": "My voice!"})
+        self.assertEqual(config["epochs"], trainer.MAX_EPOCHS)
+        self.assertEqual(config["sample_rate"], 40000)
+        self.assertEqual(config["batch_size"], 1)
+        self.assertEqual(config["name"], "My_voice")
+        self.assertEqual(worker.cover_config({"engine": "rvc"})["engine"], "rvc")
+        self.assertEqual(worker.cover_config({"engine": "other"})["engine"], "seedvc")
+        self.assertEqual(trainer.infer_config({"semitone_shift": -3, "index_rate": 2})["pitch"], -3)
+        self.assertEqual(trainer.infer_config({"index_rate": 2})["index_rate"], 1.0)
+
+    def test_training_then_covers_use_the_model(self):
+        voice = voices.create_voice("Mina", [self.reference], None, mode="sing")
+        # A sung cover first: its vocals join the training set.
+        cover = vc.create_cover("First", self.song, voice_id=voice["id"])
+        self.assertEqual(cover["config"]["engine"], "seedvc")
+
+        def sing(params, timeout_s, out_dir, job_id=None, **_):
+            os.makedirs(out_dir, exist_ok=True)
+            for name in vc.OUTPUTS.values():
+                _output(out_dir, name)
+            return list(vc.OUTPUTS.values())
+
+        self.assertEqual(vc.start_cover(cover["id"], submit=sing, jobs={}, wait=True)["status"], "done")
+        self.assertEqual(len(voices.training_dataset(voices.get_voice(voice["id"]))), 2)
+        with self.assertRaises(bibles.BibleError):
+            voices.resolve_engine(voices.get_voice(voice["id"]), "rvc")
+        submitted = []
+
+        def train(params, timeout_s, out_dir, job_id=None, **_):
+            submitted.append(params)
+            os.makedirs(out_dir, exist_ok=True)
+            name = params["voice_train"]["name"]
+            Path(out_dir, name + ".pth").write_bytes(b"pth")
+            Path(out_dir, name + ".index").write_bytes(b"index")
+            return [name + ".pth", name + ".index"]
+
+        trained = voices.start_training(voice["id"], {"epochs": 20}, submit=train, jobs={}, wait=True)
+        self.assertEqual(trained["rvc"]["status"], "done", trained["rvc"].get("error"))
+        self.assertEqual(trained["rvc"]["config"]["epochs"], 20)
+        self.assertEqual(trained["rvc"]["dataset"], 2)
+        self.assertEqual(len(submitted[0]["train_dataset"]), 2)
+        self.assertTrue(trained["rvc"]["model"].endswith(voice["id"] + ".pth"))
+        self.assertTrue(voices.rvc_ready(trained))
+        # auto now picks the model; the job carries the pair instead of the profile.
+        second = vc.create_cover("Second", self.song, voice_id=voice["id"])
+        self.assertEqual(second["config"]["engine"], "rvc")
+        forced = vc.create_cover("Third", self.song, voice_id=voice["id"], raw={"engine": "seedvc"})
+        self.assertEqual(forced["config"]["engine"], "seedvc")
+        jobs = []
+
+        def convert(params, timeout_s, out_dir, job_id=None, **_):
+            jobs.append(params)
+            os.makedirs(out_dir, exist_ok=True)
+            for key, name in vc.OUTPUTS.items():
+                if key != "profile":
+                    _output(out_dir, name)
+            return [n for k, n in vc.OUTPUTS.items() if k != "profile"]
+
+        done = vc.start_cover(second["id"], submit=convert, jobs={}, wait=True)
+        self.assertEqual(done["status"], "done", done.get("error"))
+        self.assertEqual(jobs[0]["voice_cover"]["engine"], "rvc")
+        self.assertTrue(jobs[0]["cover_rvc_model"].endswith(".pth"))
+        self.assertNotIn("cover_profile", jobs[0])
+        # The RVC cover's vocals are not training material (they would feed the model its own output).
+        self.assertEqual(len(voices.training_dataset(voices.get_voice(voice["id"]))), 2)
 
 
 if __name__ == "__main__":

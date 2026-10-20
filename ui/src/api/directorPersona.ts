@@ -26,12 +26,24 @@ export const isLive = (status: string | undefined) => status === 'queued' || sta
 // ── voices ────────────────────────────────────────────────────────────────
 
 export interface VoiceReference { file: string; name: string; weight: number }
+export interface VoiceTraining {
+  status: RecordStatus
+  progress: string
+  error: string
+  config: { epochs: number; batch_size: number; sample_rate: number }
+  dataset: number
+  model: string
+  index: string
+  seconds: number | null
+}
+export type CoverEngine = 'auto' | 'seedvc' | 'rvc'
 export interface CharacterVoice {
   id: string
   name: string
   mode: VoiceMode
   references: VoiceReference[]
   profile: string
+  rvc?: VoiceTraining
   covers: number
   bible_id: string
   character_id: string
@@ -58,6 +70,15 @@ export async function createVoice(request: {
 export async function deleteVoice(id: string): Promise<CharacterVoice[]> {
   return (await json<{ voices: CharacterVoice[] }>(await fetch(voicesUrl(id), { method: 'DELETE' }),
     'Could not delete the voice')).voices
+}
+
+export async function trainVoice(id: string, request: { epochs?: number; batch_size?: number; sample_rate?: number } = {}): Promise<CharacterVoice> {
+  return (await json<{ voice: CharacterVoice }>(await fetch(`${voicesUrl(id)}/train`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request) }), 'Could not start the training')).voice
+}
+
+export async function cancelVoiceTraining(id: string): Promise<CharacterVoice> {
+  return (await json<{ voice: CharacterVoice }>(await fetch(`${voicesUrl(id)}/train/cancel`, { method: 'POST' }), 'Could not stop the training')).voice
 }
 
 export const voiceReferenceUrl = (id: string, index: number) => `${voicesUrl(id)}/audio/${index}`
@@ -91,7 +112,7 @@ export interface SongCover {
   status: RecordStatus
   progress: string
   error: string
-  config: { mode: VoiceMode; steps: number; cfg_rate: number; semitone_shift: number; auto_f0: boolean; vocal_gain_db: number }
+  config: { mode: VoiceMode; engine: 'seedvc' | 'rvc'; steps: number; cfg_rate: number; semitone_shift: number; auto_f0: boolean; vocal_gain_db: number }
   song: string
   reference: string
   voice_id: string
@@ -120,6 +141,7 @@ export interface CoverRequest {
   workspace?: string
   voice_id: string
   mode?: VoiceMode | ''
+  engine?: CoverEngine
   steps?: number
   cfg_rate?: number
   semitone_shift?: number

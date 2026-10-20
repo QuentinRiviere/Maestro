@@ -40,6 +40,7 @@ DEFAULT_STEPS = 30
 DEFAULT_CFG_RATE = 0.7
 MAX_STEPS = 100
 MODES = ("sing", "rap")
+ENGINES = ("seedvc", "rvc")
 PROFILE_NAME = "voice_profile.npz"
 _PROGRESS = re.compile(r"chunk (\d+)/(\d+)")
 _RUNNER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "seedvc_runner.py")
@@ -61,9 +62,12 @@ def cover_config(raw: Mapping[str, Any] | None) -> dict:
         return max(low, min(high, value))
 
     mode = str(raw.get("mode") or "sing")
+    engine = str(raw.get("engine") or "seedvc")
     return {
         "name": re.sub(r"[^A-Za-z0-9_-]+", "_", str(raw.get("name") or "cover")).strip("_")[:60] or "cover",
         "mode": mode if mode in MODES else "sing",
+        # seedvc: zero-shot from the profile; rvc: the voice's trained RVC model (services.voice_train).
+        "engine": engine if engine in ENGINES else "seedvc",
         "steps": number("steps", DEFAULT_STEPS, 4, MAX_STEPS, int),
         "cfg_rate": number("cfg_rate", DEFAULT_CFG_RATE, 0.0, 1.0),
         "semitone_shift": number("semitone_shift", 0, -12, 12, int),
@@ -71,6 +75,8 @@ def cover_config(raw: Mapping[str, Any] | None) -> dict:
         "auto_f0": bool(raw.get("auto_f0", False)) and mode != "rap",
         "length_adjust": number("length_adjust", 1.0, 0.5, 2.0),
         "vocal_gain_db": number("vocal_gain_db", 0.0, -12.0, 12.0),
+        "index_rate": number("index_rate", 0.75, 0.0, 1.0),
+        "protect": number("protect", 0.33, 0.0, 0.5),
     }
 
 
@@ -214,6 +220,9 @@ def run_cover_job(job: dict, raw_params: Mapping[str, Any]) -> bool:
     if not references and raw_params.get("cover_reference"):
         references = [str(raw_params["cover_reference"])]
     weights = voice_weights(references, raw_params.get("cover_weights"))
+    rvc_model = str(raw_params.get("cover_rvc_model") or "")
+    rvc_index = str(raw_params.get("cover_rvc_index") or "")
+    use_rvc = config["engine"] == "rvc"
     out_dir = job.get("out_dir") or wgp.save_path
     os.makedirs(out_dir, exist_ok=True)
 
@@ -226,7 +235,9 @@ def run_cover_job(job: dict, raw_params: Mapping[str, Any]) -> bool:
             raise CoverError("The song file is missing")
         if profile and not os.path.isfile(profile):
             raise CoverError("The voice profile file is missing")
-        if not profile and not references:
+        if use_rvc and not os.path.isfile(rvc_model):
+            raise CoverError("The voice's RVC model file is missing")
+        if not use_rvc and not profile and not references:
             raise CoverError("The cover needs a voice: a profile or at least one reference")
         for path in references:
             if not os.path.isfile(path):
@@ -234,7 +245,9 @@ def run_cover_job(job: dict, raw_params: Mapping[str, Any]) -> bool:
         names = {"cover": "cover.wav", "vocals": "vocals.wav", "source_vocals": "source_vocals.wav",
                  "instrumental": "instrumental.wav", "profile": PROFILE_NAME}
         cancelled = lambda: is_cancel_requested(job)  # noqa: E731
-        if profile:
+        if use_rvc:
+            names.pop("profile")
+        elif profile:
             shutil.copyfile(profile, os.path.join(out_dir, names["profile"]))
         else:
             report("Building the voice", 1.0)
@@ -248,9 +261,15 @@ def run_cover_job(job: dict, raw_params: Mapping[str, Any]) -> bool:
         if cancelled():
             return False
         report("Converting the voice", 12.0)
-        converted = convert_vocals(source_vocals, os.path.join(out_dir, names["profile"]),
-                                   os.path.join(work_dir, "converted.wav"), config,
-                                   report=lambda m, p: report(m, 12.0 + 0.83 * p), is_cancelled=cancelled)
+        if use_rvc:
+            from services.voice_train import convert_vocals_rvc, infer_config
+            converted = convert_vocals_rvc(source_vocals, rvc_model, rvc_index, os.path.join(work_dir, "converted.wav"),
+                                           infer_config(config), report=lambda m, p: report(m, 12.0),
+                                           is_cancelled=cancelled)
+        else:
+            converted = convert_vocals(source_vocals, os.path.join(out_dir, names["profile"]),
+                                       os.path.join(work_dir, "converted.wav"), config,
+                                       report=lambda m, p: report(m, 12.0 + 0.83 * p), is_cancelled=cancelled)
         report("Mixing the cover", 96.0)
         mix(converted, instrumental, os.path.join(out_dir, names["cover"]), vocal_gain_db=config["vocal_gain_db"])
         shutil.copyfile(converted, os.path.join(out_dir, names["vocals"]))
@@ -258,7 +277,7 @@ def run_cover_job(job: dict, raw_params: Mapping[str, Any]) -> bool:
         shutil.copyfile(instrumental, os.path.join(out_dir, names["instrumental"]))
         finish_job(job, "completed", progress=100, step=0, total_steps=0, phase="", message="Done",
                    output_files=list(names.values()))
-        print(f"[Voice cover] {config['name']}: {names['cover']} ({config['steps']} steps)")
+        print(f"[Voice cover] {config['name']}: {names['cover']} ({config['engine']}, {config['steps']} steps)")
         return job.get("status") == "completed"
     except CoverError as error:
         if str(error) == "Cancelled" or is_cancel_requested(job):

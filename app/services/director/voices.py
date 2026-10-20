@@ -20,6 +20,7 @@ import secrets
 import shutil
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -34,7 +35,11 @@ MAX_UPLOAD_BYTES = 120 * 1024 * 1024
 AUDIO_EXTENSIONS = (".wav", ".mp3", ".flac", ".m4a", ".ogg", ".aac", ".opus")
 MODES = ("sing", "rap")
 PROFILE_FILE = "profile.npz"
+TRAIN_TIMEOUT_SEC = 6 * 3600
 _LOCK = threading.RLock()
+_TRAINING: set[str] = set()
+_SLOT = threading.Semaphore(1)
+_ensure_pipeline: Callable[[], Any] | None = None
 _settings_dir: Callable[[], str] | None = None
 
 
@@ -64,13 +69,24 @@ def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+def _rvc_state(record: dict) -> dict:
+    rvc = dict(record.get("rvc") or {})
+    if rvc.get("status") in ("queued", "running") and record["id"] not in _TRAINING:
+        rvc["status"], rvc["error"] = "failed", "Interrupted"
+    return rvc
+
+
 def list_voices() -> list[dict]:
     with _LOCK:
         try:
             data = json.loads(_records_path().read_text(encoding="utf-8"))
         except (OSError, ValueError):
             data = []
-        return [r for r in data if isinstance(r, dict)] if isinstance(data, list) else []
+        records = [r for r in data if isinstance(r, dict)] if isinstance(data, list) else []
+        for record in records:
+            if record.get("rvc"):
+                record["rvc"] = _rvc_state(record)
+        return records
 
 
 def _write(records: list[dict]) -> None:
@@ -161,13 +177,156 @@ def _remove_profile(voice_id: str) -> None:
             pass
 
 
-def job_voice_params(record: Mapping[str, Any]) -> dict:
-    """The worker params that name the voice: its profile when built, its references otherwise."""
+
+
+def rvc_ready(record: Mapping[str, Any]) -> bool:
+    """True when the voice carries a trained RVC model on disk."""
+    rvc = record.get("rvc") or {}
+    return rvc.get("status") == "done" and bool(rvc.get("model")) and os.path.isfile(rvc["model"])
+
+
+def resolve_engine(record: Mapping[str, Any] | None, engine: str = "auto") -> str:
+    """``auto`` takes the trained RVC model when the voice has one, Seed-VC otherwise."""
+    if engine == "rvc":
+        if not (record and rvc_ready(record)):
+            raise BibleError("This voice has no trained RVC model yet")
+        return "rvc"
+    if engine == "seedvc":
+        return "seedvc"
+    return "rvc" if record and rvc_ready(record) else "seedvc"
+
+
+def job_voice_params(record: Mapping[str, Any], engine: str = "seedvc") -> dict:
+    """The worker params that name the voice: its RVC pair, its profile when built, its references otherwise."""
+    if engine == "rvc" and rvc_ready(record):
+        rvc = record["rvc"]
+        return {"cover_rvc_model": rvc["model"], "cover_rvc_index": rvc.get("index") or ""}
     profile = str(record.get("profile") or "")
     if profile and os.path.isfile(profile):
         return {"cover_profile": profile}
     return {"cover_references": [r["file"] for r in record["references"]],
             "cover_weights": [r["weight"] for r in record["references"]]}
+
+
+def training_dataset(record: Mapping[str, Any]) -> list[str]:
+    """The recordings an RVC training learns from: the references and the vocals Seed-VC sang for this voice."""
+    from . import voice_cover
+
+    files = [r["file"] for r in record["references"] if os.path.isfile(r["file"])]
+    for cover in voice_cover.list_covers():
+        if cover.get("voice_id") != record["id"] or cover.get("status") != "done":
+            continue
+        if (cover.get("config") or {}).get("engine", "seedvc") != "seedvc":
+            continue
+        vocals = voice_cover.cover_dir(cover["id"]) / voice_cover.OUTPUTS["vocals"]
+        if vocals.is_file():
+            files.append(str(vocals))
+    return files
+
+
+def _director():
+    if _ensure_pipeline is not None:
+        _ensure_pipeline()
+    from services import director_pipeline
+    return director_pipeline
+
+
+def start_training(voice_id: str, raw: Mapping[str, Any] | None = None, *,
+                   submit: Callable[..., list[str]] | None = None, jobs: Mapping[str, Any] | None = None,
+                   wait: bool = False) -> dict:
+    """Train the voice's RVC model on the worker (``voice_train`` job) from its references and sung covers."""
+    from services.voice_train import train_config
+
+    record = get_voice(voice_id)
+    if voice_id in _TRAINING:
+        raise BibleError("This voice is training")
+    dataset = training_dataset(record)
+    if not dataset:
+        raise BibleError("Nothing to train on: the voice needs references or sung covers")
+    config = train_config({**dict(raw or {}), "name": record["id"]})
+    _TRAINING.add(voice_id)
+    try:
+        _set(voice_id, rvc={"status": "queued", "progress": "Waiting for the worker", "error": "", "config": config,
+                            "dataset": len(dataset), "model": "", "index": "", "job_id": "", "seconds": None,
+                            "started_at": _now()})
+    except Exception:
+        _TRAINING.discard(voice_id)
+        raise
+    thread = threading.Thread(target=_train, args=(voice_id, dataset, submit, jobs), name=f"voice-{voice_id}",
+                              daemon=True)
+    thread.start()
+    if wait:
+        thread.join()
+    return get_voice(voice_id)
+
+
+def _set_rvc(voice_id: str, **fields: Any) -> dict:
+    record = get_voice(voice_id)
+    return _set(voice_id, rvc={**(record.get("rvc") or {}), **fields})
+
+
+def _train(voice_id: str, dataset: list[str], submit, jobs) -> None:
+    started = time.time()
+    try:
+        with _SLOT:
+            if voice_id not in _TRAINING:
+                return
+            record = get_voice(voice_id)
+            submit = submit or _director()._submit_and_wait
+            jobs = jobs if jobs is not None else _director()._jobs
+            job_id = uuid.uuid4().hex[:8]
+            folder = voice_dir(voice_id)
+            params = {
+                "model_type": style_lora.IMAGE_MODEL, "prompt": "", "image_mode": 1, "generation_mode": "image",
+                "voice_train": record["rvc"]["config"], "train_dataset": dataset, "_director_cost_stage": "voice_train",
+            }
+            _set_rvc(voice_id, status="running", job_id=job_id, progress="Submitting to the worker")
+            done = threading.Event()
+            follower = threading.Thread(
+                target=style_lora._follow_generic, args=(job_id, jobs, done, lambda **f: _set_rvc(voice_id, **f)),
+                daemon=True)
+            follower.start()
+            try:
+                outputs = submit(params, timeout_s=TRAIN_TIMEOUT_SEC, out_dir=str(folder), job_id=job_id)
+            finally:
+                done.set()
+                follower.join(timeout=5)
+            model = next((folder / n for n in (outputs or []) if n.endswith(".pth") and (folder / n).is_file()), None)
+            index = next((folder / n for n in (outputs or []) if n.endswith(".index") and (folder / n).is_file()), None)
+            if model is None:
+                job = jobs.get(job_id) or {}
+                raise BibleError("Cancelled" if job.get("status") == "cancelled" else "The worker returned no model")
+            _set_rvc(voice_id, status="done", progress="", model=str(model), index=str(index) if index else "",
+                     seconds=round(time.time() - started))
+            print(f"[Voice training] {voice_id}: {model.name} in {round(time.time() - started)} s")
+    except BibleError as error:
+        try:
+            _set_rvc(voice_id, status="failed", error=str(error)[:400], progress="")
+        except Exception:  # noqa: BLE001
+            pass
+    except Exception as error:  # noqa: BLE001
+        import traceback
+        traceback.print_exc()
+        try:
+            _set_rvc(voice_id, status="failed", error=str(error)[:400], progress="")
+        except Exception:  # noqa: BLE001
+            pass
+    finally:
+        _TRAINING.discard(voice_id)
+
+
+def cancel_training(voice_id: str) -> dict:
+    record = get_voice(voice_id)
+    if voice_id not in _TRAINING:
+        raise BibleError("This voice is not training")
+    _TRAINING.discard(voice_id)
+    job_id = (record.get("rvc") or {}).get("job_id")
+    if job_id:
+        from services.job_lifecycle import request_cancel
+        job = _director()._jobs.get(job_id)
+        if job:
+            request_cancel(job)
+    return _set_rvc(voice_id, status="failed", error="Cancelled", progress="")
 
 
 def keep_profile(voice_id: str, produced: str) -> dict:
@@ -181,6 +340,8 @@ def keep_profile(voice_id: str, produced: str) -> dict:
 
 
 def delete_voice(voice_id: str) -> list[dict]:
+    if voice_id in _TRAINING:
+        raise BibleError("This voice is training; cancel it first")
     get_voice(voice_id)
     shutil.rmtree(voices_dir() / voice_id, ignore_errors=True)
     with _LOCK:
@@ -189,9 +350,10 @@ def delete_voice(voice_id: str) -> list[dict]:
     return records
 
 
-def register_routes(api: Any, *, settings_dir: Callable[[], str]) -> None:
-    global _settings_dir
+def register_routes(api: Any, *, settings_dir: Callable[[], str], ensure_pipeline: Callable[[], Any] | None = None) -> None:
+    global _settings_dir, _ensure_pipeline
     _settings_dir = settings_dir
+    _ensure_pipeline = ensure_pipeline
     base = "/api/v1/director/voices"
 
     def call(function, *args, **kwargs):
@@ -258,6 +420,19 @@ def register_routes(api: Any, *, settings_dir: Callable[[], str]) -> None:
         except ValueError:
             body = {}
         return {"voice": call(update_voice, voice_id, body if isinstance(body, dict) else {})}
+
+    @api.post(base + "/{voice_id}/train")
+    async def voice_train(voice_id: str, request: Request):
+        """Train the voice's RVC model (epochs, batch_size, sample_rate in the JSON body)."""
+        try:
+            body = await request.json()
+        except ValueError:
+            body = {}
+        return {"voice": call(start_training, voice_id, body if isinstance(body, dict) else {})}
+
+    @api.post(base + "/{voice_id}/train/cancel")
+    def voice_train_cancel(voice_id: str):
+        return {"voice": call(cancel_training, voice_id)}
 
     @api.get(base + "/{voice_id}/audio/{index}")
     def voice_audio(voice_id: str, index: int):
