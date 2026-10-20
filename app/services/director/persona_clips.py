@@ -84,7 +84,10 @@ NAG_MAX = 3.0
 STRENGTH_DEFAULT = 1.0
 VAES = ("fast", "nad")
 UPSCALES = ("", "lanczos1.5", "lanczos2", "flashvsr", "flashvsr2pass")
-RENDER_KEYS = ("nag", "strength", "vae", "upscale")
+# ``res``: the LTX canvas, 540p (576x1024, the two-stage aligned default) or 720p (704x1280, slower, props legible).
+RESOLUTIONS = {"540p": {"portrait": "576x1024", "landscape": "1024x576"},
+               "720p": {"portrait": "704x1280", "landscape": "1280x704"}}
+RENDER_KEYS = ("nag", "strength", "vae", "upscale", "res")
 H3_MODEL = "minimax_h3"
 H3_TURBO_PRESET = "alibaba-pai-fl2va-pdd-8step"
 H3_RESOLUTIONS = {"portrait": "480x864", "landscape": "864x480"}
@@ -93,7 +96,8 @@ H3_MIN_FRAMES, H3_MAX_FRAMES, H3_STEP = 124, 345, 17
 REALISM = ("candid vertical smartphone video still, natural light, imperfect framing, slight motion blur on passers-by, "
            "nobody looks at him, true-to-life colours, no text, no watermark")
 # The editor turns a move told in beats into a storyboard: one frame is demanded, and checked (``split_panels``).
-ONE_FRAME = "One single photograph filling the whole frame: not a storyboard, no split panels, no collage, no grid."
+ONE_FRAME = ("One single photograph filling the whole frame: not a storyboard, no split panels, no collage, no grid. "
+             "Every prop appears exactly once, drawn sharp and recognisable.")
 START_RETRIES = 2
 _LOCK = threading.RLock()
 _LIVE: set[str] = set()
@@ -226,8 +230,11 @@ def render_options(raw: Mapping[str, Any]) -> dict:
     upscale = str(raw.get("upscale") or "").strip().lower()
     if upscale not in UPSCALES:
         raise BibleError(f"Unknown upscale (one of {', '.join(u or 'none' for u in UPSCALES)})")
+    res = str(raw.get("res") or "540p").strip().lower()
+    if res not in RESOLUTIONS:
+        raise BibleError(f"Unknown res (one of {', '.join(RESOLUTIONS)})")
     return {"nag": number("nag", NAG_DEFAULT, 0.0, NAG_MAX), "strength": number("strength", STRENGTH_DEFAULT, 0.3, 1.0),
-            "vae": vae, "upscale": upscale}
+            "vae": vae, "upscale": upscale, "res": res}
 
 
 def h3_frames(seconds: float) -> int:
@@ -335,7 +342,7 @@ def clip_job(prompt: str, start_image: str, settings: Mapping[str, Any], *, fram
         "model_type": settings["model_type"], "prompt": prompt, "image_mode": 0, "image_prompt_type": "S",
         "image_start": start_image, "generation_mode": "video", "num_inference_steps": 8, "guidance_scale": 1.0,
         "input_video_strength": float(settings.get("strength") or STRENGTH_DEFAULT),
-        "resolution": cover_video.ORIENTATIONS[settings["orientation"]][0],
+        "resolution": RESOLUTIONS[settings.get("res") or "540p"][settings["orientation"]],
         "video_length": frames, "sliding_window_size": frames,
         "seed": int(settings.get("seed", -1)), "settings_version": 2.52, "repeat_generation": 1,
         "negative_prompt": NEGATIVE, "activated_loras": [], "loras_multipliers": "", "_director_cost_stage": "persona_clip",
@@ -638,7 +645,7 @@ def register_routes(api: Any, *, settings_dir: Callable[[], str]) -> None:
                           audio: str = Form("silent"), template: str = Form(DEFAULT_TEMPLATE), engine: str = Form("ltx"),
                           smooth: bool = Form(True), grain: float = Form(GRAIN),
                           nag: float = Form(NAG_DEFAULT), strength: float = Form(STRENGTH_DEFAULT),
-                          vae: str = Form(VAES[0]), upscale: str = Form(""),
+                          vae: str = Form(VAES[0]), upscale: str = Form(""), res: str = Form("540p"),
                           prompt: str = Form(""), start_prompt: str = Form(""),
                           model_type: str = Form(cover_video.VIDEO_MODEL), run: bool = Form(True),
                           start_image: UploadFile | None = File(None)):
@@ -646,7 +653,7 @@ def register_routes(api: Any, *, settings_dir: Callable[[], str]) -> None:
                "place": place,
                "orientation": orientation, "seconds": seconds, "speed": speed, "seed": seed, "audio": audio, "prompt": prompt,
                "template": template, "engine": engine, "smooth": smooth, "grain": grain,
-               "nag": nag, "strength": strength, "vae": vae, "upscale": upscale,
+               "nag": nag, "strength": strength, "vae": vae, "upscale": upscale, "res": res,
                "start_prompt": start_prompt, "model_type": model_type}
         uploaded = ""
         if start_image is not None and start_image.filename:

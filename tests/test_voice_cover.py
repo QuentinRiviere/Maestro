@@ -396,6 +396,10 @@ class PersonaClipTests(unittest.TestCase):
                           tuned["spatial_upsampling"]), (1.5, 0.8, "nad", "lanczos1.5"))
         with self.assertRaises(bibles.BibleError):
             pc.clip_settings({"gesture": "wave", "upscale": "bicubic"})
+        self.assertEqual(pc.clip_job("x", "/tmp/s.png", pc.clip_settings({"gesture": "wave", "res": "720p"}))["resolution"], "704x1280")
+        self.assertEqual(ps.identity_from_checks([{"same_face": True, "missing": []}, {"same_face": True, "missing": ["whistle"]},
+                                                  {"same_face": False, "missing": []}, {"at": 1.0}]), (2, True))
+        self.assertEqual(ps.identity_from_checks([]), (None, False))
         self.assertIn("the whole move in one continuous take: a slow finger-gun wink", clip["prompt"])
         self.assertIn("no slow motion", clip["prompt"])
         self.assertIn("slow motion", clip["negative_prompt"])
@@ -618,10 +622,14 @@ class PersonaTests(unittest.TestCase):
             self.assertEqual(len(media), 2)
             return ('{"identity": 4, "move": 3, "place": 5, "artefacts": "4", "hook": 2, "verdict": "ok", "fix": "closer"}', 0)
 
+        # The per-frame check: one frame keeps everything, two lose the whistle: identity drops from 4 to 2.
+        frames = [{"same_face": True, "missing": []}, {"same_face": True, "missing": ["whistle"]}, {"same_face": True, "missing": ["whistle"]}]
         with patch.object(ps, "frame_sheet", lambda video, output, **kw: Path(output).write_bytes(b"jpg") or output), \
+             patch.object(ps, "frame_checks", lambda persona, video, work, **kw: list(frames)), \
              patch("services.director.room_spec._resolve_backend", lambda backend, key, model, ask_fn: (ask_fn, None, "analyst", True)):
             evaluation = ps.evaluate_clip(clips[0]["id"], ask=ask)
-        self.assertEqual(evaluation["overall"], 3.6)
+        self.assertEqual(evaluation["overall"], 3.2)
+        self.assertEqual((evaluation["identity"], evaluation["face_changes"], len(evaluation["frames"])), (2, False, 3))
         self.assertEqual(evaluation["artefacts"], 4)
         self.assertEqual(pc.get_clip(clips[0]["id"])["evaluation"]["verdict"], "ok")
 

@@ -452,11 +452,24 @@ def evaluate_clip(clip_id: str, *, backend: Any = None, ask: Callable[..., Any] 
             scores[key] = max(1, min(5, int(round(float(raw.get(key))))))
         except (TypeError, ValueError):
             scores[key] = None
-    known = [v for v in scores.values() if v is not None]
     present = raw.get("traits") if isinstance(raw.get("traits"), dict) else {}
+    face_changes = bool(raw.get("face_changes"))
+    checks = []
+    if persona:
+        # The per-frame check at full size outranks the sheet's identity score.
+        work = tempfile.mkdtemp(prefix="persona_frames_")
+        try:
+            checks = frame_checks(persona, str(video), work, backend=backend, ask=ask)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+        identity, changed = identity_from_checks(checks)
+        if identity is not None:
+            scores["identity"] = min(scores["identity"] or 5, identity)
+            face_changes = face_changes or changed
+    known = [v for v in scores.values() if v is not None]
     evaluation = {**scores, "overall": round(sum(known) / len(known), 2) if known else None,
                   "traits": {str(k)[:80]: v for k, v in list(present.items())[:MAX_TRAITS]},
-                  "face_changes": bool(raw.get("face_changes")),
+                  "face_changes": face_changes, "frames": checks,
                   "verdict": str(raw.get("verdict") or "")[:300], "fix": str(raw.get("fix") or "")[:300],
                   "model": model, "evaluated_at": voice_cover._now()}
     persona_clips._set(clip_id, evaluation=evaluation)
@@ -493,6 +506,39 @@ def check_start_image(persona: Mapping[str, Any], image: str, *, backend: Any = 
     missing = raw.get("missing") if isinstance(raw.get("missing"), list) else []
     return {"same_face": bool(raw.get("same_face", True)), "missing": [str(m)[:80] for m in missing[:MAX_TRAITS]],
             "note": str(raw.get("note") or "")[:200], "model": model}
+
+
+FRAME_CHECKS = 6
+UPPER_BODY = 0.55
+
+
+def frame_checks(persona: Mapping[str, Any], video: str, work: str, *, frames: int = FRAME_CHECKS,
+                 backend: Any = None, ask: Callable[..., Any] | None = None) -> list[dict]:
+    """The start-image check run on ``frames`` stills of the clip at full size, cropped to the upper body:
+    the sheet is too small to show a moustache going or a whistle turning into a blob."""
+    probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", video],
+                           capture_output=True, text=True, check=True)
+    duration = max(0.2, float(probe.stdout.strip() or 1.0))
+    checks = []
+    for index in range(frames):
+        still = os.path.join(work, f"frame_{index + 1}.jpg")
+        at = duration * (index + 0.5) / frames
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", f"{at:.3f}", "-i", video, "-frames:v", "1",
+                        "-vf", f"crop=iw:ih*{UPPER_BODY}:0:0", "-q:v", "2", still], capture_output=True, text=True,
+                       check=True)
+        check = check_start_image(persona, still, backend=backend, ask=ask)
+        checks.append({"at": round(at, 2), **check})
+    return checks
+
+
+def identity_from_checks(checks: list[dict]) -> tuple[int | None, bool]:
+    """Identity 1-5 from the share of frames that keep the face and every trait, and whether the face changed."""
+    judged = [c for c in checks if "same_face" in c]
+    if not judged:
+        return None, False
+    passed = sum(1 for c in judged if c["same_face"] and not c.get("missing"))
+    face_changes = any(not c["same_face"] for c in judged)
+    return 1 + int(round(4 * passed / len(judged))), face_changes
 
 
 def evaluate_persona(persona_id: str) -> list[dict]:
