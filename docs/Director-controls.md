@@ -304,14 +304,28 @@ plate (`services/director/room_spec.py`, sidecar `room_<element>.json`:
 what each wall holds, materials, light, palette), or, with the "Panorama"
 button, as perspective crops of one 360° equirectangular image of the place
 (`services/director/room_pano.py`; `pano_<element>.png`; yaw 0/90/180/-90,
-70° field of view), which keeps the geometry between angles. The panorama
-needs the panorama LoRA in `loras/qwen21` (`director_panorama_lora`, default
-`maestro_pano.safetensors`, trigger `maestro_pano`), trained once with the
-dataset trainings (`POST /api/v1/director/loras/trainings`: multipart zip of
-images + `manifest.json` {trigger, items: [{image, caption}]}, same worker
-job as a style LoRA, result installed in the registry; Poly Haven's CC0
-HDRIs make the set: indoor and urban panoramas, captions from their names,
-tags and categories).
+70° field of view), which keeps the geometry between angles. The panorama is
+painted one of two ways (`mode` in the POST body: `auto`, `outpaint`,
+`text`; `GET …/panorama/available` says which are installed):
+
+- `outpaint` (what `auto` takes when the place has an approved plate): the
+  plate is projected onto a green 2048×1024 equirectangular canvas at its
+  centre (70° assumed, `outpaint_canvas`) and FLUX.2 Klein 9B base
+  (`flux2_klein_base_9b`) with nomadoor's 360 ERP outpaint LoRA
+  (`flux-2-klein-9B-360-erp-outpaint-lora_V1.safetensors` in
+  `loras/flux2_klein_9b`; 20 steps, CFG 5, LoRA 0.9, the canvas as the
+  reference) fills the green. The plate's furniture and light are the
+  panorama's centre by construction; the room sheet only words the rest.
+  Klein base carries the FLUX non-commercial licence.
+- `text`: Qwen-Image 2.1 with the panorama LoRA in `loras/qwen21`
+  (`director_panorama_lora`, default `maestro_pano.safetensors`, trigger
+  `maestro_pano`), prompted from the room sheet, the style LoRA on top when
+  the bible renders with it. Trained once with the dataset trainings
+  (`POST /api/v1/director/loras/trainings`: multipart zip of images +
+  `manifest.json` {trigger, items: [{image, caption}]}, same worker job as a
+  style LoRA, result installed in the registry; Poly Haven's CC0 HDRIs make
+  the set: indoor and urban panoramas, captions from their names, tags and
+  categories). Nothing of the plate survives but its description.
 
 Each reference has a `graphics` mode (`ignore`, the default, or `include`;
 a toggle in the bible panel, `graphics` on the upload form and in the PATCH

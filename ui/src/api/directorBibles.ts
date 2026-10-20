@@ -590,11 +590,19 @@ export async function cancelStyleLora(bibleId: string, loraId: string): Promise<
     'Could not cancel the training')).lora
 }
 
-/** Render a place's 360° panorama in the background, then its angles as crops of it (candidates). */
-export async function renderBiblePanorama(bibleId: string, elementId: string, variantId: string): Promise<DirectorBible> {
+export type PanoramaMode = 'auto' | 'outpaint' | 'text'
+
+/**
+ * Render a place's 360° panorama in the background, then its angles as crops of it (candidates).
+ * `outpaint` paints the panorama around the approved plate (FLUX.2 Klein + 360 outpaint LoRA), `text` from the
+ * room sheet with the trained panorama LoRA; `auto` takes the outpaint when its LoRA is installed.
+ */
+export async function renderBiblePanorama(bibleId: string, elementId: string, variantId: string,
+                                          mode: PanoramaMode = 'auto'): Promise<DirectorBible> {
   return (await json<{ bible: DirectorBible }>(await fetch(
     `${BASE}/api/v1/director/bibles/${encodeURIComponent(bibleId)}/elements/${encodeURIComponent(elementId)}/variants/${encodeURIComponent(variantId)}/panorama`,
-    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }), 'Could not render the panorama')).bible
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode }) }),
+    'Could not render the panorama')).bible
 }
 
 export type StyleLoraRenderMode = 'off' | 'places' | 'all'

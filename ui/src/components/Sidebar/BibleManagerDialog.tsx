@@ -407,7 +407,7 @@ function Angles({ bible, element, variant, readsImages, imageModel, onBible }: {
         </button>
         {place && (
           <button disabled={busy || running || !hasMain} onClick={() => void panorama()}
-            title="One 360° panorama of the place (panorama LoRA), then every angle cut from it: the geometry holds between angles"
+            title="One 360° panorama painted around the approved plate (FLUX.2 Klein + 360 outpaint LoRA; from text with the trained panorama LoRA otherwise), then every angle cut from it: the geometry holds between angles"
             className="flex items-center gap-1 rounded border border-border px-2 py-0.5 text-[10px] text-text-secondary hover:text-text-primary disabled:opacity-40">
             <Sparkles size={10} /> Panorama
           </button>

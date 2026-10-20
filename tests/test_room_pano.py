@@ -61,6 +61,57 @@ class CropTests(unittest.TestCase):
         self.assertIn("Place: A room", bare)
 
 
+class OutpaintTests(unittest.TestCase):
+    def test_projected_plate_crops_back_to_itself(self):
+        # A plate with a distinct colour per quadrant, projected onto the canvas then cropped at yaw 0.
+        plate = Image.new("RGB", (320, 180))
+        pixels = plate.load()
+        for x in range(320):
+            for y in range(180):
+                pixels[x, y] = (255 if x < 160 else 0, 255 if y < 90 else 0, 128)
+        canvas = rp.outpaint_canvas(plate, size=(1024, 512))
+        self.assertEqual(canvas.size, (1024, 512))
+        # The canvas centre holds the plate, its edges stay green.
+        self.assertNotEqual(canvas.getpixel((512, 256)), rp.GREEN)
+        self.assertEqual(canvas.getpixel((10, 256)), rp.GREEN)
+        self.assertEqual(canvas.getpixel((512, 5)), rp.GREEN)
+        back = rp.crop_view(canvas, 0.0, size=(320, 180))
+        for x, y in ((80, 45), (240, 45), (80, 135), (240, 135)):
+            expected = plate.getpixel((x, y))
+            got = back.getpixel((x, y))
+            self.assertTrue(all(abs(a - b) <= 8 for a, b in zip(expected, got)), f"{(x, y)}: {expected} vs {got}")
+        # Nothing of the plate lands behind the camera.
+        self.assertEqual(rp.crop_view(canvas, 180.0, size=(64, 36)).getpixel((32, 18)), rp.GREEN)
+
+    def test_mode_choice(self):
+        both = {"outpaint": True, "text": True}
+        self.assertEqual(rp.choose_mode("auto", has_plate=True, modes=both), "outpaint")
+        self.assertEqual(rp.choose_mode("auto", has_plate=False, modes=both), "text")
+        self.assertEqual(rp.choose_mode("auto", has_plate=True, modes={"outpaint": False, "text": True}), "text")
+        with self.assertRaises(bibles.BibleError):
+            rp.choose_mode("outpaint", has_plate=False, modes=both)
+        with self.assertRaises(bibles.BibleError):
+            rp.choose_mode("text", has_plate=True, modes={"outpaint": True, "text": False})
+        with self.assertRaises(bibles.BibleError):
+            rp.choose_mode("other", has_plate=True, modes=both)
+
+    def test_outpaint_job(self):
+        class Pipeline:
+            @staticmethod
+            def _director_image_prompt_type(model, refs):
+                return "KI"
+
+        spec = {"walls": {"back": "shelves", "left": "tables"}, "summary": "a cafe", "materials": "oak"}
+        job = rp.outpaint_job({"name": "Café"}, {"description": "night"}, spec, "/tmp/canvas.png", pipeline=Pipeline)
+        self.assertEqual(job["model_type"], rp.OUTPAINT_MODEL)
+        self.assertEqual(job["image_refs"], ["/tmp/canvas.png"])
+        self.assertEqual(job["activated_loras"], [rp.OUTPAINT_LORA])
+        self.assertTrue(job["prompt"].startswith("Fill the green spaces according to the image."))
+        self.assertIn("Behind the camera: shelves.", job["prompt"])
+        self.assertIn("State: night.", job["prompt"])
+        self.assertEqual(job["guidance_scale"], 5.0)
+
+
 class DatasetTrainingTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
