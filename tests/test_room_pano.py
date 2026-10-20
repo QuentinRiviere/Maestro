@@ -44,7 +44,7 @@ class CropTests(unittest.TestCase):
             view = rp.crop_view(panorama, yaw, size=(160, 90))
             centre = view.getpixel((80, 45))
             self.assertEqual(centre, colour, f"yaw {yaw}")
-        # Straight ahead with a 70 degree field of view, the green band (centred at 90) is out of frame.
+        # Straight ahead with a 90 degree field of view, the green band (centred at 90) is out of frame.
         front = rp.crop_view(panorama, 0, size=(160, 90))
         self.assertNotIn((0, 255, 0), [front.getpixel((x, 45)) for x in range(0, 160, 8)])
         self.assertEqual(rp.VIEW_YAWS["reverse"], 180.0)
@@ -82,6 +82,19 @@ class OutpaintTests(unittest.TestCase):
             self.assertTrue(all(abs(a - b) <= 8 for a, b in zip(expected, got)), f"{(x, y)}: {expected} vs {got}")
         # Nothing of the plate lands behind the camera.
         self.assertEqual(rp.crop_view(canvas, 180.0, size=(64, 36)).getpixel((32, 18)), rp.GREEN)
+
+    def test_plate_pasted_back_over_the_outpaint(self):
+        plate = Image.new("RGB", (320, 180), (200, 30, 30))
+        outpainted = Image.new("RGB", (1024, 512), (30, 30, 200))
+        merged = rp.paste_plate(outpainted, plate, feather=8)
+        self.assertEqual(merged.getpixel((512, 256)), (200, 30, 30))
+        self.assertEqual(merged.getpixel((10, 256)), (30, 30, 200))
+        front = rp.crop_view(merged, 0.0, size=(320, 180))
+        self.assertEqual(front.getpixel((160, 90)), (200, 30, 30))
+        # The border is blended, not cut.
+        mask = rp.project_view(plate, 0.0, size=(1024, 512))[1]
+        edge = int(mask[256].nonzero()[0].min())
+        self.assertNotIn(merged.getpixel((edge + 2, 256)), [(200, 30, 30), (30, 30, 200)])
 
     def test_mode_choice(self):
         both = {"outpaint": True, "text": True}

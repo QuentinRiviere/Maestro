@@ -41,10 +41,14 @@ PANO_LORA = "maestro_pano.safetensors"
 PANO_TRIGGER = "maestro_pano"
 PANO_RESOLUTION = "2048x1024"
 PANO_SIZE = (2048, 1024)
-VIEW_FOV = 70.0
+# 90 degrees: the plate then covers enough of the canvas for Klein to keep it (at 70 it redraws it larger),
+# and the front crop at the same field of view is the plate itself.
+VIEW_FOV = 90.0
 VIEW_SIZE = (1280, 720)
 # Horizontal field of view the approved plate is assumed to cover when it is projected onto the canvas.
 PLATE_FOV = VIEW_FOV
+# The plate's own pixels are pasted back over the outpainted panorama, blended over this many pixels at its edge.
+PLATE_FEATHER = 24
 # Yaw of each angle from the plate's own direction (front = 0, clockwise positive).
 VIEW_YAWS = {"front": 0.0, "right": 90.0, "reverse": 180.0, "left": -90.0}
 # The outpaint route: FLUX.2 Klein 9B base + nomadoor/flux-2-klein-9B-360-erp-outpaint-lora (trained on ~1000
@@ -264,6 +268,24 @@ def outpaint_canvas(plate, *, fov_deg: float = PLATE_FOV, size: tuple[int, int] 
     return Image.fromarray(np.where(mask[..., None] > 0, painted, green))
 
 
+def paste_plate(panorama, plate, *, fov_deg: float = PLATE_FOV, feather: int = PLATE_FEATHER):
+    """Put the plate's own pixels back at the centre of the outpainted panorama, feathered at its border.
+
+    Klein keeps the plate's content but not its pixels; the front crop must stay the approved image.
+    """
+    import numpy as np
+    from PIL import Image, ImageFilter
+
+    painted, mask = project_view(plate, 0.0, fov_deg=fov_deg, size=panorama.size)
+    alpha = Image.fromarray(mask * 255)
+    if feather > 0:
+        alpha = alpha.filter(ImageFilter.MinFilter(2 * feather + 1)).filter(ImageFilter.GaussianBlur(feather / 2))
+    weight = np.asarray(alpha, dtype=np.float32)[..., None] / 255.0
+    base = np.asarray(panorama.convert("RGB"), dtype=np.float32)
+    blended = base * (1 - weight) + painted.astype(np.float32) * weight
+    return Image.fromarray(np.clip(blended + 0.5, 0, 255).astype(np.uint8))
+
+
 def _director():
     if _ensure_pipeline is not None:
         _ensure_pipeline()
@@ -374,6 +396,9 @@ def _run(bible_id: str, element_id: str, variant_id: str, slots: Mapping[str, st
                 raise PanoramaError("The panorama render produced no image")
             with Image.open(out_dir / outputs[0]) as source:
                 panorama = source.convert("RGB")
+            if mode == "outpaint":
+                with Image.open(plate) as source:
+                    panorama = paste_plate(panorama, source.convert("RGB"))
             panorama.save(pano_path(bible_id, element_id))
             for view, slot in slots.items():
                 crop = crop_view(panorama, VIEW_YAWS[view])
