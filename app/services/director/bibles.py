@@ -346,6 +346,7 @@ def _style_loras(raw: Any) -> list[dict]:
             "config": copy.deepcopy(config),
             "dataset": copy.deepcopy(item["dataset"]) if isinstance(item.get("dataset"), dict) else None,
             "samples": [os.path.basename(str(s)) for s in item.get("samples") or [] if s][:6],
+            "samples_note": _text(item.get("samples_note"), 80),
             "job_id": _text(item.get("job_id"), 40),
             "model": _text(item.get("model"), 120),
             "training": copy.deepcopy(item["training"]) if isinstance(item.get("training"), dict) else None,

@@ -522,7 +522,9 @@ def _run_training(bible_id: str, lora_id: str, submit, jobs) -> None:
                 follower.join(timeout=5)
             weights = next((n for n in outputs or [] if str(n).endswith(".safetensors")), None)
             if not weights or not (folder / weights).is_file():
-                raise StyleLoraError("The worker returned no adapter file")
+                job = jobs.get(job_id) or {}
+                raise StyleLoraError("Cancelled" if job.get("status") == "cancelled"
+                                     else "The worker returned no adapter file")
             training = {}
             sidecar = folder / (os.path.splitext(weights)[0] + ".json")
             if sidecar.is_file():
@@ -565,11 +567,23 @@ def _install(bible_id: str, lora_id: str, weights: str, folder: Path) -> str:
     return name
 
 
-def _render_samples(bible_id: str, lora: Mapping[str, Any], submit, folder: Path) -> list[str]:
-    """Three images with the LoRA at its scale through the Director's image sampler; names in the bible folder."""
+SAMPLERS = ("turbo", "base")
+
+
+def _render_samples(bible_id: str, lora: Mapping[str, Any], submit, folder: Path, *, sampler: str = "turbo",
+                    scale: float | None = None) -> list[str]:
+    """Three images with the LoRA at ``scale`` (its own by default); names in the bible folder.
+
+    ``turbo`` is the Director's image sampler (Viggle 6 steps, CFG 1);
+    ``base`` is the plain model at 40 steps, CFG 4, to tell a LoRA problem
+    from a turbo-stack problem.
+    """
     from services.director_pipeline import DIRECTOR_IMAGE_SAMPLERS, director_image_job_fields
 
-    preset = DIRECTOR_IMAGE_SAMPLERS.get(IMAGE_MODEL, {})
+    preset = DIRECTOR_IMAGE_SAMPLERS.get(IMAGE_MODEL, {}) if sampler != "base" else {}
+    steps = preset.get("num_inference_steps", 40)
+    guidance = preset.get("guidance_scale", 4.0)
+    weight = float(lora.get("scale") or DEFAULT_SCALE) if scale is None else float(scale)
     samples = []
     out_dir = folder / "samples"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -577,12 +591,11 @@ def _render_samples(bible_id: str, lora: Mapping[str, Any], submit, folder: Path
         params = {
             "model_type": IMAGE_MODEL, "prompt": f"{text} {lora['trigger']}", "image_mode": 1,
             "image_prompt_type": "", "video_prompt_type": "", "generation_mode": "image",
-            "num_inference_steps": preset.get("num_inference_steps", 6),
-            "guidance_scale": preset.get("guidance_scale", 1.0), "resolution": SAMPLE_RESOLUTION,
+            "num_inference_steps": steps, "guidance_scale": guidance, "resolution": SAMPLE_RESOLUTION,
             "seed": 1000 + number, "settings_version": 2.52, "repeat_generation": 1, "negative_prompt": "",
-            "video_length": 1, "activated_loras": [lora["file"]],
-            "loras_multipliers": f"{float(lora.get('scale') or DEFAULT_SCALE):.2f}",
-            **director_image_job_fields(preset), "_director_cost_stage": "lora_sample",
+            "video_length": 1, "activated_loras": [lora["file"]], "loras_multipliers": f"{weight:.2f}",
+            **(director_image_job_fields(preset) if preset else {"sample_solver": "default"}),
+            "_director_cost_stage": "lora_sample",
         }
         try:
             outputs = submit(params, timeout_s=900, out_dir=str(out_dir))
@@ -598,16 +611,19 @@ def _render_samples(bible_id: str, lora: Mapping[str, Any], submit, folder: Path
 
 
 def start_samples(bible_id: str, lora_id: str, *, submit: Callable[..., list[str]] | None = None,
-                  wait: bool = False) -> dict:
-    """Render the sample images again at the LoRA's current weight (background thread)."""
+                  wait: bool = False, sampler: str = "turbo", scale: float | None = None) -> dict:
+    """Render the sample images again (background thread) at ``scale`` (the LoRA's own by default)."""
+    sampler = sampler if sampler in SAMPLERS else "turbo"
     lora = get_lora(bible_id, lora_id)
     if lora.get("status") != "done" or not lora.get("file"):
         raise BibleError("Train the LoRA first")
     if lora_id in _LIVE_TRAININGS:
         raise BibleError("This LoRA is busy")
+    weight = float(lora.get("scale") or DEFAULT_SCALE) if scale is None else max(0.0, min(1.5, float(scale)))
     _LIVE_TRAININGS.add(lora_id)
     try:
-        lora = _set(bible_id, lora_id, status="sampling", progress="Rendering the sample images", error="")
+        lora = _set(bible_id, lora_id, status="sampling", error="",
+                    progress=f"Rendering the sample images ({sampler} sampler, weight {weight:.2f})")
     except Exception:
         _LIVE_TRAININGS.discard(lora_id)
         raise
@@ -622,8 +638,9 @@ def start_samples(bible_id: str, lora_id: str, *, submit: Callable[..., list[str
                     except OSError:
                         pass
                 samples = _render_samples(bible_id, current, submit or _director()._submit_and_wait,
-                                          lora_folder(bible_id, lora_id))
-                _set(bible_id, lora_id, samples=samples, status="done", progress="")
+                                          lora_folder(bible_id, lora_id), sampler=sampler, scale=scale)
+                _set(bible_id, lora_id, samples=samples, status="done", progress="",
+                     samples_note=f"{sampler} sampler, weight {weight:.2f}")
         except Exception as error:  # noqa: BLE001
             try:
                 _set(bible_id, lora_id, status="done", progress="", error=_short(error, 400))
@@ -732,8 +749,15 @@ def register_routes(api: Any, *, ensure_pipeline: Callable[[], Any] | None = Non
         return {"lora": call(get_lora, bible_id, lora_id)}
 
     @api.post(base + "/{lora_id}/samples")
-    def style_lora_samples(bible_id: str, lora_id: str):
-        return {"lora": call(start_samples, bible_id, lora_id)}
+    async def style_lora_samples(bible_id: str, lora_id: str, request: Request):
+        body = await body_of(request)
+        scale = body.get("scale")
+        try:
+            scale = float(scale) if scale is not None else None
+        except (TypeError, ValueError):
+            scale = None
+        return {"lora": call(start_samples, bible_id, lora_id, sampler=str(body.get("sampler") or "turbo"),
+                             scale=scale)}
 
     @api.get(base + "/{lora_id}/samples/{number}")
     def style_lora_sample(bible_id: str, lora_id: str, number: int):

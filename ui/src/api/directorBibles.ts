@@ -492,6 +492,8 @@ export interface StyleLora {
   config: Partial<StyleLoraConfig>
   dataset: StyleLoraDataset | null
   samples: string[]
+  /** How the current samples were rendered (sampler, weight). */
+  samples_note?: string
   job_id: string
   model: string
   training: { final_loss?: number; seconds?: number; items?: number; losses?: number[] } | null
@@ -573,9 +575,11 @@ export async function cancelStyleLora(bibleId: string, loraId: string): Promise<
 }
 
 /** Render the sample images again at the LoRA's current weight. */
-export async function resampleStyleLora(bibleId: string, loraId: string): Promise<StyleLora> {
-  return (await json<{ lora: StyleLora }>(await fetch(`${styleLoraUrl(bibleId, loraId)}/samples`, { method: 'POST' }),
-    'Could not render the samples')).lora
+export async function resampleStyleLora(bibleId: string, loraId: string, options: { sampler?: 'turbo' | 'base'; scale?: number } = {}):
+  Promise<StyleLora> {
+  return (await json<{ lora: StyleLora }>(await fetch(`${styleLoraUrl(bibleId, loraId)}/samples`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(options),
+  }), 'Could not render the samples')).lora
 }
 
 export const styleLoraSampleUrl = (bibleId: string, loraId: string, number: number) =>
