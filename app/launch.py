@@ -11430,7 +11430,7 @@ _register_style_references(api, get_fal_key=_style_reference_fal_key, get_model=
                            get_frames_limit=_style_reference_frames_limit)
 
 from services.director.style_lora import register_routes as _register_style_loras  # noqa: E402
-_register_style_loras(api)
+_register_style_loras(api, ensure_pipeline=_init_pipeline)
 
 
 @api.post("/api/v1/director/pipeline/{pid}/bible")

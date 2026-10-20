@@ -427,7 +427,14 @@ def start_training(bible_id: str, lora_id: str, *, submit: Callable[..., list[st
     return lora
 
 
+# launch.py wires the Director pipeline lazily (its job table, the generation
+# runner): the mount passes the function that does it.
+_ensure_pipeline: Callable[[], Any] | None = None
+
+
 def _director():
+    if _ensure_pipeline is not None:
+        _ensure_pipeline()
     from services import director_pipeline
     return director_pipeline
 
@@ -502,6 +509,8 @@ def _run_training(bible_id: str, lora_id: str, submit, jobs) -> None:
     except BibleError:
         pass
     except Exception as error:  # noqa: BLE001 - recorded on the record
+        import traceback
+        traceback.print_exc()
         print(f"[Style LoRA] {bible_id}/{lora_id}: {error}")
         try:
             _set(bible_id, lora_id, status="failed", error=_short(error, 400), progress="")
@@ -568,7 +577,9 @@ def sample_path(bible_id: str, lora_id: str, number: int) -> Path | None:
 # ── routes ─────────────────────────────────────────────────────────────────
 
 
-def register_routes(api: Any) -> None:
+def register_routes(api: Any, *, ensure_pipeline: Callable[[], Any] | None = None) -> None:
+    global _ensure_pipeline
+    _ensure_pipeline = ensure_pipeline
     # fastapi resolves the string annotations (``from __future__ import annotations``) against the module globals.
     base = "/api/v1/director/bibles/{bible_id}/style-loras"
 
