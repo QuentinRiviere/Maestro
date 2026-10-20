@@ -209,7 +209,9 @@ def start_prompt(character: Mapping[str, Any], location: Mapping[str, Any] | Non
     aspect = "vertical 9:16" if settings["orientation"] == "portrait" else "16:9"
     shot = SHOTS.get(framing) or SHOTS["full"]
     if same_place:
-        place = " in the exact same place as reference 2, seen from another angle"
+        # Reference 2 alone drifts to a generic street: the place is named again in words, next to the reference.
+        named = f" in {settings['place']}" if settings.get("place") else ""
+        place = f"{named}, the exact same place as reference 2 (same walls, light and passers-by), seen from another angle"
     elif location:
         place = f" inside the exact place of reference 2 ({location.get('name') or 'the place'})"
     elif settings.get("place"):

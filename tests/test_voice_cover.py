@@ -569,6 +569,7 @@ class PersonaTests(unittest.TestCase):
         # Later shots keep the place: the first start image is their second reference.
         self.assertEqual(len(submitted[2]["image_refs"]), 2)
         self.assertIn("same place as reference 2", submitted[2]["prompt"])
+        self.assertIn("in a boulangerie, the exact same place", submitted[2]["prompt"])
         self.assertIn("close-up", submitted[4]["prompt"])
         self.assertEqual((pc.clip_dir(clips[0]["id"]) / "clip.mp4").read_bytes(), b"mp4mp4mp4")
         self.assertEqual(ps.get_persona(persona["id"])["clips"], 2)
