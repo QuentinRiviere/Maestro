@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
-import { Loader2, Sparkles, Trash2, XCircle } from 'lucide-react'
+import { Image as ImageIcon, Loader2, Sparkles, Trash2, XCircle } from 'lucide-react'
 import {
-  cancelStyleLora, createStyleLora, deleteStyleLora, fetchStyleLoraDataset, fetchStyleLoras, styleLoraSampleUrl,
-  trainStyleLora, updateStyleLora, type StyleLora, type StyleLoraDatasetPreview, type StyleLoraRequest,
+  cancelStyleLora, createStyleLora, deleteStyleLora, fetchStyleLoraDataset, fetchStyleLoras, resampleStyleLora,
+  styleLoraSampleUrl, trainStyleLora, updateStyleLora, type StyleLora, type StyleLoraDatasetPreview, type StyleLoraRequest,
 } from '../../api/directorBibles'
 
 const input = 'w-full bg-bg-tertiary border border-border rounded px-2 py-1 text-[11px] text-text-primary focus:outline-none focus:border-accent-blue'
@@ -66,6 +66,12 @@ function LoraCard({ bibleId, lora, ask, onChange, onDeleted }: {
             <XCircle size={10} /> Stop
           </button>
         )}
+        {lora.status === 'done' && (
+          <button className={button} disabled={busy} title="Render the three samples again at the current weight"
+            onClick={() => void act(async () => onChange(await resampleStyleLora(bibleId, lora.id)))}>
+            <ImageIcon size={10} /> Samples
+          </button>
+        )}
         <button className={button} disabled={busy || live} title="Delete the LoRA, its samples and its registry file"
           onClick={() => ask({
             title: `Delete "${lora.name}"?`, confirmLabel: 'Delete', danger: true,
@@ -111,7 +117,7 @@ function LoraCard({ bibleId, lora, ask, onChange, onDeleted }: {
               <a key={name} href={styleLoraSampleUrl(bibleId, lora.id, index + 1)} target="_blank" rel="noreferrer">
                 <img loading="lazy" alt={`Sample ${index + 1} of ${lora.name}`} width={160} height={90}
                   className="h-[90px] w-[160px] rounded bg-black object-cover"
-                  src={styleLoraSampleUrl(bibleId, lora.id, index + 1)} />
+                  src={`${styleLoraSampleUrl(bibleId, lora.id, index + 1)}?v=${encodeURIComponent(lora.updated_at)}`} />
               </a>
             ))}
           </div>

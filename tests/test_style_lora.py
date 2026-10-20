@@ -267,6 +267,37 @@ class BibleLoraTests(unittest.TestCase):
         self.assertEqual(os.listdir(self.loras), [])
         self.assertEqual(sl.list_loras(self.bible_id), [])
 
+    def test_trim_letterbox_cuts_black_bars_only(self):
+        from PIL import Image
+
+        path = os.path.join(self.tmp, "frame.jpg")
+        image = Image.new("RGB", (320, 180), (0, 0, 0))
+        image.paste(Image.new("RGB", (320, 134), (120, 90, 80)), (0, 23))
+        image.save(path)
+        self.assertEqual(sl.trim_letterbox(path), (46, 0))
+        with Image.open(path) as trimmed:
+            self.assertEqual(trimmed.size, (320, 134))
+        self.assertEqual(sl.trim_letterbox(path), (0, 0))
+        # A dark picture is not a bar: more than 30 % would go.
+        Image.new("RGB", (320, 180), (5, 5, 5)).save(path)
+        self.assertEqual(sl.trim_letterbox(path), (0, 0))
+
+    def test_samples_render_again_at_the_current_weight(self):
+        lora = sl.create_lora(self.bible_id, {"name": "a"})
+        sl._set(self.bible_id, lora["id"], status="done", file="a.safetensors", scale=0.4)
+        submitted = []
+
+        def submit(params, timeout_s, out_dir, **_):
+            submitted.append(params)
+            os.makedirs(out_dir, exist_ok=True)
+            Path(out_dir, "s.png").write_bytes(b"png")
+            return ["s.png"]
+
+        record = sl.start_samples(self.bible_id, lora["id"], submit=submit, wait=True)
+        self.assertEqual(record["status"], "done")
+        self.assertEqual(len(record["samples"]), 3)
+        self.assertEqual(submitted[0]["loras_multipliers"], "0.40")
+
     def test_training_fails_cleanly_without_frames(self):
         lora = sl.create_lora(self.bible_id, {"name": "Empty"})
         record = sl.start_training(self.bible_id, lora["id"], submit=lambda *a, **k: [], jobs={}, wait=True)

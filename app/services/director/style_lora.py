@@ -198,6 +198,36 @@ def candidate_frames(bible_id: str, bible: Mapping[str, Any], settings: Mapping[
             "excluded_close_ups": close_ups, "excluded_credits": credits}
 
 
+LETTERBOX_LEVEL = 16  # a row or column darker than this (0-255 mean) is a bar
+LETTERBOX_MAX_FRACTION = 0.3
+
+
+def trim_letterbox(path: str) -> tuple[int, int]:
+    """Cut the black bars of a frame in place (a 2.39:1 picture inside a 16:9 proxy); returns (rows, columns) cut."""
+    from PIL import Image
+
+    with Image.open(path) as source:
+        image = source.convert("RGB")
+    grey = image.convert("L")
+    width, height = grey.size
+    pixels = grey.load()
+    rows = [sum(pixels[x, y] for x in range(0, width, 4)) / len(range(0, width, 4)) for y in range(height)]
+    cols = [sum(pixels[x, y] for y in range(0, height, 4)) / len(range(0, height, 4)) for x in range(width)]
+
+    def bars(values: list[float]) -> tuple[int, int]:
+        head = next((i for i, v in enumerate(values) if v >= LETTERBOX_LEVEL), len(values))
+        tail = next((i for i, v in enumerate(reversed(values)) if v >= LETTERBOX_LEVEL), len(values))
+        limit = int(len(values) * LETTERBOX_MAX_FRACTION)
+        return (head if head <= limit else 0), (tail if tail <= limit else 0)
+
+    top, bottom = bars(rows)
+    left, right = bars(cols)
+    if not any((top, bottom, left, right)):
+        return 0, 0
+    image.crop((left, top, width - right, height - bottom)).save(path, quality=92)
+    return top + bottom, left + right
+
+
 def _lora_prefix(lora_id: str) -> str:
     return f"stylelora_{lora_id}"
 
@@ -232,6 +262,8 @@ def build_dataset(bible_id: str, bible: Mapping[str, Any], lora_id: str, setting
         dest = images / f"{number:05d}.jpg"
         try:
             sr._extract_still(str(video), item["t"], str(dest), long_side=int(settings["resolution"]))
+            # The proxies keep the broadcast frame: the letterbox bars must not be learnt as the look.
+            trim_letterbox(str(dest))
         except Exception:  # noqa: BLE001 - one bad frame does not stop the set
             continue
         manifest.append({"image": f"images/{dest.name}", "caption": item["caption"], "reference": item["ref_id"],
@@ -565,6 +597,49 @@ def _render_samples(bible_id: str, lora: Mapping[str, Any], submit, folder: Path
     return samples
 
 
+def start_samples(bible_id: str, lora_id: str, *, submit: Callable[..., list[str]] | None = None,
+                  wait: bool = False) -> dict:
+    """Render the sample images again at the LoRA's current weight (background thread)."""
+    lora = get_lora(bible_id, lora_id)
+    if lora.get("status") != "done" or not lora.get("file"):
+        raise BibleError("Train the LoRA first")
+    if lora_id in _LIVE_TRAININGS:
+        raise BibleError("This LoRA is busy")
+    _LIVE_TRAININGS.add(lora_id)
+    try:
+        lora = _set(bible_id, lora_id, status="sampling", progress="Rendering the sample images", error="")
+    except Exception:
+        _LIVE_TRAININGS.discard(lora_id)
+        raise
+
+    def run() -> None:
+        try:
+            with _TRAIN_SLOT:
+                current = get_lora(bible_id, lora_id)
+                for name in current.get("samples") or []:
+                    try:
+                        os.remove(bibles._folder(bible_id) / name)
+                    except OSError:
+                        pass
+                samples = _render_samples(bible_id, current, submit or _director()._submit_and_wait,
+                                          lora_folder(bible_id, lora_id))
+                _set(bible_id, lora_id, samples=samples, status="done", progress="")
+        except Exception as error:  # noqa: BLE001
+            try:
+                _set(bible_id, lora_id, status="done", progress="", error=_short(error, 400))
+            except Exception:  # noqa: BLE001
+                pass
+        finally:
+            _LIVE_TRAININGS.discard(lora_id)
+
+    thread = threading.Thread(target=run, name=f"style-lora-samples-{lora_id}", daemon=True)
+    thread.start()
+    if wait:
+        thread.join()
+        return get_lora(bible_id, lora_id)
+    return lora
+
+
 def sample_path(bible_id: str, lora_id: str, number: int) -> Path | None:
     lora = get_lora(bible_id, lora_id)
     for name in lora.get("samples") or []:
@@ -655,6 +730,10 @@ def register_routes(api: Any, *, ensure_pipeline: Callable[[], Any] | None = Non
             except Exception as error:  # noqa: BLE001
                 raise HTTPException(status_code=500, detail=f"Could not cancel: {error}")
         return {"lora": call(get_lora, bible_id, lora_id)}
+
+    @api.post(base + "/{lora_id}/samples")
+    def style_lora_samples(bible_id: str, lora_id: str):
+        return {"lora": call(start_samples, bible_id, lora_id)}
 
     @api.get(base + "/{lora_id}/samples/{number}")
     def style_lora_sample(bible_id: str, lora_id: str, number: int):
