@@ -1,0 +1,251 @@
+/** Character voices, song covers (audio then video) and persona clips: the Persona studio of a bible. */
+const BASE = ''
+
+async function json<T>(res: Response, fallback: string): Promise<T> {
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: fallback }))
+    throw new Error(err.detail || fallback)
+  }
+  return res.json()
+}
+
+function form(fields: Record<string, string | number | boolean | undefined | null>, files: Array<[string, File | null | undefined]> = []): FormData {
+  const data = new FormData()
+  for (const [key, value] of Object.entries(fields)) {
+    if (value === undefined || value === null || value === '') continue
+    data.append(key, String(value))
+  }
+  for (const [key, file] of files) if (file) data.append(key, file)
+  return data
+}
+
+export type RecordStatus = 'queued' | 'running' | 'done' | 'failed'
+export type VoiceMode = 'sing' | 'rap'
+export const isLive = (status: string | undefined) => status === 'queued' || status === 'running'
+
+// ── voices ────────────────────────────────────────────────────────────────
+
+export interface VoiceReference { file: string; name: string; weight: number }
+export interface CharacterVoice {
+  id: string
+  name: string
+  mode: VoiceMode
+  references: VoiceReference[]
+  profile: string
+  covers: number
+  bible_id: string
+  character_id: string
+  created_at: string
+  updated_at: string
+}
+
+const voicesUrl = (id?: string) => `${BASE}/api/v1/director/voices${id ? `/${encodeURIComponent(id)}` : ''}`
+
+export async function fetchVoices(bibleId?: string): Promise<CharacterVoice[]> {
+  const voices = (await json<{ voices: CharacterVoice[] }>(await fetch(voicesUrl()), 'Could not load the voices')).voices
+  return bibleId ? voices.filter(v => !v.bible_id || v.bible_id === bibleId) : voices
+}
+
+export async function createVoice(request: {
+  name: string; references: File[]; weights: number[]; mode: VoiceMode; bible_id?: string; character_id?: string
+}): Promise<CharacterVoice> {
+  const data = form({ name: request.name, weights: request.weights.join(','), mode: request.mode,
+    bible_id: request.bible_id, character_id: request.character_id }, request.references.map(f => ['references', f]))
+  return (await json<{ voice: CharacterVoice }>(await fetch(voicesUrl(), { method: 'POST', body: data }),
+    'Could not create the voice')).voice
+}
+
+export async function deleteVoice(id: string): Promise<CharacterVoice[]> {
+  return (await json<{ voices: CharacterVoice[] }>(await fetch(voicesUrl(id), { method: 'DELETE' }),
+    'Could not delete the voice')).voices
+}
+
+export const voiceReferenceUrl = (id: string, index: number) => `${voicesUrl(id)}/audio/${index}`
+
+// ── covers ────────────────────────────────────────────────────────────────
+
+export interface CoverVideoSettings {
+  character_id: string
+  location_id: string
+  orientation: 'portrait' | 'landscape'
+  start_sec: number
+  frames: number
+  seconds: number
+  seed: number
+  model_type: string
+  lyrics: string
+}
+export interface CoverVideo {
+  status: RecordStatus
+  progress: string
+  error: string
+  settings: CoverVideoSettings
+  outputs: Partial<Record<'start' | 'video' | 'clip_mix' | 'clip_vocals', string>>
+  job_id: string
+  seconds: number | null
+  prompt?: string
+}
+export interface SongCover {
+  id: string
+  name: string
+  status: RecordStatus
+  progress: string
+  error: string
+  config: { mode: VoiceMode; steps: number; cfg_rate: number; semitone_shift: number; auto_f0: boolean; vocal_gain_db: number }
+  song: string
+  reference: string
+  voice_id: string
+  bible_id: string
+  character_id: string
+  outputs: Partial<Record<'cover' | 'vocals' | 'source_vocals' | 'instrumental' | 'profile', string>>
+  job_id: string
+  seconds: number | null
+  video?: CoverVideo
+  created_at: string
+  updated_at: string
+}
+
+const coversUrl = (id?: string) => `${BASE}/api/v1/director/covers${id ? `/${encodeURIComponent(id)}` : ''}`
+
+export async function fetchCovers(bibleId?: string): Promise<SongCover[]> {
+  const covers = (await json<{ covers: SongCover[] }>(await fetch(coversUrl()), 'Could not load the covers')).covers
+  return bibleId ? covers.filter(c => !c.bible_id || c.bible_id === bibleId) : covers
+}
+
+export interface CoverRequest {
+  name: string
+  song?: File | null
+  /** A song rendered by the generate-music route, by its file name in the outputs folder. */
+  song_output?: string
+  workspace?: string
+  voice_id: string
+  mode?: VoiceMode | ''
+  steps?: number
+  cfg_rate?: number
+  semitone_shift?: number
+  auto_f0?: boolean
+  vocal_gain_db?: number
+  bible_id?: string
+  character_id?: string
+}
+
+export async function createCover(request: CoverRequest): Promise<SongCover> {
+  const { song, ...fields } = request
+  const data = form({ ...fields, run: true }, [['song', song]])
+  return (await json<{ cover: SongCover }>(await fetch(coversUrl(), { method: 'POST', body: data }),
+    'Could not start the cover')).cover
+}
+
+export async function runCover(id: string): Promise<SongCover> {
+  return (await json<{ cover: SongCover }>(await fetch(`${coversUrl(id)}/run`, { method: 'POST' }), 'Could not start the cover')).cover
+}
+
+export async function cancelCover(id: string): Promise<SongCover> {
+  return (await json<{ cover: SongCover }>(await fetch(`${coversUrl(id)}/cancel`, { method: 'POST' }), 'Could not stop the cover')).cover
+}
+
+export async function deleteCover(id: string): Promise<SongCover[]> {
+  return (await json<{ covers: SongCover[] }>(await fetch(coversUrl(id), { method: 'DELETE' }), 'Could not delete the cover')).covers
+}
+
+export const coverAudioUrl = (id: string, which: 'cover' | 'vocals' | 'source_vocals' | 'instrumental' | 'song' | 'reference') =>
+  `${coversUrl(id)}/audio/${which}`
+
+export interface CoverVideoRequest {
+  character_id?: string
+  location_id?: string
+  orientation?: 'portrait' | 'landscape'
+  start_sec?: number
+  seconds?: number
+  seed?: number
+  lyrics?: string
+  prompt?: string
+  start_image?: File | null
+}
+
+export async function startCoverVideo(id: string, request: CoverVideoRequest): Promise<SongCover> {
+  const { start_image, ...fields } = request
+  const data = form(fields, [['start_image', start_image]])
+  return (await json<{ cover: SongCover }>(await fetch(`${coversUrl(id)}/video`, { method: 'POST', body: data }),
+    'Could not start the video')).cover
+}
+
+export async function cancelCoverVideo(id: string): Promise<SongCover> {
+  return (await json<{ cover: SongCover }>(await fetch(`${coversUrl(id)}/video/cancel`, { method: 'POST' }),
+    'Could not stop the video')).cover
+}
+
+export const coverVideoUrl = (id: string, which: 'video' | 'start' | 'clip_mix' | 'clip_vocals') => `${coversUrl(id)}/video/${which}`
+
+// ── persona clips ─────────────────────────────────────────────────────────
+
+export interface PersonaClipSettings {
+  character_id: string
+  location_id: string
+  gesture: string
+  place: string
+  orientation: 'portrait' | 'landscape'
+  frames: number
+  seconds: number
+  seed: number
+  model_type: string
+  audio: 'silent' | 'model'
+}
+export interface PersonaClip {
+  id: string
+  name: string
+  status: RecordStatus
+  progress: string
+  error: string
+  settings: PersonaClipSettings
+  bible_id: string
+  outputs: Partial<Record<'start' | 'clip', string>>
+  job_id: string
+  prompt: string
+  seconds: number | null
+  created_at: string
+  updated_at: string
+}
+
+const clipsUrl = (id?: string) => `${BASE}/api/v1/director/persona-clips${id ? `/${encodeURIComponent(id)}` : ''}`
+
+export async function fetchPersonaClips(bibleId: string): Promise<PersonaClip[]> {
+  return (await json<{ clips: PersonaClip[] }>(await fetch(`${clipsUrl()}?bible_id=${encodeURIComponent(bibleId)}`),
+    'Could not load the clips')).clips
+}
+
+export interface PersonaClipRequest {
+  bible_id: string
+  character_id: string
+  gesture: string
+  location_id?: string
+  place?: string
+  name?: string
+  orientation?: 'portrait' | 'landscape'
+  seconds?: number
+  seed?: number
+  audio?: 'silent' | 'model'
+  prompt?: string
+  start_image?: File | null
+}
+
+export async function createPersonaClip(request: PersonaClipRequest): Promise<PersonaClip> {
+  const { start_image, ...fields } = request
+  const data = form({ ...fields, run: true }, [['start_image', start_image]])
+  return (await json<{ clip: PersonaClip }>(await fetch(clipsUrl(), { method: 'POST', body: data }),
+    'Could not start the clip')).clip
+}
+
+export async function runPersonaClip(id: string): Promise<PersonaClip> {
+  return (await json<{ clip: PersonaClip }>(await fetch(`${clipsUrl(id)}/run`, { method: 'POST' }), 'Could not start the clip')).clip
+}
+
+export async function cancelPersonaClip(id: string): Promise<PersonaClip> {
+  return (await json<{ clip: PersonaClip }>(await fetch(`${clipsUrl(id)}/cancel`, { method: 'POST' }), 'Could not stop the clip')).clip
+}
+
+export async function deletePersonaClip(id: string): Promise<PersonaClip[]> {
+  return (await json<{ clips: PersonaClip[] }>(await fetch(clipsUrl(id), { method: 'DELETE' }), 'Could not delete the clip')).clips
+}
+
+export const personaClipFileUrl = (id: string, which: 'clip' | 'start') => `${clipsUrl(id)}/file/${which}`

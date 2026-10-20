@@ -11458,7 +11458,8 @@ from services.director.voices import register_routes as _register_voices  # noqa
 _register_voices(api, settings_dir=lambda: _maestro_settings_dir)
 
 from services.director.voice_cover import register_routes as _register_voice_covers  # noqa: E402
-_register_voice_covers(api, settings_dir=lambda: _maestro_settings_dir, ensure_pipeline=_init_pipeline)
+_register_voice_covers(api, settings_dir=lambda: _maestro_settings_dir, ensure_pipeline=_init_pipeline,
+                       outputs_dir=_workspace_dir)
 from services.director.cover_video import register_routes as _register_cover_videos  # noqa: E402
 _register_cover_videos(api)
 from services.director.persona_clips import register_routes as _register_persona_clips  # noqa: E402

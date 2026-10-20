@@ -6,6 +6,7 @@ import { AppModeToggle, MaestroBrand } from '../AppModeNavigation'
 import { BibleChat } from './BibleChat'
 import { BibleStyleReferences } from './BibleStyleReferences'
 import { BibleStyleLora } from './BibleStyleLora'
+import { BiblePersonaStudio } from './BiblePersonaStudio'
 import { renderBiblePanorama } from '../../api/directorBibles'
 import { useConfirm } from './ConfirmDialog'
 import { fetchRemoteWorkerSettings, updateRemoteWorkerSettings } from '../../api/client'
@@ -19,10 +20,10 @@ import {
 
 const input = 'w-full bg-bg-tertiary border border-border rounded px-2 py-1 text-[11px] text-text-primary focus:outline-none focus:border-accent-blue'
 const label = 'text-[9px] text-text-muted uppercase tracking-wider block mb-0.5'
-type BibleTab = BibleKind | 'world' | 'style'
+type BibleTab = BibleKind | 'world' | 'style' | 'persona'
 const TABS: Array<[BibleTab, string]> = [
   ['character', 'Characters'], ['location', 'Locations'], ['prop', 'Props'], ['world', 'World & style'],
-  ['style', 'Style references'],
+  ['style', 'Style references'], ['persona', 'Persona studio'],
 ]
 const FIELDS: Record<BibleKind, Array<[keyof BibleElement, string, boolean]>> = {
   character: [['role', 'Role', false], ['descriptor', 'How shots name them', false],
@@ -689,7 +690,7 @@ function BibleManagerPanel({ initialId, onClose }: { initialId?: string; onClose
     refreshList()
   }
   const savedIds = new Set(bible ? [...bible.characters, ...bible.locations, ...bible.props].map(e => e.id) : [])
-  const elements = draft && tab !== 'world' && tab !== 'style' ? draft[BIBLE_PLURAL[tab]] : []
+  const elements = draft && tab !== 'world' && tab !== 'style' && tab !== 'persona' ? draft[BIBLE_PLURAL[tab]] : []
   const setElements = (kind: BibleKind, next: BibleElement[]) => draft && setDraft({ ...draft, [BIBLE_PLURAL[kind]]: next })
 
   return (
@@ -770,7 +771,7 @@ function BibleManagerPanel({ initialId, onClose }: { initialId?: string; onClose
                     className={`rounded px-2 py-1 text-[11px] ${tab === id ? 'bg-bg-hover text-text-primary' : 'text-text-secondary hover:text-text-primary'}`}>
                     {title}{id === 'style'
                       ? (bible.style_references?.length ? ` (${bible.style_references.length})` : '')
-                      : id !== 'world' ? ` (${draft[BIBLE_PLURAL[id]].length})` : ''}
+                      : id !== 'world' && id !== 'persona' ? ` (${draft[BIBLE_PLURAL[id]].length})` : ''}
                   </button>
                 ))}
               </nav>
@@ -780,6 +781,8 @@ function BibleManagerPanel({ initialId, onClose }: { initialId?: string; onClose
                     <BibleStyleReferences key={draft.id} bibleId={draft.id} ask={ask} />
                     <BibleStyleLora key={`lora-${draft.id}`} bibleId={draft.id} ask={ask} />
                   </div>
+                ) : tab === 'persona' ? (
+                  <BiblePersonaStudio key={`persona-${draft.id}`} bible={bible} ask={ask} />
                 ) : tab === 'world' ? (
                   <div className="space-y-2 max-w-2xl">
                     <label className="block"><span className={label}>Description</span>

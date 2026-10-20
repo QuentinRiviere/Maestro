@@ -259,7 +259,9 @@ def audio_path(cover_id: str, which: str) -> Path:
     return path
 
 
-def register_routes(api: Any, *, settings_dir: Callable[[], str], ensure_pipeline: Callable[[], Any] | None = None) -> None:
+def register_routes(api: Any, *, settings_dir: Callable[[], str], ensure_pipeline: Callable[[], Any] | None = None,
+                    outputs_dir: Callable[[str], str] | None = None) -> None:
+    """``outputs_dir(workspace)`` lets a cover take a song rendered by the generate-music route (``song_output``)."""
     global _settings_dir, _ensure_pipeline
     _settings_dir = settings_dir
     _ensure_pipeline = ensure_pipeline
@@ -284,8 +286,21 @@ def register_routes(api: Any, *, settings_dir: Callable[[], str], ensure_pipelin
     def covers_list():
         return {"covers": list_covers()}
 
+    def copy_output(folder: Path, name: str, workspace: str) -> str:
+        """A song already rendered into the outputs folder (the generate-music route), copied as the cover's song."""
+        if outputs_dir is None:
+            raise HTTPException(status_code=400, detail="song_output is not available here")
+        name = os.path.basename(name)
+        source = Path(outputs_dir(workspace or "")) / name
+        if not source.is_file() or not name.lower().endswith(AUDIO_EXTENSIONS):
+            raise HTTPException(status_code=400, detail="song_output: no such rendered song")
+        dest = folder / f"song{os.path.splitext(name)[1].lower()}"
+        shutil.copyfile(source, dest)
+        return str(dest)
+
     @api.post(base)
-    async def covers_create(request: Request, song: UploadFile = File(...),
+    async def covers_create(request: Request, song: UploadFile | None = File(None), song_output: str = Form(""),
+                            workspace: str = Form(""),
                             reference: UploadFile | None = File(None), voice_id: str = Form(""),
                             name: str = Form(""), mode: str = Form(""), steps: int = Form(30),
                             cfg_rate: float = Form(0.7), semitone_shift: int = Form(0), auto_f0: bool = Form(False),
@@ -298,9 +313,16 @@ def register_routes(api: Any, *, settings_dir: Callable[[], str], ensure_pipelin
         cover_id = "cover_" + secrets.token_hex(4)
         folder = cover_dir(cover_id)
         try:
-            song_path = save_upload(folder, song, "song")
+            if song is not None and song.filename:
+                song_path = save_upload(folder, song, "song")
+                stem = Path(song.filename).stem
+            elif song_output:
+                song_path = copy_output(folder, song_output, workspace)
+                stem = Path(song_output).stem[:40]
+            else:
+                raise HTTPException(status_code=400, detail="Upload a song or name a rendered one (song_output)")
             reference_path = save_upload(folder, reference, "reference") if reference and reference.filename else ""
-            record = create_cover(name or Path(song.filename or "cover").stem, song_path, reference_path,
+            record = create_cover(name or stem or "cover", song_path, reference_path,
                                   {"mode": mode, "steps": steps, "cfg_rate": cfg_rate,
                                    "semitone_shift": semitone_shift, "auto_f0": auto_f0,
                                    "vocal_gain_db": vocal_gain_db},
