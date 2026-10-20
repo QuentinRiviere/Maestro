@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Loader2, X } from 'lucide-react'
+import { Image as ImageIcon, Loader2, X } from 'lucide-react'
 import {
-  fetchStyleReference, styleReferenceStillUrl, styleReferenceVideoUrl,
+  fetchStyleReference, startStyleReferenceFrames, styleReferenceStillUrl, styleReferenceVideoUrl,
   type StyleReference, type StyleReferenceFrame, type StyleReferenceShot,
 } from '../../api/directorBibles'
 import { formatSeconds, isAnalysing, SHOT_SIZE_LABELS } from '../../lib/styleReference'
@@ -10,16 +10,20 @@ import { formatSeconds, isAnalysing, SHOT_SIZE_LABELS } from '../../lib/styleRef
 const chip = 'rounded border border-border px-1 py-px text-[9px] text-text-secondary'
 
 /** The shots of a reference as the analysis describes them, each with its frame; a click plays the shot. */
-export function StyleReferenceShots({ bibleId, reference, onClose }: {
+export function StyleReferenceShots({ bibleId, reference, onClose, onChange }: {
   bibleId: string
   reference: StyleReference
   onClose: () => void
+  /** Called with the reference when the frame pass is started from here. */
+  onChange?: (reference: StyleReference) => void
 }) {
   const dialog = useRef<HTMLDialogElement>(null)
   const video = useRef<HTMLVideoElement>(null)
   const [shots, setShots] = useState<StyleReferenceShot[]>([])
   const [frames, setFrames] = useState<StyleReferenceFrame[]>([])
   const [framesStatus, setFramesStatus] = useState(reference.frames_status || 'idle')
+  const [framesProgress, setFramesProgress] = useState(reference.frames_progress || '')
+  const [starting, setStarting] = useState(false)
   const [status, setStatus] = useState(reference.status)
   const [progress, setProgress] = useState(reference.progress)
   const [describedOnly, setDescribedOnly] = useState(true)
@@ -39,6 +43,7 @@ export function StyleReferenceShots({ bibleId, reference, onClose }: {
       setShots(loaded.shots || [])
       setFrames(loaded.frames || [])
       setFramesStatus(loaded.frames_status || 'idle')
+      setFramesProgress(loaded.frames_progress || '')
       setStatus(loaded.status)
       setProgress(loaded.progress)
     }).catch(e => { if (alive) setError(e instanceof Error ? e.message : 'Could not load the shots') })
@@ -49,6 +54,22 @@ export function StyleReferenceShots({ bibleId, reference, onClose }: {
   }, [bibleId, reference.id, status, framesStatus])
 
   const framesOf = (index: number) => frames.filter(f => f.index === index)
+  const framesRunning = framesStatus === 'queued' || framesStatus === 'running'
+  // Starts (or resumes) the reverse-prompt pass: the frames already described are kept.
+  const startFrames = async () => {
+    setStarting(true)
+    setError('')
+    try {
+      const started = await startStyleReferenceFrames(bibleId, reference.id)
+      setFramesStatus(started.frames_status || 'queued')
+      setFramesProgress(started.frames_progress || '')
+      onChange?.(started)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not start the frame prompts')
+    } finally {
+      setStarting(false)
+    }
+  }
 
   const described = shots.filter(s => s.shot_size)
   const shown = describedOnly ? described : shots
@@ -78,9 +99,19 @@ export function StyleReferenceShots({ bibleId, reference, onClose }: {
             {described.length} of {shots.length} shots described
             {frames.length > 0 && <> · {frames.length} frame prompts</>}
             {isAnalysing(status) && <span className="text-accent-blue"> · <Loader2 size={10} className="inline animate-spin" /> {progress || 'analysing'}</span>}
-            {(framesStatus === 'queued' || framesStatus === 'running') && <span className="text-accent-blue"> · <Loader2 size={10} className="inline animate-spin" /> {reference.frames_progress || 'frame prompts'}</span>}
+            {framesRunning && <span className="text-accent-blue"> · <Loader2 size={10} className="inline animate-spin" /> {framesProgress || 'frame prompts'}</span>}
           </p>
         </div>
+        {status === 'done' && (
+          <button type="button" onClick={() => void startFrames()} disabled={framesRunning || starting}
+            className="flex shrink-0 items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[10px] text-text-secondary hover:text-text-primary disabled:opacity-50"
+            title={framesRunning ? 'The frame prompts are being written'
+              : frames.length ? 'Write the frame prompts again (the frames already described are kept)'
+                : 'Describe the first and last frame of the shots as image prompts'}>
+            {framesRunning || starting ? <Loader2 size={10} className="animate-spin" /> : <ImageIcon size={10} />}
+            {framesRunning ? 'Writing frame prompts' : frames.length ? 'Frame prompts again' : 'Write frame prompts'}
+          </button>
+        )}
         <label className="flex shrink-0 items-center gap-1 text-[10px] text-text-secondary">
           <input type="checkbox" className="h-3 w-3" checked={describedOnly} onChange={e => setDescribedOnly(e.target.checked)} />
           Described only

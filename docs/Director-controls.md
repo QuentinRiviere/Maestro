@@ -259,7 +259,10 @@ out; 0 = off) as the image prompt that would regenerate the frame (`prompt`,
 the frame: `camera` {lens_mm, aperture, format, height, angle, look},
 `lighting_setup`, `grade`, `aspect_ratio`; sidecar `<file>.frames.json`,
 `GET .../{ref}/frames`, `POST .../{ref}/frames` to run it again, resumable).
-The Shots dialog shows them under each shot. Runs that use the references
+The "Frame prompts" button of the bible panel opens the Shots dialog, which
+shows them under each shot; the pass itself is started (or run again, the
+frames already described are kept) from a button in that dialog, so a click
+in the panel never re-queues a pass. Runs that use the references
 get a "REFERENCE IMAGE PROMPT STYLE" block after the staging grammar: up to
 6 of those prompts spread over shot sizes, each with its camera line, and
 the references' camera profile (`camera_profile` on the reference: median

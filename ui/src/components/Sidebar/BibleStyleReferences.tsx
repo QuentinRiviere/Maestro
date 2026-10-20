@@ -3,7 +3,7 @@ import { Film, Image as ImageIcon, LayoutList, Link, Loader2, RefreshCw, Trash2,
 import { StyleReferenceShots } from './StyleReferenceShots'
 import {
   analyseStyleReference, deleteStyleReference, fetchStyleReferenceFetches, fetchStyleReferencesFromUrls,
-  fetchStyleReferences, parseVideoLinks, startStyleReferenceFrames, STYLE_REFERENCE_ACCEPT, STYLE_REFERENCE_MAX_BYTES,
+  fetchStyleReferences, parseVideoLinks, STYLE_REFERENCE_ACCEPT, STYLE_REFERENCE_MAX_BYTES,
   styleReferenceVideoUrl, updateStyleReference, uploadStyleReference,
   type StyleReference, type StyleReferenceFetch, type StyleReferencePatch,
 } from '../../api/directorBibles'
@@ -90,13 +90,12 @@ function ReferenceCard({ bibleId, reference, ask, onChange, onDeleted }: {
           title="Browse the shots described so far, with their frames" onClick={() => setShowShots(true)}>
           <LayoutList size={10} /> Shots{reference.described_shots ? ` (${reference.described_shots})` : ''}
         </button>
-        {showShots && <StyleReferenceShots bibleId={bibleId} reference={reference} onClose={() => setShowShots(false)} />}
-        <button className={button} disabled={busy || analysing || reference.status !== 'done'}
+        {showShots && <StyleReferenceShots bibleId={bibleId} reference={reference} onClose={() => setShowShots(false)} onChange={onChange} />}
+        <button className={button} disabled={analysing || reference.status !== 'done'}
           title={framesRunning
             ? 'Frame prompts are being written: open the shots to watch them arrive'
-            : 'Describe the first and last frame of the shots as image prompts (runs after each analysis; click to run again)'}
-          onClick={() => framesRunning ? setShowShots(true)
-            : act(async () => onChange(await startStyleReferenceFrames(bibleId, reference.id)))}>
+            : 'Open the shots with their frame prompts (the pass starts from there)'}
+          onClick={() => setShowShots(true)}>
           {framesRunning ? <Loader2 size={10} className="animate-spin" /> : <ImageIcon size={10} />}
           {framesRunning ? reference.frames_progress || 'Frame prompts…' : `Frame prompts${reference.frames_count ? ` (${reference.frames_count})` : ''}`}
         </button>
