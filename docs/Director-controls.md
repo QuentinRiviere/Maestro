@@ -293,6 +293,26 @@ failed ("Interrupted"): retry it from the panel (hours of GPU are never
 re-queued on their own). The first training downloads the bf16 transformer
 (14 GB) on the worker.
 
+**Place angles.** A place has three angles besides its plate, named by the
+wall the camera looks at (`reverse`, `left`, `right`; `bibles.LOCATION_VIEWS`).
+The scene lock names the wall each shot's camera looks at from the master's
+facing (`blocking_map.camera_wall`, `_director_camera_wall` on the plan) and
+the shot takes the matching angle as its set. Editing the plate for an angle
+returns the plate (the editor copies the composition), so the angles are
+rendered two ways: from text, off a room sheet the analyst writes from the
+plate (`services/director/room_spec.py`, sidecar `room_<element>.json`:
+what each wall holds, materials, light, palette), or, with the "Panorama"
+button, as perspective crops of one 360° equirectangular image of the place
+(`services/director/room_pano.py`; `pano_<element>.png`; yaw 0/90/180/-90,
+70° field of view), which keeps the geometry between angles. The panorama
+needs the panorama LoRA in `loras/qwen21` (`director_panorama_lora`, default
+`maestro_pano.safetensors`, trigger `maestro_pano`), trained once with the
+dataset trainings (`POST /api/v1/director/loras/trainings`: multipart zip of
+images + `manifest.json` {trigger, items: [{image, caption}]}, same worker
+job as a style LoRA, result installed in the registry; Poly Haven's CC0
+HDRIs make the set: indoor and urban panoramas, captions from their names,
+tags and categories).
+
 Each reference has a `graphics` mode (`ignore`, the default, or `include`;
 a toggle in the bible panel, `graphics` on the upload form and in the PATCH
 body): with `ignore` the analyst leaves burned-in subtitles, captions, logos,
