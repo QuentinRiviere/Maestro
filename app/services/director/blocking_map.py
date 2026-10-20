@@ -734,9 +734,26 @@ def lock_shot_blocking(layout: dict, blocking: dict) -> tuple[dict, list[str]]:
 
 def camera_faces_reverse(layout: Optional[dict], blocking: Optional[dict]) -> bool:
     """Whether this shot's camera looks at the wall opposite the one the master (and the place's image) sees."""
+    return camera_wall(layout, blocking) == "back"
+
+
+# A camera turned by more than this from the master's looks at a side wall.
+_SIDE_ANGLE = 45.0
+WALLS = ("front", "back", "left", "right")
+
+
+def camera_wall(layout: Optional[dict], blocking: Optional[dict]) -> str:
+    """The wall this shot's camera looks at, named from the master's view: ``front`` (the master's own wall,
+    the one the place's image shows), ``back`` (the opposite wall, a reverse), ``left`` or ``right``."""
     if not layout or not blocking or blocking["camera"].get("facing_deg") is None:
-        return False
-    return _angle_between(blocking["camera"]["facing_deg"], layout["camera"]["facing_deg"]) > _REVERSE_ANGLE
+        return "front"
+    delta = (blocking["camera"]["facing_deg"] - layout["camera"]["facing_deg"] + 180.0) % 360.0 - 180.0
+    if abs(delta) > _REVERSE_ANGLE:
+        return "back"
+    if abs(delta) <= _SIDE_ANGLE:
+        return "front"
+    # Facing 0 is toward the back wall and the angle grows clockwise (facing 90 looks at the right wall).
+    return "right" if delta > 0 else "left"
 
 
 def main_characters(blockings: list[Optional[dict]]) -> list[str]:
@@ -753,7 +770,8 @@ def lock_scene_blockings(raw_maps: list[Any], *, scene_map: Any = None) -> list[
     """Every shot of one scene on the scene's single floor plan.
 
     Returns one entry per shot, in order: ``{"blocking": the locked map or
-    None, "reverse": the camera faces the opposite wall, "notes": [what the
+    None, "reverse": the camera faces the opposite wall, "wall": the wall it
+    looks at (front, back, left, right), "notes": [what the
     lock changed or followed], "corrected": the shot's own map contradicted
     the layout}``. The layout comes from ``scene_map`` when it is a
     structured map, else from the first shot with a usable blocking map.
@@ -766,10 +784,11 @@ def lock_scene_blockings(raw_maps: list[Any], *, scene_map: Any = None) -> list[
         if layout is None and blocking is not None:
             layout = scene_floor_layout(blocking, scene_map, main)
         if blocking is None or layout is None:
-            results.append({"blocking": blocking, "reverse": False, "notes": [], "corrected": False})
+            results.append({"blocking": blocking, "reverse": False, "wall": "front", "notes": [], "corrected": False})
             continue
         locked, notes = lock_shot_blocking(layout, blocking)
-        results.append({"blocking": locked, "reverse": camera_faces_reverse(layout, locked), "notes": notes,
+        wall = camera_wall(layout, locked)
+        results.append({"blocking": locked, "reverse": wall == "back", "wall": wall, "notes": notes,
                         # Planned moves, far moves and crossings are followed, not corrected.
                         "corrected": any(not note.endswith(_FOLLOWED) for note in notes)})
     return results

@@ -12,7 +12,7 @@ if _APP_DIR not in sys.path:
 
 from services import director_pipeline as pipeline  # noqa: E402
 from services.director.blocking_map import (  # noqa: E402
-    camera_faces_reverse, framing_line, is_over_the_shoulder, lock_scene_blockings, ots_foreground,
+    camera_faces_reverse, camera_wall, framing_line, is_over_the_shoulder, lock_scene_blockings, ots_foreground,
     parse_blocking_map, scene_floor_layout, screen_sides, staging_line,
 )
 
@@ -225,7 +225,7 @@ class ReverseAngleTests(unittest.TestCase):
         refs = [request["source"], *request["supplemental"]]
         self.assertIn("/o/cafe_reverse.png", refs)
         self.assertNotIn("/o/cafe.png", refs)
-        self.assertIn("seen from its opposite wall", request["prompt"])
+        self.assertIn("looking at its opposite wall", request["prompt"])
         self.assertNotIn("faces the opposite side", request["prompt"])
         # The planner's words for the layout the lock corrected are not repeated.
         self.assertNotIn("she sits on his left", request["prompt"])
@@ -370,6 +370,28 @@ class OverTheShoulderTests(unittest.TestCase):
         # Without a map the framing's name wins over the position words too.
         del plan["_director_blocking_map"]
         self.assertEqual(pipeline.director_ots_foreground(plan), "Cha Hae-won")
+
+
+
+class CameraWallTests(unittest.TestCase):
+    def _blocking(self, facing: float) -> dict:
+        return {"camera": {"x": 0.5, "y": 0.9, "facing_deg": facing, "framing": "medium"},
+                "subjects": [{"name": "A", "x": 0.5, "y": 0.4, "facing_deg": 180.0}], "props": []}
+
+    def test_walls_from_the_master_facing(self):
+        layout = {"camera": {"x": 0.5, "y": 0.9, "facing_deg": 0.0}, "people": [], "props": [], "line": [], "side": 0}
+        self.assertEqual(camera_wall(layout, self._blocking(0.0)), "front")
+        self.assertEqual(camera_wall(layout, self._blocking(30.0)), "front")
+        self.assertEqual(camera_wall(layout, self._blocking(90.0)), "right")
+        self.assertEqual(camera_wall(layout, self._blocking(270.0)), "left")
+        self.assertEqual(camera_wall(layout, self._blocking(-80.0)), "left")
+        self.assertEqual(camera_wall(layout, self._blocking(180.0)), "back")
+        self.assertTrue(camera_faces_reverse(layout, self._blocking(150.0)))
+        self.assertEqual(camera_wall(None, self._blocking(90.0)), "front")
+        # The master's own facing is the reference, whatever its value.
+        layout["camera"]["facing_deg"] = 90.0
+        self.assertEqual(camera_wall(layout, self._blocking(180.0)), "right")
+        self.assertEqual(camera_wall(layout, self._blocking(0.0)), "left")
 
 
 if __name__ == "__main__":

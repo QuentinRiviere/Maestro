@@ -265,6 +265,14 @@ _LOCATION_VIEW_SHOTS = {
     "reverse": "the camera now stands against the wall that {label} 1 looks at and looks back toward where the "
                "camera of {label} 1 stood: the walls, windows, doors and furniture that were behind that camera "
                "fill the frame, and the wall {label} 1 shows is now behind the camera, out of frame",
+    "left": "the camera now stands against the right wall of {label} 1 (the wall on the right of its frame) and "
+            "looks straight at the left wall (the wall on the left of its frame), which fills the frame: the far "
+            "wall {label} 1 looks at is now on the right edge of the frame and the wall that was behind the camera "
+            "of {label} 1 is on the left edge",
+    "right": "the camera now stands against the left wall of {label} 1 (the wall on the left of its frame) and "
+             "looks straight at the right wall (the wall on the right of its frame), which fills the frame: the far "
+             "wall {label} 1 looks at is now on the left edge of the frame and the wall that was behind the camera "
+             "of {label} 1 is on the right edge",
 }
 
 
@@ -273,8 +281,9 @@ def location_view_prompt(view: str, element: dict, variant: dict, style: str = "
     label = ref_label or "reference image"
     change = variant.get("description") or ""
     description = element.get("description", "") + (f" State: {change}" if change else "")
+    where = "from the opposite side of the same room" if view == "reverse" else "from another side of the same room"
     return (
-        f"The exact place of {label} 1, empty, seen from the opposite side of the same room: "
+        f"The exact place of {label} 1, empty, seen {where}: "
         f"{_LOCATION_VIEW_SHOTS[view].format(label=label)}. Keep the same architecture, floor, wall and ceiling "
         "materials, colours, period and light: the same time of day and the same light sources, their direction "
         f"now seen from the other side. The furniture of {label} 1 keeps its size, style and place in the room, "

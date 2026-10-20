@@ -2785,6 +2785,7 @@ def _rerun_clip_image_impl(out_dir: str, pid: str, clip_index: int, prompt_overr
         extra_refs=without_ots_front_refs(snapshot, shot_plan, valid_character_refs + valid_location_refs),
         layout=bool(layout_ref),
         scene_location_reverse=location_reverse_view(snapshot, scene_location),
+        scene_location_views=location_views(snapshot, scene_location),
     )
 
     # Reference art-style lock: reruns re-apply the detected style prefix
@@ -5882,13 +5883,17 @@ def shot_is_tight(plan: dict) -> bool:
     return normalize_framing(f"{framing} {plan.get('_director_scene_type') or ''}") == "close-up"
 
 
+SIDE_NOTE = ("This camera is turned toward the {side} wall of the room as {view} sees it: that wall fills the "
+             "frame, the wall {view} looks at is now on one side and the wall behind its camera on the other; "
+             "keep the same materials, colours and light. ")
 REVERSE_NOTE = ("This camera faces the opposite side of the room from {view}: the walls, windows and doors that "
                  "were behind that view's camera are in frame now, and the wall that view looks at is behind "
                  "this camera, out of frame; keep the same materials, colours and light. ")
 
 
 def scene_shot_refs(image_model: str, plan: dict, prompt: str, *, master: str, identity: list[str],
-                    layout: bool = False, empty_set: bool = False, reverse: str = "") -> tuple[list[str], str]:
+                    layout: bool = False, empty_set: bool = False, reverse: str = "",
+                    wall: str = "back") -> tuple[list[str], str]:
     """References and prompt of a scene shot that is not the scene's master.
 
     The people (character sheets, named props) come first, for identity; the
@@ -5903,9 +5908,10 @@ def scene_shot_refs(image_model: str, plan: dict, prompt: str, *, master: str, i
     shot to shot. An insert (``director_is_insert``) gets no reference at
     all and no scene lead: its prompt opens with ``INSERT_LEAD``.
 
-    ``reverse``: the camera faces the wall opposite the master's. "view":
-    ``master`` is the place seen from that opposite wall; "text": ``master``
-    shows the usual side, and the prompt says the camera looks the other way.
+    ``reverse``: the camera faces another wall than the master's (``wall``:
+    back, left or right). "view": ``master`` is the place seen toward that
+    wall; "text": ``master`` shows the usual side, and the prompt says which
+    wall the camera looks at.
     """
     if director_is_insert(plan):
         # Hands and objects, seen from close: the editor turns a room image,
@@ -5928,8 +5934,9 @@ def scene_shot_refs(image_model: str, plan: dict, prompt: str, *, master: str, i
         lead += (f"{names} {'show' if len(people) > 1 else 'shows'} who and what is in this shot: keep faces, "
                  "clothes and hairstyles, not their pose or framing. ")
     if keep_master and empty_set and reverse == "view":
-        lead += (f"{_ref_name(image_model, len(refs))} shows this place empty, seen from its opposite wall: the "
-                 "side of the room this camera looks at. Keep its walls, windows, furniture, colours and light. ")
+        lead += (f"{_ref_name(image_model, len(refs))} shows this place empty, looking at "
+                 f"{WALL_WORDS.get(wall, 'its opposite wall')}: the side of the room this camera looks at. "
+                 "Keep its walls, windows, furniture, colours and light. ")
     elif keep_master and empty_set:
         lead += (f"{_ref_name(image_model, len(refs))} shows this place empty: keep its walls, furniture, colours "
                  "and light; the camera may stand anywhere in it. ")
@@ -5941,8 +5948,9 @@ def scene_shot_refs(image_model: str, plan: dict, prompt: str, *, master: str, i
         if setting and setting.lower() not in prompt.lower():
             lead += f"Setting: {setting.rstrip('.')}. "
     if reverse == "text":
-        lead += REVERSE_NOTE.format(view=f"the view of {_ref_name(image_model, len(refs))}" if keep_master
-                                    else "the scene's main view")
+        view_name = f"the view of {_ref_name(image_model, len(refs))}" if keep_master else "the scene's main view"
+        lead += (REVERSE_NOTE.format(view=view_name) if wall == "back"
+                 else SIDE_NOTE.format(view=view_name, side=wall))
     return refs, f"{lead}{close_up_lead(plan)}The camera setup of this shot is: {prompt}"
 
 
@@ -5960,7 +5968,8 @@ def director_shot_image_request(image_model: str, plan: dict, prompt: str, *, sc
                                 anchor: str = "", scene_location: str = "", first_scene: bool = True,
                                 scene_sets: bool = False, subject_refs: Optional[list[str]] = None,
                                 extra_refs: Optional[list[str]] = None, layout: bool = False,
-                                scene_location_reverse: str = "") -> dict:
+                                scene_location_reverse: str = "",
+                                scene_location_views: Optional[dict] = None) -> dict:
     """Prompt, source, supplemental refs and canvas mode of a shot's start image.
 
     Shared by the storyboard run and the Dashboard rerun, so a rerun gets the
@@ -5968,10 +5977,11 @@ def director_shot_image_request(image_model: str, plan: dict, prompt: str, *, sc
     ``scene_shot_refs``; the first shot of a scene (its master) starts from the
     anchor or its own set; a shot outside any scene keeps every reference.
 
-    A later shot whose camera faces the opposite wall (``_director_camera_reverse``,
-    from the scene lock) takes the place's reverse view
-    (``scene_location_reverse``) instead of its main image when the bible has
-    one; otherwise the prompt says the camera looks at the other side.
+    A later shot whose camera looks at another wall (``_director_camera_wall``
+    from the scene lock: back, left or right) takes the place's angle toward
+    that wall (``scene_location_views``: reverse, left, right) instead of its
+    main image when the bible has one; otherwise the prompt says which wall
+    the camera looks at.
     """
     subject_refs = list(subject_refs or [])
     if scene_master:
@@ -5983,12 +5993,17 @@ def director_shot_image_request(image_model: str, plan: dict, prompt: str, *, sc
         identity = subject_refs or ([] if scene_location else [anchor])
         reverse = ""
         place = scene_location
-        if plan.get("_director_camera_reverse"):
-            reverse = "view" if scene_location and scene_location_reverse else "text"
-            place = scene_location_reverse if reverse == "view" else scene_location
+        wall = str(plan.get("_director_camera_wall") or ("back" if plan.get("_director_camera_reverse") else "front"))
+        if wall in WALL_VIEWS:
+            views = dict(scene_location_views or {})
+            if scene_location_reverse:
+                views.setdefault("reverse", scene_location_reverse)
+            angle = views.get(WALL_VIEWS[wall], "")
+            reverse = "view" if scene_location and angle else "text"
+            place = angle if reverse == "view" else scene_location
         refs, scene_prompt = scene_shot_refs(image_model, plan, prompt, master=place or scene_master,
                                              identity=identity, layout=layout,
-                                             empty_set=bool(scene_location), reverse=reverse)
+                                             empty_set=bool(scene_location), reverse=reverse, wall=wall)
         blocking = str(plan.get("_director_opening_blocking") or "").strip()
         # The planner's words for a layout the scene lock had to correct would undo it.
         if blocking and blocking.lower() not in prompt.lower() and not plan.get("_director_layout_corrected"):
@@ -6472,6 +6487,7 @@ def scene_locked_plan(plan: dict, lock: Optional[dict]) -> dict:
 
     if lock:
         plan = {**plan, "_director_blocking_map": lock["blocking"], "_director_camera_reverse": bool(lock["reverse"]),
+                "_director_camera_wall": str(lock.get("wall") or ("back" if lock["reverse"] else "front")),
                 "_director_layout_corrected": bool(lock.get("corrected"))}
     blocking = parse_blocking_map(plan.get("_director_blocking_map"))
     faced = face_the_camera(blocking, plan.get("_director_camera_framing"))
@@ -6480,11 +6496,21 @@ def scene_locked_plan(plan: dict, lock: Optional[dict]) -> dict:
     return plan
 
 
+def location_views(params: dict, location: str) -> dict[str, str]:
+    """The bible's angles of a place (``reverse``, ``left``, ``right``: the wall each looks at), as existing paths."""
+    views = params.get("_director_image_views") or {}
+    found = (views.get(location) or {}) if location and isinstance(views, dict) else {}
+    return {view: str(path) for view, path in found.items() if path and os.path.isfile(str(path))}
+
+
 def location_reverse_view(params: dict, location: str) -> str:
     """The bible's view of a place from its opposite wall ("" when it has none)."""
-    views = params.get("_director_image_views") or {}
-    path = str((views.get(location) or {}).get("reverse") or "") if location and isinstance(views, dict) else ""
-    return path if path and os.path.isfile(path) else ""
+    return location_views(params, location).get("reverse", "")
+
+
+# The place's angle a shot takes, by the wall its camera looks at (blocking_map.camera_wall).
+WALL_VIEWS = {"back": "reverse", "left": "left", "right": "right"}
+WALL_WORDS = {"back": "its opposite wall", "left": "its left wall", "right": "its right wall"}
 
 
 def cast_ref_needles(params: dict, out_dir: str) -> tuple[list[tuple[str, list[str]]], list[tuple[str, list[str]]]]:
@@ -8225,6 +8251,15 @@ def _render_bible_slot(bible_id: str, element_id: str, variant_id: str, slot: st
             prompt = (casting.view_prompt(view, element, variant, medium, ref_label=ref_label)
                       if kind == "character"
                       else casting.location_view_prompt(view, element, variant, medium, ref_label=ref_label))
+            if kind == "location":
+                # The place's other approved angles keep the new one consistent with them.
+                others = [bibles.image_path(bible_id, name) for other, name in
+                          bibles.approved_views(variant, bibles.LOCATION_VIEWS).items() if other != view]
+                others = [str(p) for p in others if p is not None][: max(0, (budget or 4) - 1)]
+                if others:
+                    refs += others
+                    prompt += (f" {ref_label}s 2 to {len(refs)} show the same place from other sides: keep every "
+                               "wall, window, door and piece of furniture where they put it.")
         else:
             refs = [str(path) for path in bibles.reference_paths(bible, element, variant, chain_from, base_image)]
             # A text-only model never sees references: its prompt must not name any.
@@ -10238,11 +10273,13 @@ def _run_image_generation(pid: str, params: dict, clip_plans: list[dict], out_di
                         plan, prompt, character_needles, prop_needles, valid_character_refs)),
                     extra_refs=without_ots_front_refs(params, shot_plan, extra_refs), layout=bool(layout_ref),
                     scene_location_reverse=location_reverse_view(params, scene_location or ""),
+                    scene_location_views=location_views(params, scene_location or ""),
                 )
-                if scene_master and shot_plan.get("_director_camera_reverse"):
-                    print(f"[Pipeline {pid}] Shot {i+1}: camera faces the opposite wall of the place"
-                          + (" (reverse view)" if location_reverse_view(params, scene_location or "")
-                             else " (no reverse view: described in text)"))
+                _wall = str(shot_plan.get("_director_camera_wall") or "")
+                if scene_master and _wall in WALL_VIEWS:
+                    _has_view = WALL_VIEWS[_wall] in location_views(params, scene_location or "")
+                    print(f"[Pipeline {pid}] Shot {i+1}: camera looks at the {_wall} wall of the place"
+                          + (f" ({WALL_VIEWS[_wall]} view)" if _has_view else " (no such view: described in text)"))
                 if scene_master:
                     print(f"[Pipeline {pid}] Shot {i+1}: same scene as {os.path.basename(scene_master)}"
                           + ("" if scene_master in request["supplemental"] + [request["source"]]

@@ -24,7 +24,7 @@ export interface BibleImage {
   status: 'queued' | 'rendering' | 'candidate' | 'approved' | 'failed'
   error: string
   created_at: string
-  /** An angle of the look (a character: face_front, face_three_quarter, face_profile, back; a place: reverse); empty for the look's own image. */
+  /** An angle of the look (a character: face_front, face_three_quarter, face_profile, back; a place: reverse, left, right); empty for the look's own image. */
   view?: string
 }
 

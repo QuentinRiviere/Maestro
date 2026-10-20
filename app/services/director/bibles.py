@@ -53,7 +53,8 @@ DEFAULT_VARIANT = "default"
 VIEWS = {"face_front": "Face", "face_three_quarter": "Face 3/4", "face_profile": "Profile", "back": "Back"}
 # Angles of a place: the same empty room seen from its opposite wall, for shots
 # whose camera looks back at what the place's main image has behind its camera.
-LOCATION_VIEWS = {"reverse": "Reverse"}
+# A place's angles, named by the wall the camera looks at, from the plate's point of view.
+LOCATION_VIEWS = {"reverse": "Reverse", "left": "Left wall", "right": "Right wall"}
 ALL_VIEWS = {**VIEWS, **LOCATION_VIEWS}
 KIND_VIEWS = {"character": VIEWS, "location": LOCATION_VIEWS}
 IMAGE_STATES = ("queued", "rendering", "candidate", "approved", "failed")

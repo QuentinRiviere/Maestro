@@ -352,11 +352,11 @@ const VIEW_LABELS: Record<string, string> = {
   face_front: 'Face', face_three_quarter: 'Face 3/4', face_profile: 'Profile', back: 'Back',
 }
 /** A place's angle: the same empty room from the opposite wall, for shots that look back. */
-const LOCATION_VIEW_LABELS: Record<string, string> = { reverse: 'Reverse' }
+const LOCATION_VIEW_LABELS: Record<string, string> = { reverse: 'Reverse', left: 'Left wall', right: 'Right wall' }
 
 /**
  * The angles of a look, edited from its approved image: a character's approved ones make its turnaround
- * sheet, a place's reverse view is the set of shots whose camera faces the opposite wall.
+ * sheet, a place's angles (reverse, left wall, right wall) are the sets of the shots whose camera looks at that wall.
  */
 function Angles({ bible, element, variant, readsImages, imageModel, onBible }: {
   bible: DirectorBible
@@ -388,12 +388,12 @@ function Angles({ bible, element, variant, readsImages, imageModel, onBible }: {
         <span className={label + ' !mb-0'}>Angles</span>
         <span className="text-[9px] text-text-muted">
           {place
-            ? (approved.size ? 'used by shots that look at the opposite wall' : 'the same empty place from the opposite wall, for reverse shots')
+            ? (approved.size ? `${approved.size}/${total} walls: used by shots whose camera looks at that wall` : 'the same empty place looking at its other walls (reverse, left, right), one per camera direction')
             : approved.size ? `${approved.size}/${total} in the turnaround sheet projects use` : 'face, 3/4, profile and back, for a turnaround sheet'}
         </span>
         <button disabled={busy || running || !hasMain || !readsImages} onClick={() => void render()}
           title={!hasMain ? 'Approve an image of this look first' : !readsImages ? `${imageModel} cannot read an image`
-            : place ? `Render the reverse view with ${imageModel}` : `Render the ${total} angles with ${imageModel}`}
+            : `Render the ${total} angles with ${imageModel}`}
           className="ml-auto flex items-center gap-1 rounded border border-border px-2 py-0.5 text-[10px] text-text-secondary hover:text-text-primary disabled:opacity-40">
           {busy || running ? <Loader2 size={10} className="animate-spin" /> : <Sparkles size={10} />} {angles.length ? 'Re-render angles' : 'Render angles'}
         </button>
