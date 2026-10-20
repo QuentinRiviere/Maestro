@@ -101,7 +101,12 @@ def video_settings(raw: Mapping[str, Any] | None) -> dict:
     model = str(raw.get("model_type") or VIDEO_MODEL).strip()
     if not model.startswith("ltx2_25"):
         raise BibleError("The cover video runs on an LTX-2.5 model")
+    try:
+        audio_scale = float(raw.get("audio_scale") if raw.get("audio_scale") not in (None, "") else 1.0)
+    except (TypeError, ValueError):
+        audio_scale = 1.0
     return {
+        "audio_scale": max(0.0, min(3.0, audio_scale)),
         "character_id": str(raw.get("character_id") or "").strip(),
         "location_id": str(raw.get("location_id") or "").strip(),
         "orientation": orientation, "start_sec": round(start, 3), "frames": frames,
@@ -161,6 +166,8 @@ def video_job(prompt: str, start_image: str, mix: str, vocals: str, settings: Ma
         "input_video_strength": 1.0, "resolution": ORIENTATIONS[settings["orientation"]][0],
         "video_length": int(settings["frames"]), **window_params(int(settings["frames"])),
         "audio_prompt_type": "A", "audio_guide": mix, "audio_conditioning_guide": vocals, "audio_frame_offset": 0,
+        # Prompt Audio Strength: above 1 the audio latent is amplified, stronger lip adherence.
+        "audio_scale": float(settings.get("audio_scale") or 1.0),
         "seed": int(settings.get("seed", -1)), "settings_version": 2.52, "repeat_generation": 1, "negative_prompt": "",
         "activated_loras": [], "loras_multipliers": "", "_director_cost_stage": "cover_video",
     }
@@ -371,10 +378,12 @@ def register_routes(api: Any) -> None:
                                 orientation: str = Form("portrait"), start_sec: float = Form(0.0),
                                 seconds: float = Form(DEFAULT_SECONDS), seed: int = Form(-1),
                                 lyrics: str = Form(""), prompt: str = Form(""), start_prompt: str = Form(""),
-                                model_type: str = Form(VIDEO_MODEL), bible_id: str = Form("")):
+                                model_type: str = Form(VIDEO_MODEL), bible_id: str = Form(""),
+                                audio_scale: float = Form(1.0)):
         raw = {"character_id": character_id, "location_id": location_id, "orientation": orientation,
                "start_sec": start_sec, "seconds": seconds, "seed": seed, "lyrics": lyrics, "prompt": prompt,
-               "start_prompt": start_prompt, "model_type": model_type, "bible_id": bible_id}
+               "start_prompt": start_prompt, "model_type": model_type, "bible_id": bible_id,
+               "audio_scale": audio_scale}
         uploaded = ""
         if start_image is not None and start_image.filename:
             suffix = os.path.splitext(start_image.filename)[1].lower()

@@ -417,7 +417,9 @@ paints `start.png` (the character, reference 1, at a studio microphone in
 the place, reference 2, with the bible look), then LTX-2.5 image-to-video
 with `audio_prompt_type "A"`, the sliced mix as `audio_guide` (the
 soundtrack) and the sliced converted vocals as `audio_conditioning_guide`
-(the lips), the music-video lip-sync contract closing the prompt. `GET
+(the lips), the music-video lip-sync contract closing the prompt;
+`audio_scale` (Prompt Audio Strength, 1.0) above 1 amplifies the audio
+latent for a stronger lip adherence. `GET
 …/{id}/video/{video|start|clip_mix|clip_vocals}` serves the files, `POST
 …/{id}/video/cancel` stops the running job.
 
@@ -453,10 +455,20 @@ mouth stays shut; `model` lets LTX invent a soundtrack), `prompt` /
 `start_prompt` overrides, `model_type` (an `ltx2_25*` model), a
 `start_image` upload that skips the editor, `template` (`single`: one
 full-body take; `trend`: wide 4 s, side 4 s, close 3 s; `street`: over a
-shoulder, low angle, close; `reveal`: close, wide, side) and `run`. A
+shoulder, low angle, close; `reveal`: close, wide, side), the LTX render
+options `nag` (0, off: the distilled checkpoint only reads the negative
+prompt through Normalized Attention Guidance, `NAG_scale` above 1 turns it
+on), `strength` (1.0: how hard the start image is held, the model's own
+default is 0.7), `vae` (`fast`, or `nad` for the diffusion decoder, sharper
+and slower), `upscale` (none, `lanczos1.5`, `lanczos2`, `flashvsr`,
+`flashvsr2pass`: a spatial pass on the worker after the render), and
+`run`. The same options go to a persona series as `render: {...}`. A
 multi-shot clip paints one start image per shot (the portrait as
 reference 1, the first shot's start image as reference 2 so later shots
-keep the place, framed as candid phone stills), renders each shot with
+keep the place, framed as candid phone stills; a start image that comes
+back cut into panels, a storyboard the editor draws when the move is told
+in beats, is detected by `split_panels` and painted again up to twice with
+the next seed), renders each shot with
 its own camera motion and part of the move, speeds them up and joins them
 (`concat_shots`); `shot_<n>.mp4` and `start_<n>.png` stay in the folder.
 `engine` picks LTX-2.5 (`ltx`, the default) or MiniMax H3 image-to-video

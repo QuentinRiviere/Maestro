@@ -321,9 +321,13 @@ def update_persona(persona_id: str, fields: Mapping[str, Any]) -> dict:
 
 
 def series(persona_id: str, places: list[str] | None = None, *, count: int = 0, seconds: float | None = None,
-           template: str = "", engine: str = "", submit: Callable[..., list[str]] | None = None,
-           jobs: Mapping[str, Any] | None = None, wait: bool = False) -> list[dict]:
-    """Queue one clip per place (the persona's own list when none is given, ``count`` of them at most)."""
+           template: str = "", engine: str = "", render: Mapping[str, Any] | None = None,
+           submit: Callable[..., list[str]] | None = None, jobs: Mapping[str, Any] | None = None,
+           wait: bool = False) -> list[dict]:
+    """Queue one clip per place (the persona's own list when none is given, ``count`` of them at most).
+
+    ``render``: LTX render options (``persona_clips.RENDER_KEYS``: nag, strength, vae, upscale) for an A/B.
+    """
     from . import persona_clips
 
     record = get_persona(persona_id)
@@ -341,6 +345,7 @@ def series(persona_id: str, places: list[str] | None = None, *, count: int = 0, 
             "orientation": record["orientation"], "seconds": seconds or record["seconds"], "audio": record["audio"],
             "speed": record.get("speed", 1.5), "template": template or record.get("template", "trend"),
             "engine": engine or record.get("engine", "ltx"),
+            **{key: value for key, value in (render or {}).items() if key in persona_clips.RENDER_KEYS},
         }, bible_id=record.get("bible_id") or "")
         made.append(persona_clips.start_clip(clip["id"], submit=submit, jobs=jobs, wait=wait))
     _set(persona_id, clips=int(record.get("clips") or 0) + len(made))
@@ -560,7 +565,8 @@ def register_routes(api: Any, *, settings_dir: Callable[[], str]) -> None:
         seconds = body.get("seconds")
         return {"clips": call(series, persona_id, _places(body.get("places")), count=count,
                               seconds=float(seconds) if seconds else None, template=str(body.get("template") or ""),
-                              engine=str(body.get("engine") or ""))}
+                              engine=str(body.get("engine") or ""),
+                              render=body.get("render") if isinstance(body.get("render"), dict) else None)}
 
     @api.post(base + "/{persona_id}/evaluate")
     def persona_evaluate(persona_id: str):

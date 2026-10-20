@@ -386,6 +386,16 @@ class PersonaClipTests(unittest.TestCase):
         self.assertEqual(clip["temporal_upsampling"], "rife2")
         self.assertEqual(clip["film_grain_intensity"], 0.08)
         self.assertNotIn("temporal_upsampling", pc.clip_job("x", "/tmp/s.png", pc.clip_settings({"gesture": "wave", "smooth": False, "grain": 0})))
+        plain = pc.clip_job("x", "/tmp/s.png", pc.clip_settings({"gesture": "wave"}))
+        self.assertEqual(plain["input_video_strength"], 1.0)
+        for key in ("NAG_scale", "ltx25_video_vae", "spatial_upsampling"):
+            self.assertNotIn(key, plain)
+        tuned = pc.clip_job("x", "/tmp/s.png", pc.clip_settings(
+            {"gesture": "wave", "nag": 1.5, "strength": "0.8", "vae": "nad", "upscale": "lanczos1.5"}))
+        self.assertEqual((tuned["NAG_scale"], tuned["input_video_strength"], tuned["ltx25_video_vae"],
+                          tuned["spatial_upsampling"]), (1.5, 0.8, "nad", "lanczos1.5"))
+        with self.assertRaises(bibles.BibleError):
+            pc.clip_settings({"gesture": "wave", "upscale": "bicubic"})
         self.assertIn("the whole move in one continuous take: a slow finger-gun wink", clip["prompt"])
         self.assertIn("no slow motion", clip["prompt"])
         self.assertIn("slow motion", clip["negative_prompt"])

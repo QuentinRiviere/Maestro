@@ -74,6 +74,17 @@ ENGINES = ("ltx", "h3")
 # frames before the speed-up so the result stays smooth, a touch of film grain reads as phone footage.
 SMOOTH = "rife2"
 GRAIN = 0.08
+# Render options of the LTX engine, off by default until the A/B says otherwise. ``nag``: the distilled checkpoint
+# only reads the negative prompt through NAG (Normalized Attention Guidance), ``NAG_scale`` above 1 turns it on.
+# ``strength``: how hard the start image is held (the model's own default is 0.7, 1.0 pins it). ``vae``: the fast
+# convolutional decoder or the NAD diffusion decoder (sharper faces, slower). ``upscale``: a spatial pass on the
+# worker after the render (``lanczos1.5``, ``lanczos2``, ``flashvsr``), the phone delivers 1080x1920.
+NAG_DEFAULT = 0.0
+NAG_MAX = 3.0
+STRENGTH_DEFAULT = 1.0
+VAES = ("fast", "nad")
+UPSCALES = ("", "lanczos1.5", "lanczos2", "flashvsr", "flashvsr2pass")
+RENDER_KEYS = ("nag", "strength", "vae", "upscale")
 H3_MODEL = "minimax_h3"
 H3_TURBO_PRESET = "alibaba-pai-fl2va-pdd-8step"
 H3_RESOLUTIONS = {"portrait": "480x864", "landscape": "864x480"}
@@ -183,7 +194,9 @@ def clip_settings(raw: Mapping[str, Any] | None) -> dict:
         shots.append({"framing": framing, "seconds": round(shown, 3), "frames": frames,
                       "rendered_seconds": round(cover_video.seconds_for(frames), 3)})
     total = round(sum(shot["seconds"] for shot in shots), 3)
+    render = render_options(raw)
     return {
+        **render,
         "persona_id": str(raw.get("persona_id") or "").strip(),
         "character_id": base["character_id"], "location_id": base["location_id"], "gesture": gesture,
         "orientation": base["orientation"], "frames": shots[0]["frames"], "seconds": total,
@@ -195,6 +208,26 @@ def clip_settings(raw: Mapping[str, Any] | None) -> dict:
         "prompt": base["prompt"], "start_prompt": base["start_prompt"],
         "place": str(raw.get("place") or "").strip()[:300],
     }
+
+
+def render_options(raw: Mapping[str, Any]) -> dict:
+    """The LTX render options (``RENDER_KEYS``), validated, defaults when absent."""
+    def number(key: str, default: float, low: float, high: float) -> float:
+        value = raw.get(key)
+        try:
+            value = float(default if value in (None, "") else value)
+        except (TypeError, ValueError):
+            value = default
+        return max(low, min(high, value))
+
+    vae = str(raw.get("vae") or VAES[0]).strip().lower()
+    if vae not in VAES:
+        raise BibleError(f"Unknown vae (one of {', '.join(VAES)})")
+    upscale = str(raw.get("upscale") or "").strip().lower()
+    if upscale not in UPSCALES:
+        raise BibleError(f"Unknown upscale (one of {', '.join(u or 'none' for u in UPSCALES)})")
+    return {"nag": number("nag", NAG_DEFAULT, 0.0, NAG_MAX), "strength": number("strength", STRENGTH_DEFAULT, 0.3, 1.0),
+            "vae": vae, "upscale": upscale}
 
 
 def h3_frames(seconds: float) -> int:
@@ -270,6 +303,8 @@ def post_params(settings: Mapping[str, Any]) -> dict:
     if grain > 0:
         out["film_grain_intensity"] = grain
         out["film_grain_saturation"] = 0.5
+    if settings.get("upscale"):
+        out["spatial_upsampling"] = settings["upscale"]
     return out
 
 
@@ -293,12 +328,18 @@ def clip_job(prompt: str, start_image: str, settings: Mapping[str, Any], *, fram
     job = {**post_params(settings),
         "model_type": settings["model_type"], "prompt": prompt, "image_mode": 0, "image_prompt_type": "S",
         "image_start": start_image, "generation_mode": "video", "num_inference_steps": 8, "guidance_scale": 1.0,
-        "input_video_strength": 1.0, "resolution": cover_video.ORIENTATIONS[settings["orientation"]][0],
+        "input_video_strength": float(settings.get("strength") or STRENGTH_DEFAULT),
+        "resolution": cover_video.ORIENTATIONS[settings["orientation"]][0],
         "video_length": frames, "sliding_window_size": frames,
         "seed": int(settings.get("seed", -1)), "settings_version": 2.52, "repeat_generation": 1,
         "negative_prompt": NEGATIVE, "activated_loras": [], "loras_multipliers": "", "_director_cost_stage": "persona_clip",
     }
     job["audio_prompt_type"] = "A" if settings.get("audio") == "silent" else ""
+    nag = float(settings.get("nag") or 0.0)
+    if nag > 1.0:
+        job.update(NAG_scale=nag, NAG_tau=3.5, NAG_alpha=0.5)
+    if settings.get("vae") and settings["vae"] != VAES[0]:
+        job["ltx25_video_vae"] = settings["vae"]
     return job
 
 
@@ -578,6 +619,8 @@ def register_routes(api: Any, *, settings_dir: Callable[[], str]) -> None:
                           seconds: float = Form(DEFAULT_SECONDS), speed: float = Form(DEFAULT_SPEED), seed: int = Form(-1),
                           audio: str = Form("silent"), template: str = Form(DEFAULT_TEMPLATE), engine: str = Form("ltx"),
                           smooth: bool = Form(True), grain: float = Form(GRAIN),
+                          nag: float = Form(NAG_DEFAULT), strength: float = Form(STRENGTH_DEFAULT),
+                          vae: str = Form(VAES[0]), upscale: str = Form(""),
                           prompt: str = Form(""), start_prompt: str = Form(""),
                           model_type: str = Form(cover_video.VIDEO_MODEL), run: bool = Form(True),
                           start_image: UploadFile | None = File(None)):
@@ -585,6 +628,7 @@ def register_routes(api: Any, *, settings_dir: Callable[[], str]) -> None:
                "place": place,
                "orientation": orientation, "seconds": seconds, "speed": speed, "seed": seed, "audio": audio, "prompt": prompt,
                "template": template, "engine": engine, "smooth": smooth, "grain": grain,
+               "nag": nag, "strength": strength, "vae": vae, "upscale": upscale,
                "start_prompt": start_prompt, "model_type": model_type}
         uploaded = ""
         if start_image is not None and start_image.filename:
