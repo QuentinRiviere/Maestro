@@ -200,7 +200,10 @@ def job_voice_params(record: Mapping[str, Any], engine: str = "seedvc") -> dict:
     """The worker params that name the voice: its RVC pair, its profile when built, its references otherwise."""
     if engine == "rvc" and rvc_ready(record):
         rvc = record["rvc"]
-        return {"cover_rvc_model": rvc["model"], "cover_rvc_index": rvc.get("index") or ""}
+        # The references ride along for the judge's target timbre; the conversion itself uses the model.
+        return {"cover_rvc_model": rvc["model"], "cover_rvc_index": rvc.get("index") or "",
+                "cover_references": [r["file"] for r in record["references"]],
+                "cover_weights": [r["weight"] for r in record["references"]]}
     profile = str(record.get("profile") or "")
     if profile and os.path.isfile(profile):
         return {"cover_profile": profile}

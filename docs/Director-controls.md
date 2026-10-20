@@ -392,6 +392,18 @@ on the worker's packages) and mixes it back over the instrumental. `GET
 …/covers/{id}/audio/{cover|vocals|source_vocals|instrumental|song|reference}`
 serves the files; `POST …/{id}/run|cancel` and `DELETE …/{id}` as usual.
 
+Every cover is judged on the worker once converted (`services/seedvc_judge.py`
+in Seed-VC's venv, `scores.json`, kept under the record's `scores`): `timbre`
+is the cosine similarity between the converted vocals' CAMPPlus embedding and
+the voice's (1 = same voice; `timbre_source` the same against the source
+singer, lower = more converted), `pitch_corr` / `pitch_cents` the log-F0
+correlation and median deviation against the source on frames both voiced
+(RMVPE), `voiced_agreement` the share of frames agreeing on voicing. A MOS
+(`--mos`: SingMOS, UTMOS22 fallback) is off by default: SingMOS does not
+load on torchaudio 2.10 and UTMOS22 rates speech, not singing. Measured on
+the 40 s test song: Seed-VC timbre 0.74 / pitch 0.957, 5.9 cents; the RVC
+model trained on two minutes timbre 0.68 / pitch 0.991, 2.5 cents.
+
 A finished cover gets its singing video with `POST
 …/covers/{id}/video` (`services/director/cover_video.py`, state under the
 record's `video`): multipart `character_id` (defaults to the cover's),

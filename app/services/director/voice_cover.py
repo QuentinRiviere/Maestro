@@ -34,7 +34,7 @@ MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 AUDIO_EXTENSIONS = (".wav", ".mp3", ".flac", ".m4a", ".ogg", ".aac", ".opus")
 STATES = ("queued", "running", "done", "failed")
 OUTPUTS = {"cover": "cover.wav", "vocals": "vocals.wav", "source_vocals": "source_vocals.wav",
-           "instrumental": "instrumental.wav", "profile": "voice_profile.npz"}
+           "instrumental": "instrumental.wav", "profile": "voice_profile.npz", "scores": "scores.json"}
 TIMEOUT_SEC = 3600
 _LOCK = threading.RLock()
 _LIVE: set[str] = set()
@@ -216,7 +216,15 @@ def _run(cover_id: str, submit, jobs) -> None:
                     voices.keep_profile(voice["id"], str(folder / made["profile"]))
                 except Exception as error:  # noqa: BLE001 - the cover is done either way
                     print(f"[Voice cover] {cover_id}: could not keep the voice profile: {error}")
-            _set(cover_id, status="done", progress="", outputs=made, seconds=round(time.time() - started))
+            scores = None
+            if "scores" in made:
+                try:
+                    scores = json.loads((folder / made["scores"]).read_text(encoding="utf-8"))
+                    scores = scores[0] if isinstance(scores, list) and scores else scores
+                except (OSError, ValueError):
+                    scores = None
+            _set(cover_id, status="done", progress="", outputs=made, seconds=round(time.time() - started),
+                 scores=scores if isinstance(scores, dict) else None)
             print(f"[Voice cover] {cover_id}: {made['cover']} in {round(time.time() - started)} s")
     except BibleError as error:
         try:

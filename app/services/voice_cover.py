@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import os
 import re
+import json
 import shutil
 import subprocess
 import sys
@@ -44,6 +45,8 @@ ENGINES = ("seedvc", "rvc")
 PROFILE_NAME = "voice_profile.npz"
 _PROGRESS = re.compile(r"chunk (\d+)/(\d+)")
 _RUNNER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "seedvc_runner.py")
+_JUDGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "seedvc_judge.py")
+SCORES_NAME = "scores.json"
 
 
 class CoverError(RuntimeError):
@@ -134,12 +137,14 @@ def ensure_seed_vc(report: Callable[[str], Any] | None = None) -> str:
 
 
 def _run_runner(arguments: list[str], *, report: Callable[[str, float], Any] | None = None,
-                is_cancelled: Callable[[], bool] | None = None, label: str = "Converting the voice") -> None:
-    """Run ``seedvc_runner.py`` in Seed-VC's venv, mirroring its chunk progress; raises on failure."""
+                is_cancelled: Callable[[], bool] | None = None, label: str = "Converting the voice",
+                script: str = _RUNNER) -> None:
+    """Run ``seedvc_runner.py`` (or ``script``) in Seed-VC's venv, mirroring its chunk progress; raises on failure."""
     folder = ensure_seed_vc(lambda message: report and report(message, 0.0))
-    env = {**os.environ, "HF_HOME": os.environ.get("HF_HOME") or os.path.join(data_root(), "hf"),
+    hf_home = os.environ.get("HF_HOME") or os.path.join(data_root(), "hf")
+    env = {**os.environ, "HF_HOME": hf_home, "TORCH_HOME": os.environ.get("TORCH_HOME") or os.path.join(hf_home, "torch"),
            "PYTHONUNBUFFERED": "1"}
-    process = subprocess.Popen([_venv_python(folder), _RUNNER, *arguments], cwd=folder, env=env,
+    process = subprocess.Popen([_venv_python(folder), script, *arguments], cwd=folder, env=env,
                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
     tail: list[str] = []
     assert process.stdout is not None
@@ -186,6 +191,34 @@ def convert_vocals(source: str, profile: str, output: str, config: Mapping[str, 
     if not os.path.isfile(output):
         raise CoverError("Seed-VC produced no file")
     return output
+
+
+def judge_vocals(source: str, converted: str, output: str, *, profile: str = "", references: list[str] | None = None,
+                 weights: list[float] | None = None, mos: bool = False,
+                 is_cancelled: Callable[[], bool] | None = None) -> dict | None:
+    """Score the converted stem against the source and the target voice (``seedvc_judge.py``); None on failure.
+
+    ``mos`` is off by default: SingMOS does not load on torchaudio 2.10 and UTMOS22 rates speech, not singing.
+    """
+    arguments = ["--source", source, "--candidate", f"vocals={converted}", "--output", output]
+    if profile:
+        arguments += ["--profile", profile]
+    for path, weight in zip(references or [], weights or []):
+        arguments += ["--reference", path, "--weight", str(weight)]
+    if not profile and not references:
+        return None
+    if mos:
+        arguments.append("--mos")
+    try:
+        _run_runner(arguments, is_cancelled=is_cancelled, label="Judging the voice", script=_JUDGE)
+        with open(output, encoding="utf-8") as handle:
+            scores = json.load(handle)
+        return scores[0] if scores else None
+    except CoverError:
+        raise
+    except Exception as error:  # noqa: BLE001 - the cover is done either way
+        print(f"[Voice cover] judge failed: {error}")
+        return None
 
 
 def mix(vocals: str, instrumental: str, output: str, *, vocal_gain_db: float = 0.0) -> str:
@@ -275,6 +308,12 @@ def run_cover_job(job: dict, raw_params: Mapping[str, Any]) -> bool:
         shutil.copyfile(converted, os.path.join(out_dir, names["vocals"]))
         shutil.copyfile(source_vocals, os.path.join(out_dir, names["source_vocals"]))
         shutil.copyfile(instrumental, os.path.join(out_dir, names["instrumental"]))
+        report("Judging the voice", 97.0)
+        scores = judge_vocals(source_vocals, converted, os.path.join(out_dir, SCORES_NAME),
+                              profile=os.path.join(out_dir, names["profile"]) if "profile" in names else "",
+                              references=references, weights=weights, is_cancelled=cancelled)
+        if scores is not None:
+            names["scores"] = SCORES_NAME
         finish_job(job, "completed", progress=100, step=0, total_steps=0, phase="", message="Done",
                    output_files=list(names.values()))
         print(f"[Voice cover] {config['name']}: {names['cover']} ({config['engine']}, {config['steps']} steps)")

@@ -106,6 +106,15 @@ export interface CoverVideo {
   seconds: number | null
   prompt?: string
 }
+export interface CoverScores {
+  timbre: number
+  timbre_source: number
+  pitch_corr: number
+  pitch_cents: number | null
+  voiced_agreement: number
+  singmos?: number
+  utmos22?: number
+}
 export interface SongCover {
   id: string
   name: string
@@ -118,9 +127,11 @@ export interface SongCover {
   voice_id: string
   bible_id: string
   character_id: string
-  outputs: Partial<Record<'cover' | 'vocals' | 'source_vocals' | 'instrumental' | 'profile', string>>
+  outputs: Partial<Record<'cover' | 'vocals' | 'source_vocals' | 'instrumental' | 'profile' | 'scores', string>>
   job_id: string
   seconds: number | null
+  /** The worker's judge: timbre match to the voice (0-1), pitch fidelity to the source, a MOS when available. */
+  scores?: CoverScores | null
   video?: CoverVideo
   created_at: string
   updated_at: string

@@ -325,6 +325,14 @@ function CoverCard({ bible, cover, ask, onChange, onDeleted }: {
       {live && <p className="text-[10px] text-text-secondary">{cover.progress || cover.status}</p>}
       {cover.error && <p role="alert" className="text-[10px] text-chip-red">{cover.error}</p>}
       {error && <p role="alert" className="text-[10px] text-chip-red">{error}</p>}
+      {cover.scores && (
+        <p className="text-[10px] text-text-muted"
+          title="Judged on the worker: timbre = cosine similarity of the converted vocals to the voice (CAMPPlus, 1 = same voice); pitch = correlation and median deviation against the source singer (RMVPE); MOS = SingMOS singing quality, 1 to 5">
+          Judge · timbre {cover.scores.timbre.toFixed(2)} (source {cover.scores.timbre_source.toFixed(2)})
+          · pitch {cover.scores.pitch_corr.toFixed(3)}{cover.scores.pitch_cents !== null ? `, ${cover.scores.pitch_cents.toFixed(1)} cents` : ''}
+          {cover.scores.singmos !== undefined ? ` · MOS ${cover.scores.singmos.toFixed(2)}` : cover.scores.utmos22 !== undefined ? ` · UTMOS ${cover.scores.utmos22.toFixed(2)}` : ''}
+        </p>
+      )}
       {cover.status === 'done' && (
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
           {([['cover', 'Cover (mix)'], ['vocals', 'Converted vocals'], ['song', 'Original song']] as const).map(([which, title]) => (
