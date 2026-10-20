@@ -392,6 +392,22 @@ on the worker's packages) and mixes it back over the instrumental. `GET
 …/covers/{id}/audio/{cover|vocals|source_vocals|instrumental|song|reference}`
 serves the files; `POST …/{id}/run|cancel` and `DELETE …/{id}` as usual.
 
+A finished cover gets its singing video with `POST
+…/covers/{id}/video` (`services/director/cover_video.py`, state under the
+record's `video`): multipart `character_id` (defaults to the cover's),
+optional `location_id`, `orientation` (`portrait` 576×1024 or `landscape`
+1024×576), `start_sec` / `seconds` (one LTX-2.5 window: 12 s by default,
+at most 345 frames at 24 fps), `lyrics` (quoted in the prompt), `prompt` /
+`start_prompt` overrides, `seed`, `model_type` (an `ltx2_25*` model) or a
+`start_image` upload. Two worker jobs follow: the Director's image editor
+paints `start.png` (the character, reference 1, at a studio microphone in
+the place, reference 2, with the bible look), then LTX-2.5 image-to-video
+with `audio_prompt_type "A"`, the sliced mix as `audio_guide` (the
+soundtrack) and the sliced converted vocals as `audio_conditioning_guide`
+(the lips), the music-video lip-sync contract closing the prompt. `GET
+…/{id}/video/{video|start|clip_mix|clip_vocals}` serves the files, `POST
+…/{id}/video/cancel` stops the running job.
+
 ## Insights registry
 
 Every judge finding of every run lands in one SQLite file,
