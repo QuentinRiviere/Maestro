@@ -81,6 +81,9 @@ H3_MIN_FRAMES, H3_MAX_FRAMES, H3_STEP = 124, 345, 17
 # The start images read as candid phone stills, not studio portraits.
 REALISM = ("candid vertical smartphone video still, natural light, imperfect framing, slight motion blur on passers-by, "
            "nobody looks at him, true-to-life colours, no text, no watermark")
+# The editor turns a move told in beats into a storyboard: one frame is demanded, and checked (``split_panels``).
+ONE_FRAME = "One single photograph filling the whole frame: not a storyboard, no split panels, no collage, no grid."
+START_RETRIES = 2
 _LOCK = threading.RLock()
 _LIVE: set[str] = set()
 _SLOT = threading.Semaphore(1)
@@ -223,9 +226,9 @@ def start_prompt(character: Mapping[str, Any], location: Mapping[str, Any] | Non
     beat = {"the opening of the move": "the first beat", "the middle of the move": "the middle beat",
             "the finish of the move": "the final beat"}.get(shot[2], "the first beat")
     # The editor copies the reference's framing unless the camera is dictated first and the pose is released.
-    text = (f"CAMERA: {shot[0]}, {aspect}. Do not copy the framing or pose of reference 1, only the person. "
-            f"{character.get('name') or 'The character'} (the person of reference 1: same face, hair and clothes){place}, "
-            f"at {beat} of this move: {settings['gesture']}. {REALISM}.")
+    text = (f"CAMERA: {shot[0]}, {aspect}. {ONE_FRAME} Do not copy the framing or pose of reference 1, only the "
+            f"person. {character.get('name') or 'The character'} (the person of reference 1: same face, hair and "
+            f"clothes){place}, frozen at {beat} of this move: {settings['gesture']}. {REALISM}.")
     return f"{text} {look}".strip()
 
 
@@ -297,6 +300,23 @@ def clip_job(prompt: str, start_image: str, settings: Mapping[str, Any], *, fram
     }
     job["audio_prompt_type"] = "A" if settings.get("audio") == "silent" else ""
     return job
+
+
+def split_panels(image: str, *, margin: float = 0.12, jump: float = 28.0, straight: float = 0.8) -> bool:
+    """Whether the image is cut into panels: a straight seam (a row or column that differs sharply from its
+    neighbour over most of its length) away from the borders. The editor draws a storyboard now and then."""
+    import numpy as np
+    from PIL import Image
+
+    grey = np.asarray(Image.open(image).convert("L"), dtype=np.float32)
+    for axis in (0, 1):
+        plane = grey if axis == 0 else grey.T
+        diffs = np.abs(np.diff(plane, axis=0))
+        first, last = int(len(diffs) * margin), int(len(diffs) * (1 - margin))
+        for index in range(first, last):
+            if float(np.mean(diffs[index] > jump)) >= straight:
+                return True
+    return False
 
 
 def speed_up(source: str, output: str, speed: float, *, silent: bool = True) -> str:
@@ -439,10 +459,19 @@ def _run(clip_id: str, submit, jobs) -> None:
                         same_place = True
                     prompt = (settings.get("start_prompt") if index == 1 and settings.get("start_prompt") else
                               start_prompt(character, location, settings, look, framing=framing, same_place=same_place))
-                    params = cover_video.start_job(prompt, refs, settings["orientation"], pipeline, settings.get("seed", -1))
-                    params["_director_cost_stage"] = "persona_clip_start"
-                    outputs = cover_video.run_stage(submit, jobs, params, folder, f"Start image {index}/{len(shots)}", update)
-                    shutil.move(str(folder / outputs[0]), str(folder / start_name))
+                    seed = int(settings.get("seed", -1))
+                    for attempt in range(START_RETRIES + 1):
+                        params = cover_video.start_job(prompt, refs, settings["orientation"], pipeline,
+                                                       seed + attempt if seed >= 0 else -1)
+                        params["_director_cost_stage"] = "persona_clip_start"
+                        outputs = cover_video.run_stage(submit, jobs, params, folder, f"Start image {index}/{len(shots)}",
+                                                        update)
+                        shutil.move(str(folder / outputs[0]), str(folder / start_name))
+                        if not split_panels(str(folder / start_name)):
+                            break
+                        update(progress=f"Start image {index} came as panels, painting again ({attempt + 1})")
+                    else:
+                        raise BibleError(f"Start image {index} keeps coming as split panels")
                     if index == 1:
                         made["start"] = start_name
                         _set(clip_id, outputs=made, progress="Start image ready")

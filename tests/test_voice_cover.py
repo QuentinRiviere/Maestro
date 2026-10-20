@@ -395,6 +395,19 @@ class PersonaClipTests(unittest.TestCase):
         pc.delete_clip(record["id"])
         self.assertEqual(pc.list_clips(), [])
 
+    def test_split_panels_detects_a_storyboard(self):
+        from PIL import Image, ImageDraw
+        rng = np.random.default_rng(3)
+        noise = Image.fromarray(rng.integers(60, 200, (120, 72, 3), dtype=np.uint8))
+        noise.save(os.path.join(self.tmp, "plain.png"))
+        self.assertFalse(pc.split_panels(os.path.join(self.tmp, "plain.png")))
+        triptych = Image.fromarray(rng.integers(0, 80, (120, 72, 3), dtype=np.uint8))
+        ImageDraw.Draw(triptych).rectangle([0, 40, 72, 80], fill=(230, 230, 230))
+        triptych.save(os.path.join(self.tmp, "panels.png"))
+        self.assertTrue(pc.split_panels(os.path.join(self.tmp, "panels.png")))
+        self.assertIn("not a storyboard", pc.start_prompt({"name": "Marcel"}, None, {
+            "orientation": "portrait", "gesture": "blows the whistle, scans, points", "place": "a market"}, framing="side"))
+
     def test_uploaded_start_image_and_model_audio(self):
         from PIL import Image
         start = os.path.join(self.tmp, "pose.png")
