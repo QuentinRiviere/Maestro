@@ -371,6 +371,24 @@ Then set the provider to the local server, the URL to
 `https://<spark>/v1`, the key to llama-swap's API key and the model to
 `judge`. Any other OpenAI-compatible vision endpoint works the same way.
 
+## Voice covers
+
+A cover sings an uploaded song with a reference voice
+(`services/director/voice_cover.py`, records in
+`settings/director_covers.json`, files under `settings/covers/<id>/`).
+`POST /api/v1/director/covers` is multipart: `song` (the track, vocals
+included, rights cleared by the user), `reference` (5 to 30 s of the target
+voice, sung rather than spoken when possible), `name`, `steps` (Seed-VC
+diffusion steps, 30), `cfg_rate` (0.7), `semitone_shift` (-12..12),
+`auto_f0`, `vocal_gain_db`, and optional `bible_id` / `character_id` to tag
+whose voice it is. The worker job (`services/voice_cover.py`) splits the
+song with BS-RoFormer, converts the vocal stem with Seed-VC's singing
+checkpoint (zero-shot, F0-conditioned, 44.1 kHz; the repo is cloned at a
+pinned commit under `$MAESTRO_DATA/tools/seed-vc` with its own venv layered
+on the worker's packages) and mixes it back over the instrumental. `GET
+…/covers/{id}/audio/{cover|vocals|source_vocals|instrumental|song|reference}`
+serves the files; `POST …/{id}/run|cancel` and `DELETE …/{id}` as usual.
+
 ## Insights registry
 
 Every judge finding of every run lands in one SQLite file,
