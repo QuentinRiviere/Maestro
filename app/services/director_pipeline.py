@@ -8247,19 +8247,21 @@ def _render_bible_slot(bible_id: str, element_id: str, variant_id: str, slot: st
             source = bibles.image_path(bible_id, bibles.approved_image(element, variant["id"]) or "")
             if source is None:
                 raise bibles.BibleError("Approve an image of this look before rendering its angles")
-            refs = [str(source)]
-            prompt = (casting.view_prompt(view, element, variant, medium, ref_label=ref_label)
-                      if kind == "character"
-                      else casting.location_view_prompt(view, element, variant, medium, ref_label=ref_label))
-            if kind == "location":
-                # The place's other approved angles keep the new one consistent with them.
-                others = [bibles.image_path(bible_id, name) for other, name in
-                          bibles.approved_views(variant, bibles.LOCATION_VIEWS).items() if other != view]
-                others = [str(p) for p in others if p is not None][: max(0, (budget or 4) - 1)]
-                if others:
-                    refs += others
-                    prompt += (f" {ref_label}s 2 to {len(refs)} show the same place from other sides: keep every "
-                               "wall, window, door and piece of furniture where they put it.")
+            if kind == "character":
+                refs = [str(source)]
+                prompt = casting.view_prompt(view, element, variant, medium, ref_label=ref_label)
+            else:
+                # An editor given the plate copies its composition: a place's
+                # other angles are painted from text alone, from the room sheet
+                # the analyst writes off the plate (services.director.room_spec).
+                from services.director import room_spec
+
+                analyst = globals().get("style_analyst_backend")
+                spec = room_spec.ensure_spec(bible_id, element, str(source),
+                                             backend=analyst() if callable(analyst) else None)
+                refs = []
+                prompt = room_spec.wall_prompt(view, element, spec, state=variant.get("description") or "")
+                prompt += casting.realism_clause("location", medium)
         else:
             refs = [str(path) for path in bibles.reference_paths(bible, element, variant, chain_from, base_image)]
             # A text-only model never sees references: its prompt must not name any.

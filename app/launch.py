@@ -873,6 +873,11 @@ def _init_pipeline():
         if slots is not None:  # absent when a test loads this function alone
             import services.director_pipeline as _director_pipeline_module
             _director_pipeline_module.bible_render_slots = slots
+        analyst = globals().get("_style_reference_backend")
+        if analyst is not None:
+            import services.director_pipeline as _director_pipeline_module
+            # The analyst writes a place's room sheet before its angles are rendered.
+            _director_pipeline_module.style_analyst_backend = analyst
         _pipeline_initialized = True
 
 
