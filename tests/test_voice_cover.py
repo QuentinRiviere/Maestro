@@ -350,9 +350,14 @@ class PersonaClipTests(unittest.TestCase):
                                 bible_id=self.bible_id)
         self.assertEqual(record["status"], "queued")
         self.assertEqual(record["settings"]["frames"], 145)
+        self.assertEqual(record["settings"]["template"], "single")
         # The default speed renders one and a half times longer, then the clip is sped up to the asked length.
         faster = pc.clip_settings({"gesture": "wave", "seconds": 6})
         self.assertEqual((faster["speed"], faster["frames"], faster["seconds"]), (1.5, 217, 6.0))
+        trend = pc.clip_settings({"gesture": "wave", "template": "trend"})
+        self.assertEqual([s["frames"] for s in trend["shots"]], [145, 145, 113])
+        with self.assertRaises(bibles.BibleError):
+            pc.clip_settings({"gesture": "wave", "template": "epic"})
         with self.assertRaises(bibles.BibleError):
             pc.clip_settings({"gesture": "wave", "seconds": 12, "speed": 2})
         self.assertEqual(record["settings"]["audio"], "silent")
@@ -369,7 +374,7 @@ class PersonaClipTests(unittest.TestCase):
         self.assertEqual(clip["audio_prompt_type"], "A")
         self.assertNotIn("audio_guide", clip)
         self.assertEqual(clip["video_length"], 145)
-        self.assertIn("signature move in one continuous take: a slow finger-gun wink", clip["prompt"])
+        self.assertIn("the whole move in one continuous take: a slow finger-gun wink", clip["prompt"])
         self.assertIn("no slow motion", clip["prompt"])
         self.assertIn("slow motion", clip["negative_prompt"])
         self.assertIn("mouth stays closed", clip["prompt"])
@@ -529,14 +534,31 @@ class PersonaTests(unittest.TestCase):
         self.assertIn("retired lifeguard", submitted[0]["prompt"])
         self.assertNotIn("image_refs", submitted[0])
         submitted.clear()
-        with patch.object(vc, "_director", lambda: Pipeline):
+        self.assertEqual(persona["template"], "trend")
+
+        def concat(parts, output):
+            Path(output).write_bytes(b"".join(Path(p).read_bytes() for p in parts))
+            return output
+
+        with patch.object(vc, "_director", lambda: Pipeline), patch.object(pc, "concat_shots", concat):
             clips = ps.series(persona["id"], count=2, submit=self._submit(submitted), jobs={}, wait=True)
         self.assertEqual([c["status"] for c in clips], ["done", "done"], [c.get("error") for c in clips])
         self.assertEqual(clips[0]["settings"]["persona_id"], persona["id"])
         self.assertEqual(clips[1]["settings"]["place"], "a metro platform")
-        # The start image takes the portrait as its only reference; the clip performs the move.
+        # Three shots (wide, side, close): three start images and three LTX jobs per clip, 11 s shown.
+        self.assertEqual([s["framing"] for s in clips[0]["settings"]["shots"]], ["wide", "side", "close"])
+        self.assertEqual(clips[0]["settings"]["seconds"], 11.0)
+        self.assertEqual(len(submitted), 12)
         self.assertEqual(submitted[0]["image_refs"], [persona["portrait"]])
+        self.assertIn("wide shot", submitted[0]["prompt"])
+        self.assertIn("smartphone", submitted[0]["prompt"])
+        self.assertIn("the opening of the move", submitted[1]["prompt"])
         self.assertIn("blows a whistle", submitted[1]["prompt"])
+        # Later shots keep the place: the first start image is their second reference.
+        self.assertEqual(len(submitted[2]["image_refs"]), 2)
+        self.assertIn("same place as reference 2", submitted[2]["prompt"])
+        self.assertIn("close-up", submitted[4]["prompt"])
+        self.assertEqual((pc.clip_dir(clips[0]["id"]) / "clip.mp4").read_bytes(), b"mp4mp4mp4")
         self.assertEqual(ps.get_persona(persona["id"])["clips"], 2)
         # Joining a bible makes a character with the portrait approved.
         bible = ps.add_to_bible(persona["id"], self.bible_id)

@@ -41,6 +41,33 @@ DEFAULT_SPEED = 1.5
 MAX_SPEED = 3.0
 AUDIO_MODES = ("silent", "model")
 OUTPUTS = {"start": "start.png", "clip": "clip.mp4", "raw": "clip_raw.mp4"}
+# A shot's framing: how its start image is framed, how the phone moves during it, which part of the move it shows.
+SHOTS = {
+    "full": ("a full-body shot facing the camera, phone at chest height", "handheld phone framing, slight sway",
+             "the whole move"),
+    "wide": ("a wide shot filmed from across the way with a phone held at chest height, the character small but "
+             "clearly visible in the middle of the scene, passers-by crossing the foreground, the place filling the frame",
+             "the phone drifts sideways and pushes in a little, people walk through the frame", "the opening of the move"),
+    "side": ("a medium shot from a three-quarter side angle, waist up, phone at eye level, the place blurred behind",
+             "handheld with a slight sway, the phone slowly circles a quarter turn around him", "the middle of the move"),
+    "low": ("a low angle from knee height looking up, full body, the place towering behind him",
+            "handheld low angle with a slight tilt up", "the middle of the move"),
+    "close": ("a close-up on the face and hands, shallow depth of field, the whistle and the pointing finger in frame",
+              "steady close framing with micro shake and a quick push in at the end", "the finish of the move"),
+    "over_shoulder": ("over the shoulder of a bystander in the foreground, the character in focus behind",
+                      "the bystander's shoulder sways, the phone peeks past it", "the middle of the move"),
+}
+# Templates: the shots of a clip and their lengths (seconds, as shown).
+TEMPLATES = {
+    "single": [("full", None)],
+    "trend": [("wide", 4.0), ("side", 4.0), ("close", 3.0)],
+    "street": [("over_shoulder", 4.0), ("low", 4.0), ("close", 3.0)],
+    "reveal": [("close", 3.0), ("wide", 5.0), ("side", 3.0)],
+}
+DEFAULT_TEMPLATE = "single"
+# The start images read as candid phone stills, not studio portraits.
+REALISM = ("candid vertical smartphone video still, natural light, imperfect framing, slight motion blur on passers-by, "
+           "nobody looks at him, true-to-life colours, no text, no watermark")
 _LOCK = threading.RLock()
 _LIVE: set[str] = set()
 _SLOT = threading.Semaphore(1)
@@ -121,15 +148,26 @@ def clip_settings(raw: Mapping[str, Any] | None) -> dict:
         speed = DEFAULT_SPEED
     speed = max(1.0, min(MAX_SPEED, speed))
     wanted = float(raw.get("seconds") or DEFAULT_SECONDS)
+    template = str(raw.get("template") or DEFAULT_TEMPLATE).strip()
+    if template not in TEMPLATES:
+        raise BibleError(f"Unknown template (one of {', '.join(TEMPLATES)})")
     base = cover_video.video_settings({**raw, "seconds": wanted * speed, "start_sec": 0})
-    if base["frames"] > cover_video.MAX_FRAMES:
-        raise BibleError("A persona clip fits one window: at most "
-                         f"{cover_video.seconds_for(cover_video.MAX_FRAMES) / speed:.0f} s at speed {speed:g}")
+    limit = cover_video.seconds_for(cover_video.MAX_FRAMES) / speed
+    shots = []
+    for framing, seconds in TEMPLATES[template]:
+        shown = float(seconds if seconds is not None else wanted)
+        if shown > limit + 1e-6:
+            raise BibleError(f"A shot fits one window: at most {limit:.0f} s at speed {speed:g}")
+        frames = cover_video.frames_for(shown * speed)
+        shots.append({"framing": framing, "seconds": round(shown, 3), "frames": frames,
+                      "rendered_seconds": round(cover_video.seconds_for(frames), 3)})
+    total = round(sum(shot["seconds"] for shot in shots), 3)
     return {
         "persona_id": str(raw.get("persona_id") or "").strip(),
         "character_id": base["character_id"], "location_id": base["location_id"], "gesture": gesture,
-        "orientation": base["orientation"], "frames": base["frames"], "seconds": round(base["seconds"] / speed, 3),
-        "speed": speed, "rendered_seconds": base["seconds"],
+        "orientation": base["orientation"], "frames": shots[0]["frames"], "seconds": total,
+        "speed": speed, "rendered_seconds": round(sum(s["rendered_seconds"] for s in shots), 3),
+        "template": template, "shots": shots,
         "seed": base["seed"], "model_type": base["model_type"], "audio": audio,
         "prompt": base["prompt"], "start_prompt": base["start_prompt"],
         "place": str(raw.get("place") or "").strip()[:300],
@@ -137,17 +175,25 @@ def clip_settings(raw: Mapping[str, Any] | None) -> dict:
 
 
 def start_prompt(character: Mapping[str, Any], location: Mapping[str, Any] | None, settings: Mapping[str, Any],
-                 look: str = "") -> str:
-    framing = "vertical 9:16 medium shot" if settings["orientation"] == "portrait" else "16:9 medium shot"
-    if location:
+                 look: str = "", *, framing: str = "full", same_place: bool = False) -> str:
+    """The editor prompt of a shot's start image: the character (reference 1) in the place, framed for the shot.
+
+    ``same_place``: reference 2 is the first shot's start image, the same place seen from another angle.
+    """
+    aspect = "vertical 9:16" if settings["orientation"] == "portrait" else "16:9"
+    shot = SHOTS.get(framing) or SHOTS["full"]
+    if same_place:
+        place = " in the exact same place as reference 2, seen from another angle"
+    elif location:
         place = f" inside the exact place of reference 2 ({location.get('name') or 'the place'})"
     elif settings.get("place"):
         place = f" in {settings['place']}"
     else:
         place = ""
-    text = (f"{character.get('name') or 'The character'} from reference 1, same face, hair and clothes, stands{place} "
-            f"at the first beat of this move: {settings['gesture']}. Looking at the camera, {framing}, natural light, "
-            "photographic, no text.")
+    beat = {"the opening of the move": "the first beat", "the middle of the move": "the middle beat",
+            "the finish of the move": "the final beat"}.get(shot[2], "the first beat")
+    text = (f"{character.get('name') or 'The character'} from reference 1, same face, hair and clothes,{place}, "
+            f"at {beat} of this move: {settings['gesture']}. {shot[0]}, {aspect}, {REALISM}.")
     return f"{text} {look}".strip()
 
 
@@ -157,22 +203,24 @@ PACE = ("Real-time speed, brisk natural motion as in a phone video, the whole mo
 NEGATIVE = "slow motion, slowed down, frozen pose, static, blurry, text, watermark, extra fingers, deformed hands"
 
 
-def clip_prompt(character: Mapping[str, Any], settings: Mapping[str, Any]) -> str:
+def clip_prompt(character: Mapping[str, Any], settings: Mapping[str, Any], *, framing: str = "full") -> str:
     name = character.get("name") or "The character"
+    shot = SHOTS.get(framing) or SHOTS["full"]
     body = settings.get("prompt") or (
-        f"{name} performs the signature move in one continuous take: {settings['gesture']}. Facing the camera, "
-        f"handheld phone framing, the place unchanged, no camera cut, no text. {PACE}")
+        f"{name} performs {shot[2]} in one continuous take: {settings['gesture']}. {shot[1]}, smartphone footage, "
+        f"passers-by ignore him, the place unchanged, no camera cut, no text. {PACE}")
     silence = " Silent clip: nobody speaks, the mouth stays closed." if settings.get("audio") == "silent" else ""
     return f"{body}{silence}"
 
 
-def clip_job(prompt: str, start_image: str, settings: Mapping[str, Any]) -> dict:
+def clip_job(prompt: str, start_image: str, settings: Mapping[str, Any], *, frames: int | None = None) -> dict:
     """LTX-2.5 image-to-video; "A" without a soundtrack makes WanGP condition on silence."""
+    frames = int(frames or settings["frames"])
     job = {
         "model_type": settings["model_type"], "prompt": prompt, "image_mode": 0, "image_prompt_type": "S",
         "image_start": start_image, "generation_mode": "video", "num_inference_steps": 8, "guidance_scale": 1.0,
         "input_video_strength": 1.0, "resolution": cover_video.ORIENTATIONS[settings["orientation"]][0],
-        "video_length": int(settings["frames"]), "sliding_window_size": int(settings["frames"]),
+        "video_length": frames, "sliding_window_size": frames,
         "seed": int(settings.get("seed", -1)), "settings_version": 2.52, "repeat_generation": 1,
         "negative_prompt": NEGATIVE, "activated_loras": [], "loras_multipliers": "", "_director_cost_stage": "persona_clip",
     }
@@ -191,6 +239,19 @@ def speed_up(source: str, output: str, speed: float, *, silent: bool = True) -> 
     else:
         command += ["-filter:a", f"atempo={min(2.0, speed):.4f}", "-c:a", "aac"]
     subprocess.run(command + [output], check=True, capture_output=True, text=True)
+    return output
+
+
+def concat_shots(parts: list[str], output: str) -> str:
+    """Join the shots in order into one clip (ffmpeg, re-encoded so cuts are clean)."""
+    import subprocess
+
+    listing = Path(output).with_suffix(".txt")
+    listing.write_text("".join(f"file '{Path(part).resolve()}'\n" for part in parts), encoding="utf-8")
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(listing), "-r", "24",
+                    "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-an", output],
+                   check=True, capture_output=True, text=True)
+    listing.unlink(missing_ok=True)
     return output
 
 
@@ -284,30 +345,55 @@ def _run(clip_id: str, submit, jobs) -> None:
                 character = bibles.find_element(bible, settings["character_id"])[1]
                 identity = style_lora.element_view(record["bible_id"], character, "")
             location = bibles.find_element(bible, settings["location_id"])[1] if settings.get("location_id") else None
-            if "start" not in made or not (folder / made["start"]).is_file():
-                refs = [identity]
-                if location:
-                    refs.append(style_lora.element_view(record["bible_id"], location, ""))
-                look = str((bible.get("world") or {}).get("look") or "").strip()
-                prompt = settings.get("start_prompt") or start_prompt(character, location, settings, look)
-                params = cover_video.start_job(prompt, refs, settings["orientation"], pipeline, settings.get("seed", -1))
-                params["_director_cost_stage"] = "persona_clip_start"
-                outputs = cover_video.run_stage(submit, jobs, params, folder, "Start image", update)
-                shutil.move(str(folder / outputs[0]), str(folder / OUTPUTS["start"]))
-                made["start"] = OUTPUTS["start"]
-                _set(clip_id, outputs=made, progress="Start image ready")
-            prompt = clip_prompt(character, settings)
-            outputs = cover_video.run_stage(submit, jobs, clip_job(prompt, str(folder / made["start"]), settings),
-                                            folder, "Clip", update)
+            look = str((bible.get("world") or {}).get("look") or "").strip()
+            shots = settings.get("shots") or [{"framing": "full", "frames": settings["frames"],
+                                               "seconds": settings["seconds"]}]
             speed = float(settings.get("speed") or 1.0)
-            if speed > 1.0:
-                cover_video.keep_last_video(folder, outputs, OUTPUTS["raw"])
-                speed_up(str(folder / OUTPUTS["raw"]), str(folder / OUTPUTS["clip"]), speed,
-                         silent=settings.get("audio") == "silent")
-                made["raw"] = OUTPUTS["raw"]
+            silent = settings.get("audio") == "silent"
+            parts, prompts = [], []
+            for index, shot in enumerate(shots, start=1):
+                framing = shot.get("framing") or "full"
+                start_name = OUTPUTS["start"] if index == 1 else f"start_{index}.png"
+                if index == 1 and "start" in made and (folder / made["start"]).is_file():
+                    pass
+                else:
+                    refs = [identity]
+                    same_place = False
+                    if location:
+                        refs.append(style_lora.element_view(record["bible_id"], location, ""))
+                    elif index > 1:
+                        refs.append(str(folder / OUTPUTS["start"]))
+                        same_place = True
+                    prompt = (settings.get("start_prompt") if index == 1 and settings.get("start_prompt") else
+                              start_prompt(character, location, settings, look, framing=framing, same_place=same_place))
+                    params = cover_video.start_job(prompt, refs, settings["orientation"], pipeline, settings.get("seed", -1))
+                    params["_director_cost_stage"] = "persona_clip_start"
+                    outputs = cover_video.run_stage(submit, jobs, params, folder, f"Start image {index}/{len(shots)}", update)
+                    shutil.move(str(folder / outputs[0]), str(folder / start_name))
+                    if index == 1:
+                        made["start"] = start_name
+                        _set(clip_id, outputs=made, progress="Start image ready")
+                prompt = clip_prompt(character, settings, framing=framing)
+                prompts.append(prompt)
+                outputs = cover_video.run_stage(
+                    submit, jobs, clip_job(prompt, str(folder / start_name), settings, frames=shot.get("frames")),
+                    folder, f"Shot {index}/{len(shots)}", update)
+                raw_name = OUTPUTS["raw"] if len(shots) == 1 else f"shot_{index}_raw.mp4"
+                shot_name = f"shot_{index}.mp4"
+                if speed > 1.0:
+                    cover_video.keep_last_video(folder, outputs, raw_name)
+                    speed_up(str(folder / raw_name), str(folder / shot_name), speed, silent=silent)
+                    if len(shots) == 1:
+                        made["raw"] = raw_name
+                else:
+                    cover_video.keep_last_video(folder, outputs, shot_name)
+                parts.append(str(folder / shot_name))
+            if len(parts) == 1:
+                shutil.move(parts[0], str(folder / OUTPUTS["clip"]))
             else:
-                cover_video.keep_last_video(folder, outputs, OUTPUTS["clip"])
+                concat_shots(parts, str(folder / OUTPUTS["clip"]))
             made["clip"] = OUTPUTS["clip"]
+            prompt = " | ".join(prompts)
             _set(clip_id, status="done", progress="", outputs=made, prompt=prompt,
                  seconds=round(time.time() - started))
             print(f"[Persona clip] {clip_id}: {OUTPUTS['clip']} in {round(time.time() - started)} s")
@@ -385,13 +471,14 @@ def register_routes(api: Any, *, settings_dir: Callable[[], str]) -> None:
                           gesture: str = Form(...), location_id: str = Form(""), place: str = Form(""),
                           name: str = Form(""), orientation: str = Form("portrait"),
                           seconds: float = Form(DEFAULT_SECONDS), speed: float = Form(DEFAULT_SPEED), seed: int = Form(-1),
-                          audio: str = Form("silent"),
+                          audio: str = Form("silent"), template: str = Form(DEFAULT_TEMPLATE),
                           prompt: str = Form(""), start_prompt: str = Form(""),
                           model_type: str = Form(cover_video.VIDEO_MODEL), run: bool = Form(True),
                           start_image: UploadFile | None = File(None)):
         raw = {"character_id": character_id, "persona_id": persona_id, "location_id": location_id, "gesture": gesture,
                "place": place,
                "orientation": orientation, "seconds": seconds, "speed": speed, "seed": seed, "audio": audio, "prompt": prompt,
+               "template": template,
                "start_prompt": start_prompt, "model_type": model_type}
         uploaded = ""
         if start_image is not None and start_image.filename:

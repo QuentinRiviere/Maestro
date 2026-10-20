@@ -451,7 +451,14 @@ and sped up in post with ffmpeg, `clip_raw.mp4` kept), `seed`, `audio` (`silent`
 conditioning without a soundtrack, which WanGP fills with silence so the
 mouth stays shut; `model` lets LTX invent a soundtrack), `prompt` /
 `start_prompt` overrides, `model_type` (an `ltx2_25*` model), a
-`start_image` upload that skips the editor, and `run`. The two worker jobs
+`start_image` upload that skips the editor, `template` (`single`: one
+full-body take; `trend`: wide 4 s, side 4 s, close 3 s; `street`: over a
+shoulder, low angle, close; `reveal`: close, wide, side) and `run`. A
+multi-shot clip paints one start image per shot (the portrait as
+reference 1, the first shot's start image as reference 2 so later shots
+keep the place, framed as candid phone stills), renders each shot with
+its own camera motion and part of the move, speeds them up and joins them
+(`concat_shots`); `shot_<n>.mp4` and `start_<n>.png` stay in the folder. The two worker jobs
 are the cover video's (`cover_video.start_job`, `run_stage`): the editor
 paints the character at the first beat of the gesture in the place, then
 LTX-2.5 image-to-video performs it in one take. `GET …/persona-clips`

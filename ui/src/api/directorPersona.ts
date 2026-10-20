@@ -237,10 +237,14 @@ export interface PersonaClipSettings {
   /** Rendered ``speed`` times longer and sped up in post (LTX moves at about two thirds of real pace). */
   speed?: number
   rendered_seconds?: number
+  /** Shots cut together: single (one full-body take), trend (wide, side, close), street, reveal. */
+  template?: ClipTemplate
+  shots?: Array<{ framing: string; seconds: number; frames: number }>
   seed: number
   model_type: string
   audio: 'silent' | 'model'
 }
+export type ClipTemplate = 'single' | 'trend' | 'street' | 'reveal'
 export interface PersonaClip {
   id: string
   name: string
@@ -281,6 +285,7 @@ export interface Persona {
   orientation: 'portrait' | 'landscape'
   seconds: number
   speed: number
+  template: ClipTemplate
   audio: 'silent' | 'model'
   bible_id: string
   character_id: string
@@ -315,6 +320,7 @@ export interface PersonaRequest {
   orientation?: 'portrait' | 'landscape'
   seconds?: number
   speed?: number
+  template?: ClipTemplate
   audio?: 'silent' | 'model'
   bible_id?: string
   character_id?: string
@@ -337,7 +343,7 @@ export async function repaintPersona(id: string): Promise<Persona> {
 }
 
 /** Queue one clip per place: the given ones, or the persona's own list (``count`` of them). */
-export async function startPersonaSeries(id: string, request: { places?: string[]; count?: number; seconds?: number }): Promise<PersonaClip[]> {
+export async function startPersonaSeries(id: string, request: { places?: string[]; count?: number; seconds?: number; template?: ClipTemplate }): Promise<PersonaClip[]> {
   return (await json<{ clips: PersonaClip[] }>(await fetch(`${personasUrl(id)}/series`,
     { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request) }), 'Could not start the series')).clips
 }
@@ -369,6 +375,7 @@ export interface PersonaClipRequest {
   orientation?: 'portrait' | 'landscape'
   seconds?: number
   speed?: number
+  template?: ClipTemplate
   seed?: number
   audio?: 'silent' | 'model'
   prompt?: string
