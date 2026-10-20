@@ -31,6 +31,9 @@ import zipfile
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+from fastapi import HTTPException, Request
+from fastapi.responses import FileResponse
+
 from . import bibles
 from .bibles import BibleError
 
@@ -566,9 +569,7 @@ def sample_path(bible_id: str, lora_id: str, number: int) -> Path | None:
 
 
 def register_routes(api: Any) -> None:
-    from fastapi import HTTPException, Request
-    from fastapi.responses import FileResponse
-
+    # fastapi resolves the string annotations (``from __future__ import annotations``) against the module globals.
     base = "/api/v1/director/bibles/{bible_id}/style-loras"
 
     def call(function, *args, **kwargs):
